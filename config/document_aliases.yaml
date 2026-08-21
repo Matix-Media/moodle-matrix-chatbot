@@ -1,0 +1,24 @@
+# Human-maintained aliases for confusingly-named Moodle documents.
+#
+# Some files are named after institutional context with no lexical or semantic
+# connection to what a student would search for. No retrieval mechanism — BM25,
+# embeddings, query expansion — can discover that association from the text,
+# because it isn't in the text. Add an entry here whenever a student has to ask a
+# teacher "where is X" and the file's actual name doesn't say X.
+#
+# Format: doc_id (course_id:module_id:ordinal, from the crawl manifest) -> a list
+# of phrases a student would plausibly search for.
+#
+# After editing this file: bsbot index --realias   (cheap — only reprocesses the
+# documents listed here, not the whole corpus) then bsbot embed.
+
+"2250:170434:0":  # Klassenkurs IT4bili / Lernfeld 10 / "Bewertung Barcamp" (Bewertungsraster_Barcamp_DP.docx)
+  # LF10's project (a Design Pattern workshop) is presented at an event called a
+  # Barcamp, which is why the grading sheet is named after the event rather than
+  # what it grades. Students already had to ask a teacher this exact question.
+  - "Bewertungsbogen Lernfeld 10"
+  - "Bewertungskriterien Lernfeld 10"
+  - "Bewertungsbogen LF10"
+  - "Punkteverteilung Lernfeld 10 Projekt"
+  - "Kriterienraster Design Pattern Workshop"
+  - "Wie wird das LF10 Projekt bewertet"

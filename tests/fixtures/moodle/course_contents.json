@@ -1,0 +1,99 @@
+[
+  {
+    "id": 1001,
+    "name": "Allgemeines",
+    "visible": 1,
+    "summary": "",
+    "modules": [
+      {
+        "id": 5001, "name": "Willkommen", "modname": "label", "instance": 900,
+        "visible": 1, "uservisible": true, "contextid": 260001,
+        "description": "<p>Willkommen in <b>LF05</b>. Die Klausur ist am 15.03.2026.</p>"
+      },
+      {
+        "id": 5002, "name": "Kursplan", "modname": "page", "instance": 901,
+        "visible": 1, "uservisible": true, "contextid": 260002,
+        "url": "https://moodle.example.de/mod/page/view.php?id=5002",
+        "description": "<p>Der Kursplan als Übersicht.</p>",
+        "contentsinfo": {"filescount": 1, "filessize": 0, "lastmodified": 1787296810, "mimetypes": [], "repositorytype": ""},
+        "contents": [
+          {"type": "file", "filename": "index.html", "filepath": "/", "filesize": 0,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260002/mod_page/content/index.html?forcedownload=1",
+           "timemodified": 1787296810, "sortorder": 0}
+        ]
+      },
+      {
+        "id": 5003, "name": "Skript", "modname": "resource", "instance": 902,
+        "visible": 1, "uservisible": true, "contextid": 260003,
+        "url": "https://moodle.example.de/mod/resource/view.php?id=5003",
+        "contentsinfo": {"filescount": 2, "filessize": 260292, "lastmodified": 1768035904, "mimetypes": ["application/pdf"], "repositorytype": ""},
+        "contents": [
+          {"type": "file", "filename": "skript.pdf", "filepath": "/", "filesize": 170292,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260003/mod_resource/content/9/skript.pdf?forcedownload=1",
+           "timemodified": 1768035904, "sortorder": 1, "mimetype": "application/pdf"},
+          {"type": "file", "filename": "diagramm.png", "filepath": "/", "filesize": 90000,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260003/mod_resource/content/9/diagramm.png",
+           "timemodified": 1768035904, "sortorder": 2, "mimetype": "image/png"},
+          {"type": "file", "filename": "erklaerung.mp4", "filepath": "/", "filesize": 5000000,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260003/mod_resource/content/9/erklaerung.mp4",
+           "timemodified": 1768035904, "sortorder": 3, "mimetype": "video/mp4"}
+        ]
+      }
+    ]
+  },
+  {
+    "id": 1002,
+    "name": "Materialien",
+    "visible": 1,
+    "modules": [
+      {
+        "id": 5004, "name": "Handbuch", "modname": "book", "instance": 903,
+        "visible": 1, "uservisible": true, "contextid": 260004,
+        "url": "https://moodle.example.de/mod/book/view.php?id=5004",
+        "contents": [
+          {"type": "content", "filename": "structure", "filepath": "/", "filesize": 0,
+           "fileurl": null, "timemodified": 1743662757, "sortorder": 0,
+           "content": "[{\"title\":\"Einleitung\",\"href\":\"index.html\",\"level\":0,\"hidden\":false,\"subitems\":[]},{\"title\":\"Netzwerke\",\"href\":\"index.html\",\"level\":0,\"hidden\":false,\"subitems\":[]}]"},
+          {"type": "file", "filename": "index.html", "filepath": "/15535/", "filesize": 0,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260004/mod_book/chapter/15535/index.html",
+           "timemodified": 1743662757, "sortorder": 0},
+          {"type": "file", "filename": "index.html", "filepath": "/15536/", "filesize": 0,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260004/mod_book/chapter/15536/index.html",
+           "timemodified": 1743662800, "sortorder": 0}
+        ]
+      },
+      {
+        "id": 5005, "name": "Ordner", "modname": "folder", "instance": 904,
+        "visible": 1, "uservisible": true, "contextid": 260005,
+        "url": "https://moodle.example.de/mod/folder/view.php?id=5005",
+        "contents": [
+          {"type": "file", "filename": "hausordnung.pdf", "filepath": "/", "filesize": 89215,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260005/mod_folder/content/1/hausordnung.pdf?forcedownload=1",
+           "timemodified": 1727432526, "sortorder": 0, "mimetype": "application/pdf"},
+          {"type": "file", "filename": "riesig.zip", "filepath": "/", "filesize": 70300000,
+           "fileurl": "https://moodle.example.de/webservice/pluginfile.php/260005/mod_folder/content/1/riesig.zip",
+           "timemodified": 1727432526, "sortorder": 1, "mimetype": "application/zip"}
+        ]
+      },
+      {
+        "id": 5006, "name": "Cloud-Ordner", "modname": "url", "instance": 905,
+        "visible": 1, "uservisible": true, "contextid": 260006,
+        "url": "https://moodle.example.de/mod/url/view.php?id=5006",
+        "contents": [
+          {"type": "url", "filename": "Cloud-Ordner", "filepath": null, "filesize": 0,
+           "fileurl": "https://cloud.example.de/index.php/s/37rmq3xrWBwxra3?dir=/&amp;editing=false",
+           "timemodified": 1676238178, "sortorder": null}
+        ]
+      },
+      {
+        "id": 5007, "name": "Unterabschnitt", "modname": "subsection", "instance": 906,
+        "visible": 1, "uservisible": true, "contextid": 260007
+      },
+      {
+        "id": 5008, "name": "Interne Notizen", "modname": "page", "instance": 907,
+        "visible": 0, "uservisible": false, "contextid": 260008,
+        "description": "<p>Nur für Lehrkräfte.</p>"
+      }
+    ]
+  }
+]

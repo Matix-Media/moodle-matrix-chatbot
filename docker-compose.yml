@@ -1,0 +1,25 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BSBOT_DATA_DIR: /data
+    volumes:
+      - bsbot-data:/data
+    command: ["serve"]
+
+  # One-shot maintenance runs. Use with:  docker compose run --rm sync
+  sync:
+    build: .
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      BSBOT_DATA_DIR: /data
+    volumes:
+      - bsbot-data:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["bsbot sync && bsbot index && bsbot embed"]
+
+volumes:
+  bsbot-data:
