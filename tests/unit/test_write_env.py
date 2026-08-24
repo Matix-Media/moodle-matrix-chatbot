@@ -1,9 +1,11 @@
-"""Regression: ``_write_env`` must be able to target a path other than ``.env``.
+"""Regression: ``_write_env`` must always target an explicit path, never ``.env``.
 
-``serve`` persists rotated Matrix tokens to a file inside the data volume rather
-than ``.env`` — a container's working directory is ephemeral, and even a durable
-``.env`` write would lose to the real env var pydantic-settings already sees
-(fixed separately in ``Settings.settings_customise_sources``; this test only
+A silent ``.env`` default is exactly what broke ``matrix-login`` run inside a
+deployed container — that path is neither writable (non-root user, nothing baked
+into the image) nor persistent (only the data volume survives a restart) there.
+Every real caller passes ``settings.token_overrides_file`` instead: that path
+lives inside the persistent data volume and is loaded with priority over real env
+vars (fixed separately in ``Settings.settings_customise_sources``; this test only
 covers the writer itself).
 """
 
@@ -35,9 +37,3 @@ def test_replaces_existing_key_in_place(tmp_path: Path) -> None:
     assert "BSBOT_MATRIX__REFRESH_TOKEN=new" in lines
     assert "OTHER=keep" in lines
     assert len(lines) == 2
-
-
-def test_defaults_to_dotenv_when_no_path_given(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    _write_env({"X": "1"})
-    assert (tmp_path / ".env").exists()

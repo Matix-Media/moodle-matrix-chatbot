@@ -510,7 +510,7 @@ def serve(
 
 @app.command(name="matrix-login")
 def matrix_login() -> None:
-    """Log the bot in via the OAuth device grant and save the result to .env (M7).
+    """Log the bot in via the OAuth device grant and save the result (M7).
 
     Needed for homeservers using next-gen auth (matrix.org accounts created through
     account.matrix.org), which have no legacy password. Crucially this creates a
@@ -589,9 +589,14 @@ def matrix_login() -> None:
         }
         if tokens.refresh_token:
             env_values["BSBOT_MATRIX__REFRESH_TOKEN"] = tokens.refresh_token
-        _write_env(env_values)
+        # The same path `serve` writes rotated tokens to (settings_customise_sources
+        # gives it priority over real env vars) — not a bare `.env`, which is neither
+        # writable (the container runs as a non-root user, with no .env baked into
+        # the image) nor persistent (only the data volume survives a restart) when
+        # this is run inside a deployed container rather than a local checkout.
+        _write_env(env_values, settings.token_overrides_file)
 
-        typer.secho("Saved to .env.", fg=typer.colors.GREEN)
+        typer.secho(f"Saved to {settings.token_overrides_file}.", fg=typer.colors.GREEN)
         if tokens.refresh_token:
             typer.echo(
                 "A refresh token was stored, so restarts and redeploys will not need "
@@ -611,17 +616,20 @@ def matrix_login() -> None:
         _fail(str(exc))
 
 
-def _write_env(values: dict[str, str], path: Path | None = None) -> None:
+def _write_env(values: dict[str, str], path: Path) -> None:
     """Update an env file in place, replacing only the given keys.
 
-    Defaults to ``.env`` for the one-time ``matrix-login`` setup. ``serve`` passes
-    ``settings.token_overrides_file`` instead for runtime token rotation: that path
-    lives inside the persistent data volume and is loaded with priority over real
-    env vars (see ``Settings.settings_customise_sources``), which a plain ``.env``
-    write would not be — a container's env vars always beat a dotenv file, so
-    writing rotated tokens to ``.env`` would be silently ignored after a restart.
+    ``path`` has no default on purpose (see git history for why): it used to fall
+    back to a bare ``.env`` in the working directory, which is wrong for anything
+    other than local dev run from a checkout — inside a container that path is
+    neither writable (non-root user, nothing baked into the image) nor persistent
+    (only the data volume survives a restart). Every caller passes
+    ``settings.token_overrides_file`` explicitly instead: that path lives inside
+    the persistent data volume and is loaded with priority over real env vars
+    (see ``Settings.settings_customise_sources``), which a plain ``.env`` write
+    would not be — a container's env vars always beat a dotenv file, so writing
+    rotated tokens to ``.env`` would be silently ignored after a restart.
     """
-    path = path if path is not None else Path(".env")
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = path.read_text().splitlines() if path.exists() else []
     remaining = dict(values)
