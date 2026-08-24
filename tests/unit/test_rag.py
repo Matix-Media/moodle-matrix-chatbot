@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 import structlog.testing
 
 from bsbot.index.search import SearchHit
-from bsbot.rag.pipeline import REFUSAL_MARKER, AnswerPipeline
+from bsbot.rag.pipeline import MAX_EXPANDED_CHUNK_CHARS, REFUSAL_MARKER, AnswerPipeline
+
+_BERLIN = ZoneInfo("Europe/Berlin")
 
 
 def hit(chunk_id: int, text: str, **kw) -> SearchHit:
@@ -27,13 +32,22 @@ def hit(chunk_id: int, text: str, **kw) -> SearchHit:
 
 
 class FakeSearcher:
-    def __init__(self, hits: list[SearchHit]) -> None:
+    def __init__(
+        self,
+        hits: list[SearchHit],
+        *,
+        neighbors_by_chunk_id: dict[int, list[SearchHit]] | None = None,
+    ) -> None:
         self._hits = hits
+        self._neighbors_by_chunk_id = neighbors_by_chunk_id or {}
         self.queries: list[str] = []
 
     def search(self, query: str, *, limit: int = 8) -> list[SearchHit]:
         self.queries.append(query)
         return self._hits[:limit]
+
+    def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]:
+        return self._neighbors_by_chunk_id.get(chunk_id, [])
 
 
 class FakeLLM:
@@ -146,6 +160,16 @@ class TestExpansionAndRerank:
         assert "Termin Abschlussprüfung" in searcher.queries
         assert "Prüfungstermin IHK" in searcher.queries
 
+    def test_a_stray_dash_bullet_line_does_not_become_a_garbage_query(self) -> None:
+        """Same failure shape as the followup-hop dash bug: a bare bullet line
+        (any dash variant) must not survive stripping as a real search query."""
+        llm = FakeLLM({"expand": "–\nPrüfungstermin IHK"})
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(searcher, llm, expand=True, rerank=False)  # type: ignore[arg-type]
+        pipeline.answer("wann is die prüfung")
+        assert "–" not in searcher.queries
+        assert "Prüfungstermin IHK" in searcher.queries
+
     def test_expansion_failure_degrades_to_the_original_question(self) -> None:
         """AC-3"""
         llm = FakeLLM(fail={"expand"})
@@ -174,11 +198,100 @@ class TestExpansionAndRerank:
         assert answer.grounded
 
 
+class TestTemporalContext:
+    """The model gets no other way to know 'today' — without this, a question
+    naming a relative date ('morgen') is unanswerable even when the right
+    schedule document was retrieved, because it cannot tell which row applies.
+    """
+
+    def test_todays_date_is_injected_with_german_weekday(self) -> None:
+        fixed = datetime(2026, 8, 21, 12, 0, tzinfo=_BERLIN)  # a Friday
+        pipeline, _, llm = make([hit(1, "Inhalt.")], clock=lambda: fixed)
+        pipeline.answer("Frage?")
+        _, prompt = llm.prompts[0]
+        assert "Freitag, 21.08.2026" in prompt
+
+    def test_source_with_a_known_date_shows_it(self) -> None:
+        pipeline, _, llm = make([hit(1, "Inhalt.", source_date=1_700_000_000)])
+        pipeline.answer("Frage?")
+        _, prompt = llm.prompts[0]
+        source_line = next(line for line in prompt.splitlines() if line.startswith("[QUELLE 1]"))
+        assert "(Stand:" in source_line
+
+    def test_source_with_no_known_date_shows_nothing(self) -> None:
+        pipeline, _, llm = make([hit(1, "Inhalt.", source_date=None)])
+        pipeline.answer("Frage?")
+        _, prompt = llm.prompts[0]
+        source_line = next(line for line in prompt.splitlines() if line.startswith("[QUELLE 1]"))
+        assert "(Stand:" not in source_line
+
+
+class TestNeighborExpansion:
+    """A document like a Blockplan is one continuous source arbitrarily cut into
+    fixed-size chunks — an adjacent chunk is often topically continuous even when
+    it individually ranks far outside the retrieval window. Found live: the chunk
+    with the actually-asked-about date was never retrieved at all, but the chunk
+    right next to it was.
+    """
+
+    def test_neighbors_are_spliced_into_the_same_citation(self) -> None:
+        primary = hit(1, "Woche A: Montag 24.08.")
+        neighbor = hit(2, "Woche B: Montag 31.08.")
+        searcher = FakeSearcher([primary], neighbors_by_chunk_id={1: [primary, neighbor]})
+        llm = FakeLLM()
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False)  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        _, prompt = llm.prompts[0]
+        assert "Woche A: Montag 24.08." in prompt
+        assert "Woche B: Montag 31.08." in prompt
+        assert prompt.count("[QUELLE") == 1  # spliced into one citation, not two
+
+    def test_no_neighbors_falls_back_to_the_hits_own_text(self) -> None:
+        primary = hit(1, "Nur dieser Chunk.")
+        searcher = FakeSearcher([primary])  # none configured
+        llm = FakeLLM()
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False)  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        _, prompt = llm.prompts[0]
+        assert "Nur dieser Chunk." in prompt
+
+    def test_configured_radius_is_passed_to_the_searcher(self) -> None:
+        primary = hit(1, "Inhalt.")
+        searcher = FakeSearcher([primary])
+        radii: list[int] = []
+        original = searcher.neighbors
+
+        def spy(chunk_id: int, *, radius: int) -> list[SearchHit]:
+            radii.append(radius)
+            return original(chunk_id, radius=radius)
+
+        searcher.neighbors = spy  # type: ignore[method-assign]
+        pipeline = AnswerPipeline(
+            searcher, FakeLLM(), expand=False, rerank=False, neighbor_radius=4
+        )  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        assert radii == [4]
+
+    def test_expanded_body_is_capped(self) -> None:
+        """Merging several chunks should give the model more to work with, not
+        let one unusually verbose document balloon the whole prompt."""
+        huge = "x" * (MAX_EXPANDED_CHUNK_CHARS + 500)
+        primary = hit(1, "kurz")
+        neighbor = hit(2, huge)
+        searcher = FakeSearcher([primary], neighbors_by_chunk_id={1: [primary, neighbor]})
+        llm = FakeLLM()
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False)  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        _, prompt = llm.prompts[0]
+        assert huge not in prompt
+
+
 class TestFollowupRetrieval:
-    """A bounded second retrieval hop: only when the first rerank pass looks thin
-    despite having a full pool to choose from — the shape of a question whose real
-    terminology (a TaskCards card name, an abbreviation) never made it into the
-    original question or its expansions.
+    """A bounded second retrieval hop: whenever the first rerank pass looks thin —
+    the shape of a question whose real terminology (a TaskCards card name, an
+    abbreviation) never made it into the original question or its expansions. It
+    runs a genuinely new query, so a small original candidate pool is not a reason
+    to skip it — the hop can surface documents that pool never contained at all.
     """
 
     def test_thin_rerank_triggers_one_more_search(self) -> None:
@@ -205,20 +318,38 @@ class TestFollowupRetrieval:
         assert answer.used_queries == ["Frage?"]
         assert not any(kind == "followup" for kind, _ in llm.prompts)
 
-    def test_too_few_candidates_does_not_trigger_a_second_hop(self) -> None:
-        """Only 2 hits exist at all — a second hop has nothing new to find."""
-        llm = FakeLLM({"rerank": "1", "followup": "sollte nie aufgerufen werden"})
+    def test_too_few_candidates_still_triggers_a_second_hop(self) -> None:
+        """Only 2 hits exist at all — that is exactly when a fresh query matters
+        most, since it can surface documents this tiny pool never contained.
+        """
+        llm = FakeLLM({"rerank": "1", "followup": "GuS Checkpoint"})
         hits = [hit(1, "Erstes"), hit(2, "Zweites")]
         searcher = FakeSearcher(hits)
         pipeline = AnswerPipeline(
             searcher, llm, expand=False, rerank=True, max_context_chunks=6, candidates=6
         )  # type: ignore[arg-type]
-        pipeline.answer("Frage?")
-        assert searcher.queries == ["Frage?"]
-        assert not any(kind == "followup" for kind, _ in llm.prompts)
+        answer = pipeline.answer("Frage?")
+        assert "GuS Checkpoint" in answer.used_queries
 
     def test_no_useful_followup_term_does_not_trigger_a_second_hop(self) -> None:
         llm = FakeLLM({"rerank": "1,2", "followup": "-"})
+        hits = [hit(i, f"Absatz {i}") for i in range(1, 7)]
+        searcher = FakeSearcher(hits)
+        pipeline = AnswerPipeline(
+            searcher, llm, expand=False, rerank=True, max_context_chunks=6, candidates=6
+        )  # type: ignore[arg-type]
+        answer = pipeline.answer("Frage?")
+        assert searcher.queries == ["Frage?"]
+        assert answer.used_queries == ["Frage?"]
+
+    @pytest.mark.parametrize("dash", ["–", "—", "- ", " – "])
+    def test_unicode_dash_variants_are_also_treated_as_no_useful_term(self, dash: str) -> None:
+        """Regression: asked for 'einen Bindestrich', Gemini overwhelmingly replies
+        with an en-dash (–, U+2013), not the ASCII hyphen the prompt asked for —
+        observed live: 4 of 5 real calls. Stripping only '-' let '–' through as a
+        real (garbage) search query instead of being recognised as 'nothing to add'.
+        """
+        llm = FakeLLM({"rerank": "1,2", "followup": dash})
         hits = [hit(i, f"Absatz {i}") for i in range(1, 7)]
         searcher = FakeSearcher(hits)
         pipeline = AnswerPipeline(
@@ -411,3 +542,71 @@ class TestCandidatePoolAndDiversification:
         pipeline.answer("Allgemeine Frage ohne Lernfeldbezug?")
         _, prompt = llm.prompts[0]
         assert "Zuerst" in prompt and "Danach" not in prompt
+
+
+class TestScheduleDateBoost:
+    """Regression from a real failure: a Blockplan is chunked one week per chunk,
+    so every week of the same document looks equally relevant to BM25/embedding
+    scores — diversification's per-document cap then keeps whichever week scored
+    highest generically, discarding the one the question actually asked about.
+    Resolving the question's own date reference against the school's clock and
+    boosting the chunk that names that date is what fixes it.
+    """
+
+    def test_next_named_weekday_chunk_survives_diversification(self) -> None:
+        """A Friday asking 'am Montag' means the coming Monday, not a past one."""
+        friday = datetime(2026, 8, 21, tzinfo=_BERLIN)
+        other_weeks = [
+            hit(
+                i,
+                f"Montag | 2026-07-{i:02d} 00:00:00 | Tagesplan",
+                doc_id="blockplan",
+                score=0.9,
+            )
+            for i in range(1, 7)
+        ]
+        target_week = hit(
+            99,
+            "Montag | 2026-08-24 00:00:00 | Tagesplan",
+            doc_id="blockplan",
+            score=0.1,
+        )
+        pipeline, _, llm = make(
+            [*other_weeks, target_week],
+            max_context_chunks=1,
+            candidates=1,
+            max_per_document=1,
+            clock=lambda: friday,
+        )
+        pipeline.answer("wann muss ich am montag in die schule gehen?")
+        _, prompt = llm.prompts[0]
+        assert "2026-08-24" in prompt
+
+    def test_morgen_resolves_to_tomorrows_date(self) -> None:
+        friday = datetime(2026, 8, 21, tzinfo=_BERLIN)
+        other_days = [
+            hit(i, f"Alter Tag {i} | 2026-07-{i:02d} 00:00:00", doc_id="plan", score=0.9)
+            for i in range(1, 7)
+        ]
+        tomorrow = hit(99, "Termin | 2026-08-22 00:00:00", doc_id="plan", score=0.1)
+        pipeline, _, llm = make(
+            [*other_days, tomorrow],
+            max_context_chunks=1,
+            candidates=1,
+            max_per_document=1,
+            clock=lambda: friday,
+        )
+        pipeline.answer("was ist morgen los?")
+        _, prompt = llm.prompts[0]
+        assert "2026-08-22" in prompt
+
+    def test_no_date_reference_leaves_ranking_by_score(self) -> None:
+        """The boost must not fire when the question names no date at all."""
+        higher = hit(1, "Termin | 2026-07-01", doc_id="plan", score=0.9)
+        lower = hit(2, "Termin | 2026-08-24", doc_id="plan", score=0.1)
+        pipeline, _, llm = make(
+            [higher, lower], max_context_chunks=1, candidates=1, max_per_document=1
+        )
+        pipeline.answer("Allgemeine Frage ohne Datumsbezug?")
+        _, prompt = llm.prompts[0]
+        assert "2026-07-01" in prompt

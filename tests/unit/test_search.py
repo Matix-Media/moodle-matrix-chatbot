@@ -147,6 +147,34 @@ class TestHybridSearch:
         assert hit.header_text
         assert hit.text
 
+    def test_native_document_reports_moodle_timemodified_as_source_date(
+        self, store: Store
+    ) -> None:
+        """A Moodle-owned file's own timemodified is trustworthy — use it directly."""
+        store.persist_crawl([doc("a", timemodified=555)])
+        ids = store.replace_chunks("a", [("Inhalt.", {"ordinal": 0})], header_text="X")
+        store.set_embedding(ids[0], [1.0, 0.0, 0.0])
+        hit = HybridSearcher(store, embedder=None).search("Inhalt", limit=1)[0]
+        assert hit.source_date == 555
+
+    def test_external_document_reports_content_changed_at_not_timemodified(
+        self, store: Store
+    ) -> None:
+        """external_url set = reached through an adapter (TaskCards, YouTube...).
+
+        Moodle's timemodified there is when the *link* was pasted in, not when the
+        destination content changed — content_changed_at (spec: only advances on a
+        genuine text diff, see Store.record_extraction) is the honest signal.
+        """
+        store.persist_crawl(
+            [doc("a", timemodified=111, external_url="https://taskcards.de/#/board/x")]
+        )
+        store.record_extraction("a", text_sha256="t", extract_version=1, now=777)
+        ids = store.replace_chunks("a", [("Inhalt.", {"ordinal": 0})], header_text="X")
+        store.set_embedding(ids[0], [1.0, 0.0, 0.0])
+        hit = HybridSearcher(store, embedder=None).search("Inhalt", limit=1)[0]
+        assert hit.source_date == 777
+
     def test_tombstoned_documents_never_surface(self, populated: Store) -> None:
         """AC-11: stale answers are worse than missing ones."""
         populated.persist_crawl([doc("net"), doc("cake")])  # 'exam' disappears
@@ -158,3 +186,54 @@ class TestHybridSearch:
 
     def test_no_match_returns_empty(self, populated: Store) -> None:
         assert HybridSearcher(populated, embedder=None).search("Quantenchromodynamik") == []
+
+
+class TestNeighbors:
+    """A document like a Blockplan is one continuous source arbitrarily cut into
+    fixed-size chunks — an adjacent chunk is often topically continuous even when
+    it individually ranks far outside the retrieval window for a question's
+    wording. See AnswerPipeline._expanded_body for how this gets used.
+    """
+
+    def test_returns_chunks_within_radius_in_document_order(self, store: Store) -> None:
+        store.persist_crawl([doc("a")])
+        ids = store.replace_chunks(
+            "a",
+            [(f"chunk {i}", {"ordinal": i, "body": f"body {i}"}) for i in range(5)],
+            header_text="LF05IT › X",
+        )
+        neighbors = HybridSearcher(store, embedder=None).neighbors(ids[2], radius=1)
+        assert [n.chunk_id for n in neighbors] == ids[1:4]
+
+    def test_radius_is_clamped_at_document_boundaries(self, store: Store) -> None:
+        store.persist_crawl([doc("a")])
+        ids = store.replace_chunks(
+            "a",
+            [(f"chunk {i}", {"ordinal": i, "body": f"body {i}"}) for i in range(3)],
+            header_text="LF05IT › X",
+        )
+        neighbors = HybridSearcher(store, embedder=None).neighbors(ids[0], radius=5)
+        assert [n.chunk_id for n in neighbors] == ids
+
+    def test_does_not_cross_into_a_different_document(self, store: Store) -> None:
+        store.persist_crawl([doc("a"), doc("b")])
+        a_ids = store.replace_chunks(
+            "a", [("a0", {"ordinal": 0}), ("a1", {"ordinal": 1})], header_text="X"
+        )
+        b_ids = store.replace_chunks("b", [("b0", {"ordinal": 0})], header_text="X")
+        neighbors = HybridSearcher(store, embedder=None).neighbors(a_ids[-1], radius=5)
+        assert all(n.doc_id == "a" for n in neighbors)
+        assert b_ids[0] not in [n.chunk_id for n in neighbors]
+
+    def test_unknown_chunk_id_returns_nothing(self, store: Store) -> None:
+        assert HybridSearcher(store, embedder=None).neighbors(999999, radius=2) == []
+
+    def test_body_is_populated_separately_from_the_prefixed_text(self, store: Store) -> None:
+        store.persist_crawl([doc("a")])
+        ids = store.replace_chunks(
+            "a",
+            [("Kurs › X\n\nNur der Inhalt.", {"ordinal": 0, "body": "Nur der Inhalt."})],
+            header_text="X",
+        )
+        neighbors = HybridSearcher(store, embedder=None).neighbors(ids[0], radius=0)
+        assert neighbors[0].body == "Nur der Inhalt."

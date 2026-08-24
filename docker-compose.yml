@@ -1,25 +1,76 @@
+# Two ways config reaches the container, both supported at once:
+#  - a real .env file (self-hosted VPS: `env_file` below loads it), or
+#  - variables injected straight into the environment `docker compose` itself
+#    runs in (Dokploy: it sets BSBOT_* directly rather than writing a .env
+#    file). The bare `environment:` entries below pass those straight through.
+# `env_file`'s `required: false` is what stops Compose refusing to start at all
+# when no .env file exists — Dokploy's normal case. Both lists are harmless
+# where they don't apply: an unset optional variable just resolves to nothing.
+x-env-file: &env-file
+  - path: .env
+    required: false
+
+x-environment: &environment
+  - BSBOT_DATA_DIR=/data
+  - BSBOT_MOODLE__BASE_URL
+  - BSBOT_MOODLE__USERNAME
+  - BSBOT_MOODLE__PASSWORD
+  - BSBOT_MOODLE__TOKEN
+  - BSBOT_MOODLE__SERVICE
+  - BSBOT_GEMINI__API_KEY
+  - BSBOT_GEMINI__ANSWER_MODEL
+  - BSBOT_GEMINI__UTILITY_MODEL
+  - BSBOT_GEMINI__EMBED_MODEL
+  - BSBOT_GEMINI__EMBED_DIM
+  - BSBOT_MATRIX__HOMESERVER
+  - BSBOT_MATRIX__USER_ID
+  - BSBOT_MATRIX__PASSWORD
+  - BSBOT_MATRIX__ACCESS_TOKEN
+  - BSBOT_MATRIX__DEVICE_ID
+  - BSBOT_MATRIX__LOGIN_IDENTIFIER
+  - BSBOT_MATRIX__REFRESH_TOKEN
+  - BSBOT_MATRIX__OAUTH_CLIENT_ID
+  - BSBOT_MATRIX__OAUTH_TOKEN_ENDPOINT
+  - BSBOT_MATRIX__ROOM_IDS
+  - BSBOT_SYNC_INTERVAL_MINUTES
+  - BSBOT_LOG_LEVEL
+
 services:
+  # Always listening in the Matrix room. Never runs Moodle sync/index/embed
+  # itself — a multi-hour crawl or a large embedding batch must not delay it
+  # answering a question.
   bot:
     build: .
     restart: unless-stopped
-    env_file: .env
-    environment:
-      BSBOT_DATA_DIR: /data
+    env_file: *env-file
+    environment: *environment
     volumes:
       - bsbot-data:/data
     command: ["serve"]
 
-  # One-shot maintenance runs. Use with:  docker compose run --rm sync
+  # The recurring sync -> index -> embed loop (BSBOT_SYNC_INTERVAL_MINUTES
+  # between cycles, default 180). Its own container so a crawl never blocks the
+  # bot. Shares the SQLite index with `bot` over the same volume — safe, since
+  # the store runs in WAL mode (one writer + concurrent readers).
+  cron:
+    build: .
+    restart: unless-stopped
+    env_file: *env-file
+    environment: *environment
+    volumes:
+      - bsbot-data:/data
+    command: ["cron"]
+
+  # One-shot maintenance run, e.g. right after editing config/document_aliases.yaml.
+  # Use with:  docker compose run --rm sync
   sync:
     build: .
     profiles: ["tools"]
-    env_file: .env
-    environment:
-      BSBOT_DATA_DIR: /data
+    env_file: *env-file
+    environment: *environment
     volumes:
       - bsbot-data:/data
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["bsbot sync && bsbot index && bsbot embed"]
+    command: ["cron", "--once"]
 
 volumes:
   bsbot-data:

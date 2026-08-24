@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS documents (
     extract_version  INTEGER,
     extracted_at     INTEGER,
     extracted_timemodified INTEGER,
+    content_changed_at INTEGER,
     first_seen       INTEGER NOT NULL,
     last_seen        INTEGER NOT NULL,
     tombstoned_at    INTEGER
@@ -239,6 +240,7 @@ class Store:
         con.execute("PRAGMA foreign_keys=ON")
         con.execute("PRAGMA synchronous=NORMAL")
         con.executescript(_SCHEMA)
+        self._migrate(con)
         con.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
             f"chunk_id INTEGER PRIMARY KEY, embedding float[{self.embed_dim}])"
@@ -246,6 +248,19 @@ class Store:
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         con.commit()
         self._con = con
+
+    @staticmethod
+    def _migrate(con: sqlite3.Connection) -> None:
+        """Additive, backward-compatible column adds for pre-existing databases.
+
+        ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` only creates a table the
+        first time — it never alters one that already exists, so a column added
+        to that string later needs an explicit ``ALTER TABLE`` here or every
+        database created before that change breaks on the first query touching it.
+        """
+        columns = {row[1] for row in con.execute("PRAGMA table_info(documents)")}
+        if "content_changed_at" not in columns:
+            con.execute("ALTER TABLE documents ADD COLUMN content_changed_at INTEGER")
 
     def close(self) -> None:
         if self._con is not None:
@@ -394,10 +409,24 @@ class Store:
             # Record the *timemodified we extracted*, not the wall clock. Comparing
             # Moodle's timestamps against our clock only works by coincidence and
             # breaks for backdated content.
+            #
+            # content_changed_at only advances when the extracted text actually
+            # differs from what was stored before (or there was nothing stored yet).
+            # It is the only trustworthy "last changed" signal external adapters
+            # have — Moodle's own timemodified reflects when the *link* to a
+            # TaskCards board or YouTube video was pasted in, not when that board
+            # or video last changed. The comparison below reads the pre-update row
+            # (SQLite evaluates every expression in an UPDATE against the old row),
+            # so it is always comparing against the previous extraction, not this one.
             con.execute(
                 "UPDATE documents SET text_sha256=?, extract_version=?, blob_sha256=?, "
-                "extracted_at=?, extracted_timemodified=timemodified WHERE doc_id=?",
-                (text_sha256, extract_version, blob_sha256, stamp, doc_id),
+                "extracted_at=?, extracted_timemodified=timemodified, "
+                "content_changed_at = CASE "
+                "  WHEN content_changed_at IS NULL OR text_sha256 IS NOT ? THEN ? "
+                "  ELSE content_changed_at "
+                "END "
+                "WHERE doc_id=?",
+                (text_sha256, extract_version, blob_sha256, stamp, text_sha256, stamp, doc_id),
             )
 
     def reset_extraction_for_empty_documents(self) -> int:
@@ -677,6 +706,7 @@ class Store:
         data["extractable"] = bool(data["extractable"])
         data.pop("extracted_at", None)
         data.pop("extracted_timemodified", None)
+        data.pop("content_changed_at", None)
         return Document(**data)
 
 

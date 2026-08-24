@@ -153,9 +153,23 @@ whole pipeline is testable without touching the school's server.
 ## Deployment
 
 ```bash
-docker compose run --rm sync    # crawl + index + embed
-docker compose up -d bot        # run the bot
+docker compose run --rm sync    # one-shot: crawl + index + embed
+docker compose up -d bot cron   # run the bot, and the recurring sync loop
 ```
+
+`bot` and `cron` are separate containers on purpose — a multi-hour crawl or a large embedding
+batch must never delay the bot answering a question in the room. They share the SQLite index
+over one volume; that's safe, since the store runs in WAL mode (one writer, concurrent readers).
+`cron` repeats sync → index → embed every `BSBOT_SYNC_INTERVAL_MINUTES` (default 180). Both
+containers use `restart: unless-stopped`, and `bot` additionally restarts its own Matrix
+connection internally with backoff after a transient network failure (a laptop's lid closing, a
+VPS network blip) — see `matrix.crashed_restarting` in the logs.
+
+Config reaches the container either way a platform provides it: a real `.env` file (self-hosted
+VPS), or variables injected straight into the environment (Dokploy sets `BSBOT_*` directly rather
+than writing a `.env` file — `docker-compose.yml` handles both, see the comment at its top). On
+Dokploy, point it at this repo, set the values from `.env.example` as environment variables in
+its UI, and deploy; no other setup is needed.
 
 `matrix-nio` 0.26 replaced libolm with vodozemac, so end-to-end encryption needs no C library
 and the image is a plain `python:3.13-slim`.

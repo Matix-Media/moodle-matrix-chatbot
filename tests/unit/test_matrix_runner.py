@@ -15,7 +15,18 @@ second against matrix.org until the process was killed by hand.
 
 from __future__ import annotations
 
-from bsbot.matrix.runner import LOOP_SLEEP_TIME_MS, is_token_rejected_error
+import asyncio
+
+import pytest
+
+from bsbot.matrix.runner import (
+    LOOP_SLEEP_TIME_MS,
+    RESTART_BACKOFF_INITIAL_S,
+    RESTART_BACKOFF_MAX_S,
+    RESTART_HEALTHY_UPTIME_S,
+    _run_with_restart,
+    is_token_rejected_error,
+)
 
 
 class TestLoopSleepTimeIsConfigured:
@@ -98,3 +109,89 @@ class TestSyncErrorHandling:
         await runner._on_sync_error(FakeError())  # type: ignore[arg-type]
 
         assert refreshed == []
+
+
+class TestRestartWithBackoff:
+    """A laptop's lid closing, a VPS's network blipping — both tear a live
+    connection down with no graceful notice, and nio does not catch the
+    resulting exception (a real ``httpx.ReadError``, observed live). Without an
+    outer restart loop, that kills the whole process; a long-running deployment
+    needs to recover on its own, with nobody watching.
+    """
+
+    async def test_retries_after_a_failure_and_recovers(self) -> None:
+        attempts = 0
+
+        async def run_once() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise ConnectionError("boom")
+
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        await _run_with_restart(run_once, sleep=fake_sleep, clock=lambda: 0.0)
+
+        assert attempts == 3
+        assert sleeps == [RESTART_BACKOFF_INITIAL_S, RESTART_BACKOFF_INITIAL_S * 2]
+
+    async def test_backoff_is_capped(self) -> None:
+        attempts = 0
+
+        async def run_once() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 11:
+                raise ConnectionError("boom")
+
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        await _run_with_restart(run_once, sleep=fake_sleep, clock=lambda: 0.0)
+
+        assert max(sleeps) == RESTART_BACKOFF_MAX_S
+        assert sleeps[-1] == RESTART_BACKOFF_MAX_S
+
+    async def test_backoff_resets_after_a_healthy_run(self) -> None:
+        """A crash hours into an otherwise-healthy run must not inherit whatever
+        backoff a *previous, unrelated* incident had already climbed to."""
+        attempts = 0
+        clock_value = 0.0
+
+        async def run_once() -> None:
+            nonlocal attempts, clock_value
+            attempts += 1
+            if attempts in (1, 2):
+                raise ConnectionError("boom")  # two quick failures: backoff climbs
+            if attempts == 3:
+                clock_value += RESTART_HEALTHY_UPTIME_S + 1  # a long healthy stretch
+                raise ConnectionError("boom")
+            # recovers on the 4th attempt
+
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        await _run_with_restart(run_once, sleep=fake_sleep, clock=lambda: clock_value)
+
+        assert sleeps == [
+            RESTART_BACKOFF_INITIAL_S,
+            RESTART_BACKOFF_INITIAL_S * 2,
+            RESTART_BACKOFF_INITIAL_S,  # reset, not a further doubling to *4
+        ]
+
+    async def test_cancellation_propagates_without_retrying(self) -> None:
+        async def run_once() -> None:
+            raise asyncio.CancelledError()
+
+        async def fake_sleep(seconds: float) -> None:
+            raise AssertionError("must not back off on cancellation")
+
+        with pytest.raises(asyncio.CancelledError):
+            await _run_with_restart(run_once, sleep=fake_sleep, clock=lambda: 0.0)

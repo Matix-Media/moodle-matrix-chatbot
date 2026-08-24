@@ -15,6 +15,7 @@ shared scale.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Protocol
 
@@ -41,6 +42,11 @@ class SearchHit(BaseModel):
     chunk_id: int
     doc_id: str
     text: str
+    #: The chunk's own content, without the "Course › Section › Module" prefix
+    #: baked into ``text``. Needed to splice several chunks together (see
+    #: ``AnswerPipeline._expanded_body``) without repeating that prefix once per
+    #: chunk merged.
+    body: str = ""
     header_text: str
     course_name: str
     module_name: str
@@ -49,6 +55,10 @@ class SearchHit(BaseModel):
     page: int | None
     score: float
     sources: list[str] = []
+    #: Epoch seconds of the best-available "last changed" signal for this chunk's
+    #: document, or None if none is known yet. See ``_hydrate`` for which column
+    #: this comes from and why it differs between native and external content.
+    source_date: int | None = None
 
 
 def reciprocal_rank_fusion(
@@ -181,8 +191,18 @@ class HybridSearcher:
         marks = ",".join("?" * len(chunk_ids))
         rows = self._store.connection.execute(
             f"""
-            SELECT c.chunk_id, c.doc_id, c.text, c.header_text, c.page,
-                   d.course_name, d.module_name, d.module_url, d.title
+            SELECT c.chunk_id, c.doc_id, c.text, c.meta, c.header_text, c.page,
+                   d.course_name, d.module_name, d.module_url, d.title,
+                   -- Moodle's timemodified is only trustworthy for content Moodle
+                   -- itself owns. For anything reached through an external adapter
+                   -- (external_url set), it reflects when the *link* was pasted in,
+                   -- not when the destination content last changed — content_changed_at
+                   -- (bumped only on a genuine text diff, see Store.record_extraction)
+                   -- is the honest signal there instead.
+                   CASE WHEN d.external_url IS NOT NULL
+                        THEN d.content_changed_at
+                        ELSE d.timemodified
+                   END AS source_date
             FROM chunks c
             JOIN documents d ON d.doc_id = c.doc_id
             WHERE c.chunk_id IN ({marks}) AND d.tombstoned_at IS NULL
@@ -194,6 +214,7 @@ class HybridSearcher:
                 chunk_id=r["chunk_id"],
                 doc_id=r["doc_id"],
                 text=r["text"],
+                body=json.loads(r["meta"]).get("body", "") if r["meta"] else "",
                 header_text=r["header_text"],
                 page=r["page"],
                 course_name=r["course_name"],
@@ -201,6 +222,30 @@ class HybridSearcher:
                 module_url=r["module_url"],
                 title=r["title"],
                 score=0.0,
+                source_date=r["source_date"],
             )
             for r in rows
         ]
+
+    def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]:
+        """Chunks within ``radius`` positions of ``chunk_id`` in the same document,
+        in document order, ``chunk_id`` itself included.
+
+        A document like a Blockplan is one continuous source arbitrarily cut into
+        fixed-size chunks — an adjacent chunk is often topically continuous (next
+        week's schedule right after this week's) even when it individually ranks
+        far outside the retrieval window for a given question's wording. Found
+        live: the chunk with the actually-asked-about date was never retrieved at
+        all, but the chunk right next to it was.
+        """
+        row = self._store.connection.execute(
+            "SELECT doc_id, ordinal FROM chunks WHERE chunk_id=?", (chunk_id,)
+        ).fetchone()
+        if row is None:
+            return []
+        rows = self._store.connection.execute(
+            "SELECT chunk_id FROM chunks WHERE doc_id=? AND ordinal BETWEEN ? AND ? "
+            "ORDER BY ordinal",
+            (row["doc_id"], row["ordinal"] - radius, row["ordinal"] + radius),
+        ).fetchall()
+        return self._hydrate([str(r["chunk_id"]) for r in rows])

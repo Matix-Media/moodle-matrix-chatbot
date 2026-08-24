@@ -248,6 +248,11 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("./data")
     log_level: str = "INFO"
+    #: Minutes between sync -> index -> embed cycles for `bsbot cron`. School
+    #: content changes over days, not minutes, and the unchanged-content skip in
+    #: Indexer._index_one makes a no-op cycle cheap but not free — so this stays
+    #: moderate (3h) rather than aggressive.
+    sync_interval_minutes: int = 180
 
     @field_validator("data_dir")
     @classmethod

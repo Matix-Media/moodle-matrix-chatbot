@@ -320,6 +320,52 @@ def embed(
 
 
 @app.command()
+def cron(
+    interval_minutes: int = typer.Option(
+        0, help="Minutes between cycles (0 = use BSBOT_SYNC_INTERVAL_MINUTES)."
+    ),
+    once: bool = typer.Option(
+        False, help="Run a single sync -> index -> embed cycle and exit, instead of looping."
+    ),
+    follow_links: bool = typer.Option(True, help="Same as `bsbot sync --follow-links`."),
+    aliases_path: Path = typer.Option(
+        Path("config/document_aliases.yaml"),
+        "--aliases",
+        help="Human-maintained doc_id -> search phrase overrides. Missing is fine.",
+    ),
+) -> None:
+    """Repeatedly sync, index and embed — the unattended long-running update loop.
+
+    Meant to run as its own process (its own container in docker-compose), not
+    inside `bsbot serve` — a multi-hour crawl or a large embedding batch must
+    never delay the bot answering a question in the room.
+    """
+    from bsbot.sync_loop import run_cycle, run_forever
+
+    settings = _settings()
+    configure_logging(settings.log_level)
+    try:
+        moodle = settings.require_moodle()
+        gemini = settings.require_gemini()
+    except ConfigError as exc:
+        _fail(str(exc))
+        return
+
+    interval = interval_minutes or settings.sync_interval_minutes
+
+    async def cycle() -> None:
+        await run_cycle(settings, moodle, gemini, aliases_path, follow_links=follow_links)
+
+    async def run() -> None:
+        if once:
+            await cycle()
+        else:
+            await run_forever(cycle, interval_minutes=interval)
+
+    asyncio.run(run())
+
+
+@app.command()
 def search(
     query: str = typer.Argument(..., help="A question, in German."),
     limit: int = typer.Option(8, help="How many chunks to show."),

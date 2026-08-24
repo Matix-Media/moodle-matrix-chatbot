@@ -20,6 +20,9 @@ dependencies = [
     "pyyaml>=6.0",
     "xlrd>=2.0",
     "youtube-transcript-api>=1.0",
+    # zoneinfo's fallback IANA database — python:slim images have no system
+    # tzdata, so ZoneInfo("Europe/Berlin") would otherwise fail at runtime.
+    "tzdata>=2024.1",
 ]
 
 [project.scripts]

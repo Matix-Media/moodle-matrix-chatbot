@@ -65,6 +65,57 @@ class TestSchema:
         with pytest.raises(StoreVersionError):
             Store(path).__enter__()
 
+    def test_a_database_predating_content_changed_at_is_migrated(self, tmp_path: Path) -> None:
+        """A pre-existing on-disk database must gain the column, not crash on open.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters a table that already exists, so
+        this column needs its own explicit migration — this pins that behaviour
+        against a documents table shaped like it was before that column existed.
+        """
+        path = tmp_path / "index.db"
+        con = sqlite3.connect(path)
+        con.execute(
+            """
+            CREATE TABLE documents (
+                doc_id           TEXT PRIMARY KEY,
+                course_id        INTEGER NOT NULL,
+                course_name      TEXT NOT NULL,
+                section_name     TEXT NOT NULL DEFAULT '',
+                module_id        INTEGER NOT NULL,
+                module_name      TEXT NOT NULL DEFAULT '',
+                modname          TEXT NOT NULL DEFAULT '',
+                title            TEXT NOT NULL DEFAULT '',
+                kind             TEXT NOT NULL,
+                header_path      TEXT NOT NULL DEFAULT '[]',
+                module_url       TEXT,
+                timemodified     INTEGER NOT NULL DEFAULT 0,
+                text             TEXT,
+                file_url         TEXT,
+                filename         TEXT,
+                filesize         INTEGER NOT NULL DEFAULT 0,
+                mimetype         TEXT,
+                external_url     TEXT,
+                extractable      INTEGER NOT NULL DEFAULT 1,
+                skip_reason      TEXT,
+                text_sha256      TEXT,
+                blob_sha256      TEXT,
+                extract_version  INTEGER,
+                extracted_at     INTEGER,
+                extracted_timemodified INTEGER,
+                first_seen       INTEGER NOT NULL,
+                last_seen        INTEGER NOT NULL,
+                tombstoned_at    INTEGER
+            )
+            """
+        )
+        con.commit()
+        con.close()
+
+        with Store(path) as s:
+            s.persist_crawl([item("a")])
+            s.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
+            assert _content_changed_at(s, "a") == 1000
+
     def test_extensions_and_pragmas_are_active(self, store: Store) -> None:
         """AC-3 / AC-4: fail at startup, not mid-query."""
         assert store.connection.execute("select vec_version()").fetchone()[0]
@@ -234,6 +285,42 @@ class TestOcrCache:
         store.cache_ocr("img-1", "ocr-v1", "Aufgabe 1: Berechnen Sie ...")
         assert store.cached_ocr("img-1", "ocr-v1") == "Aufgabe 1: Berechnen Sie ..."
         assert store.cached_ocr("img-1", "ocr-v2") is None
+
+
+def _content_changed_at(store: Store, doc_id: str) -> int | None:
+    row = store.connection.execute(
+        "SELECT content_changed_at FROM documents WHERE doc_id=?", (doc_id,)
+    ).fetchone()
+    return row[0]
+
+
+class TestContentChangedAt:
+    """Moodle's own timemodified only reflects reality for content Moodle owns —
+    for an external adapter (TaskCards, YouTube...) it reflects when the *link*
+    was pasted in. content_changed_at is the substitute: it only advances when the
+    extracted text actually differs from what was stored before, so it is a
+    trustworthy "last really changed" signal for every source type, including ones
+    with no freshness metadata of their own.
+    """
+
+    def test_first_extraction_sets_it(self, store: Store) -> None:
+        store.persist_crawl([item("a")])
+        store.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
+        assert _content_changed_at(store, "a") == 1000
+
+    def test_unchanged_text_does_not_advance_it(self, store: Store) -> None:
+        store.persist_crawl([item("a")])
+        store.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
+        # A later re-extraction (e.g. a periodic external re-check) that finds the
+        # exact same text must not look like a fresh change.
+        store.record_extraction("a", text_sha256="x", extract_version=1, now=2000)
+        assert _content_changed_at(store, "a") == 1000
+
+    def test_genuinely_changed_text_advances_it(self, store: Store) -> None:
+        store.persist_crawl([item("a")])
+        store.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
+        store.record_extraction("a", text_sha256="y", extract_version=1, now=2000)
+        assert _content_changed_at(store, "a") == 2000
 
 
 class TestExtractionReset:

@@ -11,7 +11,10 @@ a model given nothing can only invent.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from datetime import date, datetime, timedelta
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 import structlog
 from pydantic import BaseModel
@@ -42,6 +45,31 @@ DEFAULT_PER_QUERY_LIMIT = 30
 #: crowding out a different, relevant document.
 DEFAULT_MAX_PER_DOCUMENT = 2
 MAX_CHUNK_CHARS = 1800
+#: How many chunks on each side of a retrieved one get spliced into its citation.
+#: Found live: a Blockplan is one continuous document arbitrarily cut into
+#: fixed-size chunks, so the chunk covering the actually-asked-about week can rank
+#: far outside the retrieval window while the chunk right next to it doesn't —
+#: 2 covers "next/previous week" for the schedule case this was built for, and
+#: costs nothing when a document has no useful neighbours (nothing else nearby).
+DEFAULT_NEIGHBOR_RADIUS = 2
+#: Ceiling on a citation's total spliced size, independent of radius — merging
+#: 5 chunks (radius 2) should give the model more to work with, not let one
+#: unusually verbose document balloon the whole prompt.
+MAX_EXPANDED_CHUNK_CHARS = MAX_CHUNK_CHARS * 3
+
+#: Chars stripped from a model line before treating it as real content. Includes
+#: Unicode dash variants deliberately, not just ASCII hyphen-minus: asked for "einen
+#: Bindestrich", Gemini returns an en-dash (–, U+2013) far more often than "-"
+#: (U+002D) — observed live: 4 of 5 real calls. Stripping only "-" left "–" looking
+#: like a genuine (garbage) search query instead of "nothing to add".
+_STRIP_CHARS = " -–—•\t"
+
+#: The audience is one Hamburg Berufsschule, so its own timezone, not server-local
+#: or UTC time, decides what "heute"/"morgen" mean. tzdata is a pinned dependency
+#: (see pyproject.toml) so this resolves correctly even on a minimal Docker image
+#: that has no system timezone database.
+_SCHOOL_TZ = ZoneInfo("Europe/Berlin")
+_WEEKDAYS_DE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 NO_ANSWER_TEXT = (
     "Dazu finde ich nichts in Moodle. Vielleicht steht es in einem Kurs, auf den ich "
@@ -51,6 +79,7 @@ NO_ANSWER_TEXT = (
 
 class SearcherLike(Protocol):
     def search(self, query: str, *, limit: int = 8) -> list[SearchHit]: ...
+    def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]: ...
 
 
 class LLMLike(Protocol):
@@ -96,7 +125,9 @@ class AnswerPipeline:
         expansions: int = DEFAULT_EXPANSIONS,
         per_query_limit: int = DEFAULT_PER_QUERY_LIMIT,
         max_per_document: int = DEFAULT_MAX_PER_DOCUMENT,
+        neighbor_radius: int = DEFAULT_NEIGHBOR_RADIUS,
         utility_model: str | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(_SCHOOL_TZ),
     ) -> None:
         self._searcher = searcher
         self._llm = llm
@@ -107,8 +138,10 @@ class AnswerPipeline:
         self._candidates = candidates
         self._expansions = expansions
         self._per_query_limit = max(per_query_limit, candidates)
+        self._neighbor_radius = neighbor_radius
         self._max_per_document = max_per_document
         self._utility_model = utility_model
+        self._clock = clock
 
     @property
     def system_prompt(self) -> str:
@@ -135,13 +168,15 @@ class AnswerPipeline:
 
         if self._rerank:
             hits, confident = self._reranked(question, hits)
-            # A second, bounded hop: only when the first pass looks thin — the
-            # reranker had a full pool to choose from (AC below) but was confident
-            # in fewer chunks than we want for context, the classic shape of a
-            # question whose real terminology (a TaskCards term, an abbreviation)
-            # never appeared in the original question or its expansions. One hop
+            # A second, bounded hop: whenever the first pass looks thin — the
+            # reranker was confident in fewer chunks than we want for context, the
+            # classic shape of a question whose real terminology (a TaskCards term,
+            # an abbreviation) never appeared in the original question or its
+            # expansions. This runs a genuinely new query, not a re-search of the
+            # same pool, so a small original hit count is not a reason to skip it —
+            # if anything it is a stronger signal something is missing. One hop
             # only — the result of this second pass is never re-assessed.
-            if self._followup and confident < self._max_context and len(hits) >= self._max_context:
+            if self._followup and confident < self._max_context:
                 followup_query = self._followup_query(question, hits[: self._max_context])
                 if followup_query:
                     queries = [*queries, followup_query]
@@ -152,7 +187,9 @@ class AnswerPipeline:
         context_hits = hits[: self._max_context]
 
         prompt = ANSWER_TEMPLATE.format(
-            question=question, context=self._format_context(context_hits)
+            today=_format_weekday_date(self._clock()),
+            question=question,
+            context=self._format_context(context_hits),
         )
         try:
             raw = self._llm.generate(prompt, system=SYSTEM_PROMPT, purpose="answer")
@@ -188,7 +225,7 @@ class AnswerPipeline:
         except Exception as exc:  # AC-3
             log.info("rag.expand_failed", error=str(exc))
             return []
-        variants = [line.strip(" -•\t") for line in raw.splitlines() if line.strip()]
+        variants = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
         return [v for v in variants if v and v.lower() != question.lower()][: self._expansions]
 
     def _retrieve(self, question: str, queries: list[str]) -> list[SearchHit]:
@@ -215,7 +252,7 @@ class AnswerPipeline:
                 found.score = score
                 scored.append(found)
 
-        boosted = _boost_named_lernfeld(question, scored)
+        boosted = _boost(question, scored, today=self._clock().date())
         diversified = _diversify(boosted, max_per_document=self._max_per_document)
         return diversified[: self._candidates]
 
@@ -280,19 +317,34 @@ class AnswerPipeline:
         except Exception as exc:
             log.info("rag.followup_failed", error=str(exc))
             return None
-        query = raw.strip().splitlines()[0].strip(" -•\t") if raw.strip() else ""
-        if not query or query == "-" or query.lower() == question.lower():
+        query = raw.strip().splitlines()[0].strip(_STRIP_CHARS) if raw.strip() else ""
+        if not query or query.lower() == question.lower():
             return None
         return query[:200]
 
-    @staticmethod
-    def _format_context(hits: list[SearchHit]) -> str:
+    def _expanded_body(self, hit: SearchHit) -> str:
+        """Splice a hit's chunk with its ``neighbor_radius`` neighbours in the same
+        document (see ``DEFAULT_NEIGHBOR_RADIUS``); falls back to the hit's own
+        content alone if it has no neighbours (or isn't part of a multi-chunk
+        document at all).
+        """
+        neighbors = self._searcher.neighbors(hit.chunk_id, radius=self._neighbor_radius)
+        if not neighbors:
+            return hit.body or hit.text
+        return "\n\n".join((n.body or n.text) for n in neighbors)
+
+    def _format_context(self, hits: list[SearchHit]) -> str:
         blocks = []
         for index, hit in enumerate(hits, start=1):
             location = f", S. {hit.page}" if hit.page else ""
+            source_date = _format_weekday_date(
+                datetime.fromtimestamp(hit.source_date, tz=_SCHOOL_TZ), weekday=False
+            ) if hit.source_date else None
+            stand = f" (Stand: {source_date})" if source_date else ""
+            body = self._expanded_body(hit)
             blocks.append(
-                f"[QUELLE {index}] {hit.course_name} – {hit.header_text}{location}\n"
-                f"{_clip(hit.text, MAX_CHUNK_CHARS)}"
+                f"[QUELLE {index}] {hit.course_name} – {hit.header_text}{location}{stand}\n"
+                f"{_clip(body, MAX_EXPANDED_CHUNK_CHARS)}"
             )
         return "\n\n".join(blocks)
 
@@ -329,6 +381,10 @@ class AnswerPipeline:
 #: "LF10", "LF 10", "Lernfeld10", "lf06" — every phrasing a student actually types.
 _LERNFELD_RE = re.compile(r"\b(?:lf|lernfeld)\s*0?(\d{1,2})\b", re.I)
 
+_WEEKDAYS_DE_LOWER = (
+    "montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag",
+)
+
 
 def _detect_named_lernfeld(question: str) -> str | None:
     """Pull an explicitly-named Lernfeld number out of the question, if any."""
@@ -336,19 +392,8 @@ def _detect_named_lernfeld(question: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _boost_named_lernfeld(question: str, hits: list[SearchHit]) -> list[SearchHit]:
-    """Rank candidates whose breadcrumb names the question's Lernfeld first (AC-18).
-
-    The crawler already puts the section name — "Lernfeld 10" — into every chunk's
-    breadcrumb. That is an exact, low-noise signal existing purely lexically; when a
-    student names a Lernfeld explicitly, honour it over whatever BM25/embedding
-    scores happened to produce, rather than leaving it unused.
-    """
-    number = _detect_named_lernfeld(question)
-    if number is None:
-        return sorted(hits, key=lambda h: h.score, reverse=True)
-
-    needles = (
+def _lernfeld_needles(number: str) -> tuple[str, ...]:
+    return (
         f"lernfeld {number}",
         f"lernfeld 0{number}",
         f"lernfeld{number}",
@@ -359,10 +404,49 @@ def _boost_named_lernfeld(question: str, hits: list[SearchHit]) -> list[SearchHi
         f"lf 0{number}",
     )
 
-    def sort_key(hit: SearchHit) -> tuple[bool, float]:
-        header = hit.header_text.lower()
-        matches = any(needle in header for needle in needles)
-        return (matches, hit.score)
+
+def _detect_target_date(question: str, today: date) -> date | None:
+    """Resolve a relative date reference ('morgen', 'am Montag'...) to a real date.
+
+    A schedule document (a Blockplan) is chunked across many chunks, one per week,
+    each containing a different, mutually exclusive set of dates — BM25/embedding
+    scores cannot tell "the chunk for next week" from "the chunk for six weeks
+    ago", since both are about a Blockplan equally. Resolving the question's own
+    date reference against the school's real clock is what makes that distinction
+    checkable in _boost below.
+    """
+    q = question.lower()
+    if "übermorgen" in q:
+        return today + timedelta(days=2)
+    if "morgen" in q:
+        return today + timedelta(days=1)
+    if re.search(r"\bheute\b", q):
+        return today
+    for index, name in enumerate(_WEEKDAYS_DE_LOWER):
+        if name in q:
+            return today + timedelta(days=(index - today.weekday()) % 7)
+    return None
+
+
+def _boost(question: str, hits: list[SearchHit], *, today: date) -> list[SearchHit]:
+    """Rank candidates matching an explicit signal in the question first (AC-18
+    for Lernfeld; the date case is the same idea applied to schedule documents).
+
+    Both signals are exact, low-noise, and already present in the source text —
+    the crawler's breadcrumb already says "Lernfeld 10", a Blockplan chunk already
+    says "2026-08-24" — a generic retriever has no way to know either one matters
+    more than topical similarity, so whichever the question actually names is
+    honoured over whatever BM25/embedding scores happened to produce.
+    """
+    lernfeld = _detect_named_lernfeld(question)
+    lernfeld_needles = _lernfeld_needles(lernfeld) if lernfeld else ()
+    target_date = _detect_target_date(question, today)
+    date_needles = (f"{target_date:%Y-%m-%d}", f"{target_date:%d.%m.%Y}") if target_date else ()
+
+    def sort_key(hit: SearchHit) -> tuple[bool, bool, float]:
+        date_match = any(needle in hit.text for needle in date_needles)
+        lernfeld_match = any(needle in hit.header_text.lower() for needle in lernfeld_needles)
+        return (date_match, lernfeld_match, hit.score)
 
     return sorted(hits, key=sort_key, reverse=True)
 
@@ -387,6 +471,16 @@ def _diversify(hits: list[SearchHit], *, max_per_document: int) -> list[SearchHi
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
+
+
+def _format_weekday_date(when: datetime, *, weekday: bool = True) -> str:
+    """German ``Donnerstag, 21.08.2026`` — never locale-dependent ``%A``.
+
+    A Docker image typically has no German locale installed, so ``strftime("%A")``
+    would silently render English weekday names; spelling this out avoids that.
+    """
+    date = f"{when:%d.%m.%Y}"
+    return f"{_WEEKDAYS_DE[when.weekday()]}, {date}" if weekday else date
 
 
 __all__ = ["NO_ANSWER_TEXT", "REFUSAL_MARKER", "Answer", "AnswerPipeline", "Citation"]

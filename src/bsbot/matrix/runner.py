@@ -17,7 +17,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,17 @@ LOOP_SLEEP_TIME_MS = 1000
 #: not M_FORBIDDEN, which can mean many unrelated things (wrong room, banned,
 #: ...) and would make a proactive refresh a guess rather than a diagnosis.
 _TOKEN_REJECTED_CODES = frozenset({"M_UNKNOWN_TOKEN", "M_MISSING_TOKEN"})
+
+#: A laptop's lid closing (or any real network blip — a Wi-Fi drop, a homeserver
+#: restart) tears the connection down mid-read. nio does not catch the resulting
+#: httpx exception (observed live on 2026-08-21: an uncaught ReadError killed the
+#: whole process), so nothing above it in the stack gets a chance to reconnect —
+#: without an outer restart loop, a routine sleep/wake cycle is fatal.
+RESTART_BACKOFF_INITIAL_S = 5.0
+RESTART_BACKOFF_MAX_S = 300.0
+#: A run lasting at least this long counts as "recovered" — the next failure
+#: backs off from scratch rather than compounding on an old streak from hours ago.
+RESTART_HEALTHY_UPTIME_S = 120.0
 
 
 def is_token_rejected_error(status_code: str | None) -> bool:
@@ -379,6 +391,40 @@ class MatrixRunner:
                     client.verify_device(device)
 
 
+async def _run_with_restart(
+    run_once: Callable[[], Awaitable[None]],
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Restart ``run_once`` after any failure, with backoff.
+
+    A persistent problem (bad config, a homeserver that is actually down) should
+    not be hammered with instant retries — but a transient one (see the module
+    docstring: a laptop waking from sleep, a Wi-Fi blip) should recover within
+    seconds, not stay dead until someone notices and restarts it by hand.
+    """
+    backoff = RESTART_BACKOFF_INITIAL_S
+    while True:
+        started = clock()
+        try:
+            await run_once()
+            return
+        except asyncio.CancelledError:
+            log.info("matrix.stopped")
+            raise
+        except Exception as exc:
+            if clock() - started >= RESTART_HEALTHY_UPTIME_S:
+                backoff = RESTART_BACKOFF_INITIAL_S
+            log.warning(
+                "matrix.crashed_restarting",
+                error=f"{type(exc).__name__}: {exc}",
+                retry_in_seconds=backoff,
+            )
+            await sleep(backoff)
+            backoff = min(backoff * 2, RESTART_BACKOFF_MAX_S)
+
+
 async def run_bot(
     config: MatrixConfig,
     pipeline: PipelineLike,
@@ -387,18 +433,17 @@ async def run_bot(
     answer_all: bool = False,
     persist_tokens: Callable[[dict[str, str]], None] | None = None,
 ) -> None:
-    runner = MatrixRunner(
-        config,
-        pipeline,
-        store_dir=store_dir,
-        answer_all=answer_all,
-        persist_tokens=persist_tokens,
-    )
-    try:
+    async def run_once() -> None:
+        runner = MatrixRunner(
+            config,
+            pipeline,
+            store_dir=store_dir,
+            answer_all=answer_all,
+            persist_tokens=persist_tokens,
+        )
         await runner.run()
-    except asyncio.CancelledError:
-        log.info("matrix.stopped")
-        raise
+
+    await _run_with_restart(run_once)
 
 
 __all__ = ["MatrixRunner", "run_bot"]
