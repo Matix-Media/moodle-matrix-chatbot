@@ -469,7 +469,7 @@ def serve(
     settings = _settings()
     configure_logging(settings.log_level)
     try:
-        matrix = settings.require_matrix()
+        settings.require_matrix()  # fail fast on a bad config, not deep in the retry loop
         gemini = settings.require_gemini()
     except ConfigError as exc:
         _fail(str(exc))
@@ -495,7 +495,10 @@ def serve(
                 utility_model=gemini.utility_model,
             )
             await run_bot(
-                matrix,
+                # Re-resolved on every restart attempt, not just once — see
+                # run_bot's docstring for why a frozen config is exactly what
+                # let a dead-on-disk refresh token get retried forever.
+                lambda: load_settings().require_matrix(),
                 pipeline,
                 store_dir=settings.matrix_store_dir,
                 answer_all=answer_all,

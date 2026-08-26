@@ -124,6 +124,16 @@ class MatrixRunner:
         self._trust = trust_room_devices
         self._persist_tokens = persist_tokens
         self._token_lifetime = 0
+        # Mutable, unlike self._config: MAS rotates the refresh token on every
+        # use, and this is what every subsequent refresh within this process's
+        # lifetime actually sends — reading straight from the frozen config
+        # instead would keep resending the token from the very first refresh,
+        # which MAS has already invalidated by the second one. Found live: a
+        # deployment failed its very first scheduled 3-hourly renewal, exactly
+        # once, on every run, because renewal only ever reused the startup value.
+        self._refresh_token_value = (
+            config.refresh_token.get_secret_value() if config.refresh_token else None
+        )
         self._session_file = store_dir / "session.json"
         self._client: AsyncClient | None = None
         self._bot: BerufsschuleBot | None = None
@@ -259,15 +269,19 @@ class MatrixRunner:
         log.info("matrix.session.created", device=response.device_id)
 
     async def _refresh_token(self) -> str | None:
-        """Exchange the stored refresh token for a fresh access token.
+        """Exchange the current refresh token for a fresh access token.
 
         Returns ``None`` when no refresh credentials are configured, in which case
-        the configured access token is used as-is. MAS rotates refresh tokens, so
-        the new pair is written back to .env immediately — losing it would force the
-        browser flow again.
+        the configured access token is used as-is. MAS rotates refresh tokens on
+        every use — the new pair is written back to disk immediately (losing it
+        would force the browser flow again) *and* kept in memory
+        (``self._refresh_token_value``), since the next refresh within this same
+        process needs the just-rotated value, not the one from the very first
+        refresh at startup.
         """
         cfg = self._config
-        if not (cfg.refresh_token and cfg.oauth_client_id and cfg.oauth_token_endpoint):
+        refresh_token = self._refresh_token_value
+        if not (refresh_token and cfg.oauth_client_id and cfg.oauth_token_endpoint):
             return None
 
         from bsbot.matrix.oauth import DeviceGrantError, refresh_access_token
@@ -278,12 +292,14 @@ class MatrixRunner:
                     http,
                     cfg.oauth_token_endpoint,
                     cfg.oauth_client_id,
-                    cfg.refresh_token.get_secret_value(),
+                    refresh_token,
                 )
         except DeviceGrantError as exc:
             log.warning("matrix.token.refresh_failed", error=str(exc))
             return None
 
+        if tokens.refresh_token:
+            self._refresh_token_value = tokens.refresh_token
         if self._persist_tokens is not None:
             updates = {"BSBOT_MATRIX__ACCESS_TOKEN": tokens.access_token}
             if tokens.refresh_token:
@@ -443,16 +459,30 @@ async def _run_with_restart(
 
 
 async def run_bot(
-    config: MatrixConfig,
+    config_factory: Callable[[], MatrixConfig],
     pipeline: PipelineLike,
     *,
     store_dir: Path,
     answer_all: bool = False,
     persist_tokens: Callable[[dict[str, str]], None] | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
+    """Run the bot, restarting with backoff on any failure (see _run_with_restart).
+
+    ``config_factory`` is called again on every restart attempt, not just once —
+    otherwise a token rotated on disk by something else (another process, a
+    manual ``matrix-login``) while this one was stuck retrying with a stale,
+    already-rejected refresh token would never be noticed: the process would
+    keep retrying the exact value it started with, forever, instead of picking
+    up the valid one sitting right next to it. Observed live: exactly this,
+    diagnosed from a refresh token that died precisely on schedule (3h into a
+    4h token) with no activity from this process in between, meaning something
+    else had already consumed it.
+    """
+
     async def run_once() -> None:
         runner = MatrixRunner(
-            config,
+            config_factory(),
             pipeline,
             store_dir=store_dir,
             answer_all=answer_all,
@@ -460,7 +490,7 @@ async def run_bot(
         )
         await runner.run()
 
-    await _run_with_restart(run_once)
+    await _run_with_restart(run_once, sleep=sleep)
 
 
 __all__ = ["MatrixRunner", "run_bot"]

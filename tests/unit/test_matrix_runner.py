@@ -219,3 +219,115 @@ class TestRestartWithBackoff:
 
         with pytest.raises(asyncio.CancelledError):
             await _run_with_restart(run_once, sleep=fake_sleep, clock=lambda: 0.0)
+
+
+class TestRunBotReloadsConfigOnRestart:
+    """A frozen config was exactly what let a dead-on-disk refresh token get
+    retried forever: even after another process rotated it on disk, this
+    process kept retrying the stale value it started with, since nothing ever
+    looked at the file again. config_factory must run again on every restart
+    attempt, not just once at startup.
+    """
+
+    async def test_config_factory_is_called_on_every_restart_attempt(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from bsbot.config import MatrixConfig
+        from bsbot.matrix.runner import MatrixRunner, run_bot
+
+        attempts = 0
+
+        async def fake_run(self: MatrixRunner) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise ConnectionError("boom")
+
+        monkeypatch.setattr(MatrixRunner, "run", fake_run)
+
+        factory_calls = 0
+
+        def config_factory() -> MatrixConfig:
+            nonlocal factory_calls
+            factory_calls += 1
+            return MatrixConfig(
+                homeserver="https://matrix.example",
+                user_id="@bot:example",
+                password=None,
+                access_token=None,
+                device_id=None,
+                login_identifier=None,
+                refresh_token=None,
+                oauth_client_id=None,
+                oauth_token_endpoint=None,
+                device_name="bsbot",
+                room_ids=[],
+            )
+
+        async def fake_sleep(seconds: float) -> None:
+            return None
+
+        await run_bot(
+            config_factory,
+            pipeline=object(),  # type: ignore[arg-type]
+            store_dir=tmp_path,
+            sleep=fake_sleep,
+        )
+
+        assert attempts == 3
+        assert factory_calls == 3
+
+
+class TestRefreshTokenRotation:
+    """MAS rotates the refresh token on every use — the next refresh within the
+    same process must send the just-rotated value, not the one from the very
+    first refresh at startup. Found live: this broke every deployment's first
+    scheduled 3-hourly renewal, deterministically, on every run — not a race,
+    not a duplicate instance, just the second refresh always resending a token
+    MAS had already invalidated during the first one.
+    """
+
+    async def test_second_refresh_uses_the_token_the_first_one_returned(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from pydantic import SecretStr
+
+        import bsbot.matrix.oauth as oauth
+        from bsbot.config import MatrixConfig
+        from bsbot.matrix.oauth import TokenSet
+        from bsbot.matrix.runner import MatrixRunner
+
+        config = MatrixConfig(
+            homeserver="https://matrix.example",
+            user_id="@bot:example",
+            password=None,
+            access_token=None,
+            device_id="DEV",
+            login_identifier=None,
+            refresh_token=SecretStr("refresh-v1"),
+            oauth_client_id="client-id",
+            oauth_token_endpoint="https://matrix.example/token",
+            device_name="bsbot",
+            room_ids=[],
+        )
+        runner = MatrixRunner(config, pipeline=object(), store_dir=tmp_path)  # type: ignore[arg-type]
+
+        seen: list[str] = []
+
+        async def fake_refresh_access_token(http, token_endpoint, client_id, refresh_token):
+            seen.append(refresh_token)
+            # MAS issues a brand-new refresh token on every exchange.
+            return TokenSet(
+                access_token=f"access-{len(seen)}",
+                refresh_token=f"refresh-v{len(seen) + 1}",
+                expires_in=14400,
+            )
+
+        monkeypatch.setattr(oauth, "refresh_access_token", fake_refresh_access_token)
+
+        first = await runner._refresh_token()
+        second = await runner._refresh_token()
+
+        assert seen == ["refresh-v1", "refresh-v2"]
+        assert first == "access-1"
+        assert second == "access-2"
