@@ -362,7 +362,19 @@ class MatrixRunner:
 
     async def _on_sync_error(self, response: SyncError) -> None:
         """Log every sync failure through our own logging, and self-heal a
-        rejected token rather than retrying it forever (AC-26)."""
+        rejected token rather than retrying it forever (AC-26).
+
+        Raises when the refresh itself fails, rather than returning quietly.
+        nio's ``sync_forever`` re-raises any exception a response callback
+        raises and stops (a bare ``except: raise`` in
+        ``nio/client/async_client.py``, confirmed by reading the installed
+        source directly), which hands control to ``_run_with_restart``'s
+        backoff. Without this, a token rejection whose refresh can never
+        succeed — a revoked or expired refresh token — turned into a refresh
+        attempt on every single sync iteration forever: observed live, roughly
+        once a second, hammering the identity server indefinitely with a
+        request that could never succeed.
+        """
         log.warning(
             "matrix.sync_error",
             status_code=response.status_code,
@@ -374,6 +386,11 @@ class MatrixRunner:
         token = await self._refresh_token()
         if token and self._client is not None:
             self._client.access_token = token
+            return
+        raise RuntimeError(
+            "Matrix token was rejected and could not be refreshed. The refresh "
+            "token may be revoked or expired — run 'bsbot matrix-login' to re-authorise."
+        )
 
     def _trust_room_devices(self) -> None:
         """Trust devices in our rooms so we can actually decrypt (see module docstring)."""
