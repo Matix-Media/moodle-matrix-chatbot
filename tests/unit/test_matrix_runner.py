@@ -110,6 +110,30 @@ class TestSyncErrorHandling:
 
         assert refreshed == []
 
+    async def test_a_refresh_that_fails_raises_instead_of_retrying_silently(self) -> None:
+        """Regression: a revoked/expired refresh token can never succeed, so
+        returning quietly here left sync_forever retrying it on every single
+        iteration forever (observed live: roughly once a second). Raising lets
+        nio's own ``except: raise`` in sync_forever hand control to
+        _run_with_restart's backoff instead.
+        """
+        from bsbot.matrix.runner import MatrixRunner
+
+        class FakeError:
+            status_code = "M_UNKNOWN_TOKEN"
+            message = "Invalid access token"
+
+        runner = MatrixRunner.__new__(MatrixRunner)
+        runner._client = None  # type: ignore[attr-defined]
+
+        async def fake_refresh() -> str | None:
+            return None  # MAS rejected it -- refresh_access_token's failure mode
+
+        runner._refresh_token = fake_refresh  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="matrix-login"):
+            await runner._on_sync_error(FakeError())  # type: ignore[arg-type]
+
 
 class TestRestartWithBackoff:
     """A laptop's lid closing, a VPS's network blipping — both tear a live
