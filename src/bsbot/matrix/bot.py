@@ -122,7 +122,7 @@ class BerufsschuleBot:
             room.room_id,
             body_text,
             formatted,
-            reply_to=getattr(event, "event_id", None),
+            reply_to=self._thread_root_event_id(event),
             turn=(question, body_text) if grounded else None,
         )
 
@@ -134,6 +134,23 @@ class BerufsschuleBot:
         source = getattr(event, "source", None) or {}
         relates = (source.get("content") or {}).get("m.relates_to") or {}
         return (relates.get("m.in_reply_to") or {}).get("event_id")
+
+    def _thread_root_event_id(self, event: Any) -> str | None:
+        """The event our reply's thread should be rooted at (AC-7).
+
+        A student's message that continues an existing thread already carries
+        ``rel_type: m.thread`` with ``event_id`` pointing at that thread's root
+        (per MSC3440, the root never changes). Rooting our reply at the
+        triggering event instead — which is always a *reply within* the
+        thread, not the thread itself, from the second turn onward — would
+        start a brand new, disconnected thread on every turn instead of
+        continuing the one the student is actually looking at.
+        """
+        source = getattr(event, "source", None) or {}
+        relates = (source.get("content") or {}).get("m.relates_to") or {}
+        if relates.get("rel_type") == "m.thread" and relates.get("event_id"):
+            return relates["event_id"]
+        return getattr(event, "event_id", None)
 
     def _extract_question(self, body: str, event: Any) -> str | None:
         """Decide whether this message is aimed at us, and strip the trigger (AC-4/AC-6)."""

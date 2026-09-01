@@ -327,3 +327,37 @@ class TestConversationTurns:
         await bot.handle_message(FakeRoom(), second_event)
         assert pipeline.questions == ["Wann ist die Klausur?", "Und wo findet sie statt?"]
         assert pipeline.histories[1] == [("Wann ist die Klausur?", "Die Klausur ist am 15. März.")]
+
+    async def test_reply_within_an_existing_thread_stays_in_that_thread(self) -> None:
+        """AC-7 regression: a student replying a second time inside the thread the
+        bot already started must get an answer threaded to the *same* root — not a
+        brand new thread rooted at their reply, which would leave the answer
+        disconnected from the conversation the student is actually looking at.
+        """
+        bot, client, pipeline = make_bot()
+
+        # Student's reply already lives inside the thread the bot rooted at "$q1":
+        # per MSC3440 the root event_id never changes turn to turn, only
+        # m.in_reply_to (the fallback) advances to the latest event in the thread.
+        second_event = FakeEvent(
+            "Und wo findet sie statt?",
+            event_id="$q2",
+            source={
+                "content": {
+                    "m.relates_to": {
+                        "rel_type": "m.thread",
+                        "event_id": "$q1",
+                        "is_falling_back": True,
+                        "m.in_reply_to": {"event_id": "$bot_reply_1"},
+                    }
+                }
+            },
+        )
+        bot.remember_own_message("$bot_reply_1", turn=("Wann ist die Klausur?", "Antwort."))
+
+        await bot.handle_message(FakeRoom(), second_event)
+
+        assert pipeline.questions == ["Und wo findet sie statt?"]
+        relates = client.sent[0]["content"]["m.relates_to"]
+        assert relates["event_id"] == "$q1"
+        assert relates["m.in_reply_to"]["event_id"] == "$q1"

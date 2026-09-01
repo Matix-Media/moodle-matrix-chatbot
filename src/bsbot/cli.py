@@ -604,6 +604,9 @@ def serve(
         False, help="Extract only relevant sentences from chunks before generating answer."
     ),
     no_crag: bool = typer.Option(False, help="Disable CRAG actionable fallback search links."),
+    suggest_followup: bool = typer.Option(
+        True, help="Show proactive suggested follow-up questions after each answer."
+    ),
 ) -> None:
     """Run the Matrix bot (M7). Requires Matrix and Gemini configuration."""
     settings = _settings()
@@ -636,6 +639,7 @@ def serve(
                 step_back=not no_step_back,
                 compress_context=compress_context,
                 crag=not no_crag,
+                suggest_followup=suggest_followup,
                 moodle_base_url=settings.moodle.base_url
                 if settings.moodle.base_url
                 else "https://moodle.itech-bs14.de",
