@@ -456,9 +456,13 @@ class AnswerPipeline:
         blocks = []
         for index, hit in enumerate(hits, start=1):
             location = f", S. {hit.page}" if hit.page else ""
-            source_date = _format_weekday_date(
-                datetime.fromtimestamp(hit.source_date, tz=_SCHOOL_TZ), weekday=False
-            ) if hit.source_date else None
+            source_date = (
+                _format_weekday_date(
+                    datetime.fromtimestamp(hit.source_date, tz=_SCHOOL_TZ), weekday=False
+                )
+                if hit.source_date
+                else None
+            )
             stand = f" (Stand: {source_date})" if source_date else ""
             body = self._expanded_body(hit)
             if self._compress_context and question:
@@ -504,12 +508,17 @@ class AnswerPipeline:
         return Answer(text=text, citations=citations, grounded=True, used_queries=queries)
 
 
-
 #: "LF10", "LF 10", "Lernfeld10", "lf06" — every phrasing a student actually types.
 _LERNFELD_RE = re.compile(r"\b(?:lf|lernfeld)\s*0?(\d{1,2})\b", re.I)
 
 _WEEKDAYS_DE_LOWER = (
-    "montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag",
+    "montag",
+    "dienstag",
+    "mittwoch",
+    "donnerstag",
+    "freitag",
+    "samstag",
+    "sonntag",
 )
 
 

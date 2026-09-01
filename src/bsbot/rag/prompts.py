@@ -166,5 +166,3 @@ Inhalt:
 
 Gib nur die Zusammenfassung aus, ohne Einleitung oder Floskeln.
 """
-
-

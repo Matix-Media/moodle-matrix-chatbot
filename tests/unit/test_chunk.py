@@ -122,8 +122,7 @@ class TestSemanticChunking:
         def fake_embedder(sentences: list[str]) -> list[list[float]]:
             # Vector [1.0, 0.0] for networking, [0.0, 1.0] for exams
             return [
-                [1.0, 0.0] if ("TCP" in s or "IP-Adresse" in s) else [0.0, 1.0]
-                for s in sentences
+                [1.0, 0.0] if ("TCP" in s or "IP-Adresse" in s) else [0.0, 1.0] for s in sentences
             ]
 
         chunks = chunk_segments(
@@ -143,6 +142,7 @@ class TestSemanticChunking:
     )
     def test_semantic_chunking_threshold_types(self, b_type: str) -> None:
         text = "Satz eins. Satz zwei. Neuer Abschnitt Satz drei. Satz vier."
+
         def fake_embedder(sentences: list[str]) -> list[list[float]]:
             return [[1.0, 0.0] if i < 2 else [0.0, 1.0] for i in range(len(sentences))]
 
@@ -168,4 +168,3 @@ class TestSemanticChunking:
             target_chars=200,
         )
         assert len(chunks) > 1
-

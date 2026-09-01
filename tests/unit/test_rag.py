@@ -620,9 +620,7 @@ class TestQueryDecomposition:
             }
         )
         searcher = FakeSearcher([hit(1, "Inhalt.")])
-        pipeline = AnswerPipeline(
-            searcher, llm, expand=False, rerank=False, decompose=True
-        )  # type: ignore[arg-type]
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False, decompose=True)  # type: ignore[arg-type]
         q = "Brauche ich für Mathe einen Taschenrechner und wann ist die Klausur?"
         pipeline.answer(q)
         assert q in searcher.queries
@@ -632,9 +630,7 @@ class TestQueryDecomposition:
     def test_decomposition_failure_falls_back_to_original(self) -> None:
         llm = FakeLLM(fail={"decompose"})
         searcher = FakeSearcher([hit(1, "Inhalt.")])
-        pipeline = AnswerPipeline(
-            searcher, llm, expand=False, rerank=False, decompose=True
-        )  # type: ignore[arg-type]
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False, decompose=True)  # type: ignore[arg-type]
         answer = pipeline.answer("Komplexe Frage?")
         assert searcher.queries == ["Komplexe Frage?"]
         assert answer.grounded
@@ -648,9 +644,7 @@ class TestStepBackPrompting:
             }
         )
         searcher = FakeSearcher([hit(1, "Inhalt.")])
-        pipeline = AnswerPipeline(
-            searcher, llm, expand=False, rerank=False, step_back=True
-        )  # type: ignore[arg-type]
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False, step_back=True)  # type: ignore[arg-type]
         pipeline.answer("Warum habe ich in Moodle keinen Zugriff auf den LF6 Upload?")
         assert "Warum habe ich in Moodle keinen Zugriff auf den LF6 Upload?" in searcher.queries
         assert "Moodle Kurs Einschreibungen und Abgabefristen" in searcher.queries
@@ -658,9 +652,7 @@ class TestStepBackPrompting:
     def test_step_back_failure_gracefully_degrades(self) -> None:
         llm = FakeLLM(fail={"step_back"})
         searcher = FakeSearcher([hit(1, "Inhalt.")])
-        pipeline = AnswerPipeline(
-            searcher, llm, expand=False, rerank=False, step_back=True
-        )  # type: ignore[arg-type]
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False, step_back=True)  # type: ignore[arg-type]
         answer = pipeline.answer("Spezifische Frage?")
         assert searcher.queries == ["Spezifische Frage?"]
         assert answer.grounded
@@ -678,9 +670,7 @@ class TestContextualCompression:
             "Unwichtiger Text vorab. Klausurtermin: 15.03.2026 um 09:00 Uhr. Text danach.",
         )
         searcher = FakeSearcher([primary])
-        pipeline = AnswerPipeline(
-            searcher, llm, expand=False, rerank=False, compress_context=True
-        )  # type: ignore[arg-type]
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False, compress_context=True)  # type: ignore[arg-type]
         pipeline.answer("Wann ist die Klausur?")
         answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
         assert "Klausurtermin: 15.03.2026 um 09:00 Uhr." in answer_prompt
@@ -690,9 +680,7 @@ class TestContextualCompression:
         llm = FakeLLM(fail={"compress_context"})
         primary = hit(1, "Originaler Inhalt bleibt erhalten.")
         searcher = FakeSearcher([primary])
-        pipeline = AnswerPipeline(
-            searcher, llm, expand=False, rerank=False, compress_context=True
-        )  # type: ignore[arg-type]
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False, compress_context=True)  # type: ignore[arg-type]
         pipeline.answer("Frage?")
         answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
         assert "Originaler Inhalt bleibt erhalten." in answer_prompt
@@ -721,4 +709,3 @@ class TestCRAGAndActionableFallback:
         answer = pipeline.answer("LF12 Projektbewertung")
         assert not answer.grounded
         assert "moodle.itech-bs14.de/search/index.php?q=LF12+Projektbewertung" in answer.text
-

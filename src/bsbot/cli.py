@@ -302,7 +302,6 @@ def index(
                 ).index_pending(limit=limit or None)
             total_chunks = store.connection.execute("select count(*) from chunks").fetchone()[0]
 
-
         typer.secho(
             f"indexed {stats.indexed} documents into {stats.chunks} chunks",
             fg=typer.colors.GREEN,
@@ -489,7 +488,9 @@ def ask(
             step_back=not no_step_back,
             compress_context=compress_context,
             crag=not no_crag,
-            moodle_base_url=settings.moodle.base_url if settings.moodle.base_url else "https://moodle.itech-bs14.de",
+            moodle_base_url=settings.moodle.base_url
+            if settings.moodle.base_url
+            else "https://moodle.itech-bs14.de",
             utility_model=gemini.utility_model,
         )
         answer = pipeline.answer(question)
@@ -552,7 +553,9 @@ def serve(
                 step_back=not no_step_back,
                 compress_context=compress_context,
                 crag=not no_crag,
-                moodle_base_url=settings.moodle.base_url if settings.moodle.base_url else "https://moodle.itech-bs14.de",
+                moodle_base_url=settings.moodle.base_url
+                if settings.moodle.base_url
+                else "https://moodle.itech-bs14.de",
                 utility_model=gemini.utility_model,
             )
             await run_bot(

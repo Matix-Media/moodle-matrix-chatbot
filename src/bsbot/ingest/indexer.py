@@ -324,7 +324,6 @@ class Indexer:
         if document.text:
             return [Segment(text=document.text)], None
 
-
         # YouTube and TaskCards produce text directly (a transcript, a rendered
         # board) rather than bytes to run through the generic extractor, so they
         # are handled before the generic fetch-and-extract path below.

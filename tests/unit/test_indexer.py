@@ -438,4 +438,3 @@ class TestHierarchicalSummarization:
         assert "Zusammenfassung" in chunks[0].header_text
         assert "Grundlagen der Netzwerktechnik" in chunks[0].text
         assert chunks[0].meta.get("summary") is True
-

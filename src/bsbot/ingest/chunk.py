@@ -195,8 +195,7 @@ def semantic_chunk_segments(
 
     # Compute distances between consecutive sentences
     distances = [
-        _cosine_distance(embeddings[i], embeddings[i + 1])
-        for i in range(len(embeddings) - 1)
+        _cosine_distance(embeddings[i], embeddings[i + 1]) for i in range(len(embeddings) - 1)
     ]
     threshold = _calculate_breakpoint_threshold(distances, breakpoint_type, breakpoint_amount)
 
@@ -320,4 +319,3 @@ def _tail(text: str, size: int) -> str:
     tail = text[-size:]
     space = tail.find(" ")
     return tail[space + 1 :] if space != -1 else tail
-
