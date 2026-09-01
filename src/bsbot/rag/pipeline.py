@@ -23,6 +23,7 @@ from bsbot.index.search import SearchHit, reciprocal_rank_fusion
 from bsbot.rag.prompts import (
     ANSWER_TEMPLATE,
     COMPRESS_CONTEXT_TEMPLATE,
+    CONDENSE_QUESTION_TEMPLATE,
     CRAG_EVALUATE_TEMPLATE,
     DECOMPOSE_TEMPLATE,
     EXPAND_TEMPLATE,
@@ -30,6 +31,7 @@ from bsbot.rag.prompts import (
     REFUSAL_MARKER,
     RERANK_TEMPLATE,
     STEP_BACK_TEMPLATE,
+    SUGGEST_FOLLOWUP_TEMPLATE,
     SYSTEM_PROMPT,
 )
 
@@ -58,32 +60,17 @@ MAX_CHUNK_CHARS = 1800
 #: costs nothing when a document has no useful neighbours (nothing else nearby).
 DEFAULT_NEIGHBOR_RADIUS = 2
 #: Ceiling on a citation's total spliced size, independent of radius — merging
-#: 5 chunks (radius 2) should give the model more to work with, not let one
-#: unusually verbose document balloon the whole prompt.
-MAX_EXPANDED_CHUNK_CHARS = MAX_CHUNK_CHARS * 3
-
-#: Chars stripped from a model line before treating it as real content. Includes
-#: Unicode dash variants deliberately, not just ASCII hyphen-minus: asked for "einen
-#: Bindestrich", Gemini returns an en-dash (–, U+2013) far more often than "-"
-#: (U+002D) — observed live: 4 of 5 real calls. Stripping only "-" left "–" looking
-#: like a genuine (garbage) search query instead of "nothing to add".
-_STRIP_CHARS = " -–—•\t"
-
-#: The audience is one Hamburg Berufsschule, so its own timezone, not server-local
-#: or UTC time, decides what "heute"/"morgen" mean. tzdata is a pinned dependency
-#: (see pyproject.toml) so this resolves correctly even on a minimal Docker image
-#: that has no system timezone database.
+#: five 1800-char chunks into one 9000-char wall of text would starve the other
+#: candidates of context budget.
+MAX_EXPANDED_CHUNK_CHARS = 3600
+NO_ANSWER_TEXT = "Dazu habe ich leider keine Informationen im Moodle gefunden."
 _SCHOOL_TZ = ZoneInfo("Europe/Berlin")
 _WEEKDAYS_DE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
-
-NO_ANSWER_TEXT = (
-    "Dazu finde ich nichts in Moodle. Vielleicht steht es in einem Kurs, auf den ich "
-    "keinen Zugriff habe – oder frag bitte direkt bei der Lehrkraft nach."
-)
+_STRIP_CHARS = " -–—•\t\r\n0123456789.)"
 
 
 class SearcherLike(Protocol):
-    def search(self, query: str, *, limit: int = 8) -> list[SearchHit]: ...
+    def search(self, query: str, *, limit: int = 12) -> list[SearchHit]: ...
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]: ...
 
 
@@ -114,6 +101,7 @@ class Answer(BaseModel):
     grounded: bool = False
     error: str | None = None
     used_queries: list[str] = []
+    suggested_questions: list[str] = []
 
 
 class AnswerPipeline:
@@ -129,6 +117,7 @@ class AnswerPipeline:
         step_back: bool = False,
         compress_context: bool = False,
         crag: bool = False,
+        suggest_followup: bool = False,
         moodle_base_url: str | None = None,
         max_context_chunks: int = DEFAULT_MAX_CONTEXT_CHUNKS,
         candidates: int = DEFAULT_CANDIDATES,
@@ -148,6 +137,7 @@ class AnswerPipeline:
         self._step_back = step_back
         self._compress_context = compress_context
         self._crag = crag
+        self._suggest_followup = suggest_followup
         self._moodle_base_url = moodle_base_url
         self._max_context = max_context_chunks
         self._candidates = candidates
@@ -162,18 +152,25 @@ class AnswerPipeline:
     def system_prompt(self) -> str:
         return SYSTEM_PROMPT
 
-    def answer(self, question: str) -> Answer:
+    def answer(self, question: str, *, history: list[tuple[str, str]] | None = None) -> Answer:
         question = (question or "").strip()
         log.info("rag.question", question=question)
-        queries = [question] if question else []
 
-        if question and self._decompose:
-            decomposed = self._decomposed_queries(question)
+        search_question = question
+        if history and question:
+            search_question = self._condense_question(question, history)
+
+        queries = [search_question] if search_question else []
+        if question and search_question != question and question not in queries:
+            queries.append(question)
+
+        if search_question and self._decompose:
+            decomposed = self._decomposed_queries(search_question)
             for sub_q in decomposed:
                 if sub_q not in queries:
                     queries.append(sub_q)
 
-        if question and self._expand:
+        if search_question and self._expand:
             expanded: list[str] = []
             for q in list(queries):
                 expanded.extend(self._expanded_queries(q))
@@ -181,12 +178,12 @@ class AnswerPipeline:
                 if eq not in queries:
                     queries.append(eq)
 
-        if question and self._step_back:
-            step_back = self._step_back_query(question)
+        if search_question and self._step_back:
+            step_back = self._step_back_query(search_question)
             if step_back and step_back not in queries:
                 queries.append(step_back)
 
-        hits = self._retrieve(question, queries)
+        hits = self._retrieve(search_question, queries)
         log.info(
             "rag.retrieved",
             queries=queries,
@@ -195,14 +192,16 @@ class AnswerPipeline:
         )
         if not hits:
             fallback_text = (
-                self._actionable_fallback(question) if (self._crag and question) else NO_ANSWER_TEXT
+                self._actionable_fallback(search_question)
+                if (self._crag and search_question)
+                else NO_ANSWER_TEXT
             )
             result = Answer(text=fallback_text, grounded=False, used_queries=queries)
             log.info("rag.answered", grounded=False, citations=0)
             return result
 
         if self._rerank:
-            hits, confident = self._reranked(question, hits)
+            hits, confident = self._reranked(search_question, hits)
             # A second, bounded hop: whenever the first pass looks thin — the
             # reranker was confident in fewer chunks than we want for context, the
             # classic shape of a question whose real terminology (a TaskCards term,
@@ -212,19 +211,25 @@ class AnswerPipeline:
             # if anything it is a stronger signal something is missing. One hop
             # only — the result of this second pass is never re-assessed.
             if self._followup and confident < self._max_context:
-                followup_query = self._followup_query(question, hits[: self._max_context])
+                followup_query = self._followup_query(search_question, hits[: self._max_context])
                 if followup_query:
                     queries = [*queries, followup_query]
-                    retried = self._retrieve(question, queries)
+                    retried = self._retrieve(search_question, queries)
                     log.info("rag.followup", query=followup_query, hits=len(retried))
                     if retried:
-                        hits, confident = self._reranked(question, retried)
+                        hits, confident = self._reranked(search_question, retried)
         context_hits = hits[: self._max_context]
+
+        history_section = ""
+        if history:
+            history_lines = [f"Schüler/in: {q}\nAssistent: {a}" for q, a in history[-3:]]
+            history_section = "Bisheriger Gesprächsverlauf:\n" + "\n\n".join(history_lines) + "\n\n"
 
         prompt = ANSWER_TEMPLATE.format(
             today=_format_weekday_date(self._clock()),
+            history_section=history_section,
             question=question,
-            context=self._format_context(context_hits, question=question),
+            context=self._format_context(context_hits, question=search_question),
         )
         try:
             raw = self._llm.generate(prompt, system=SYSTEM_PROMPT, purpose="answer")
@@ -243,10 +248,50 @@ class AnswerPipeline:
             return result
 
         result = self._finalise(raw, context_hits, queries, question=question)
+        if self._suggest_followup and result.grounded and result.text:
+            result.suggested_questions = self._suggest_followup_questions(question, result.text)
         log.info("rag.answered", grounded=result.grounded, citations=len(result.citations))
         return result
 
     # ------------------------------------------------------------------ #
+
+    def _condense_question(self, question: str, history: list[tuple[str, str]]) -> str:
+        """Rewrite a follow-up question into a standalone search query given chat history."""
+        if not history:
+            return question
+        history_lines = [f"Schüler/in: {q}\nAssistent: {a}" for q, a in history[-3:]]
+        chat_history = "\n\n".join(history_lines)
+        prompt = CONDENSE_QUESTION_TEMPLATE.format(chat_history=chat_history, question=question)
+        try:
+            raw = self._llm.generate(
+                prompt,
+                purpose="condense_question",
+                model=self._utility_model,
+                temperature=0.0,
+            )
+            condensed = raw.strip().strip("\"' ")
+            if condensed:
+                log.info("rag.condensed", question=question, condensed=condensed)
+                return condensed
+        except Exception as exc:
+            log.info("rag.condense_failed", error=str(exc))
+        return question
+
+    def _suggest_followup_questions(self, question: str, answer: str) -> list[str]:
+        """Generate 2-3 proactive follow-up questions for the student."""
+        prompt = SUGGEST_FOLLOWUP_TEMPLATE.format(question=question, answer=_clip(answer, 1000))
+        try:
+            raw = self._llm.generate(
+                prompt,
+                purpose="suggest_followup",
+                model=self._utility_model,
+                temperature=0.3,
+            )
+            lines = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
+            return [line for line in lines if line and line.endswith("?")][:3]
+        except Exception as exc:
+            log.info("rag.suggest_followup_failed", error=str(exc))
+            return []
 
     def _decomposed_queries(self, question: str) -> list[str]:
         """Decompose compound or multi-part questions into sub-queries."""

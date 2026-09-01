@@ -457,6 +457,9 @@ def ask(
         False, help="Extract only relevant sentences from chunks before generating answer."
     ),
     no_crag: bool = typer.Option(False, help="Disable CRAG actionable fallback search links."),
+    suggest_followup: bool = typer.Option(
+        False, help="Generate proactive suggested follow-up questions."
+    ),
 ) -> None:
     """Answer a question from the indexed Moodle content, with citations (M6)."""
     settings = _settings()
@@ -488,6 +491,7 @@ def ask(
             step_back=not no_step_back,
             compress_context=compress_context,
             crag=not no_crag,
+            suggest_followup=suggest_followup,
             moodle_base_url=settings.moodle.base_url
             if settings.moodle.base_url
             else "https://moodle.itech-bs14.de",
@@ -504,8 +508,87 @@ def ask(
             typer.echo(f"  [{citation.index}] {citation.header_text}{page}")
             if citation.url:
                 typer.echo(f"      {citation.url}")
+    if answer.suggested_questions:
+        typer.secho("\n💡 Mögliche Folgefragen:", bold=True)
+        for sq in answer.suggested_questions:
+            typer.echo(f"  • {sq}")
     if answer.used_queries and len(answer.used_queries) > 1:
         typer.secho(f"\n(Suchanfragen: {' | '.join(answer.used_queries)})", dim=True)
+
+
+@app.command()
+def chat(
+    suggest_followup: bool = typer.Option(
+        True, help="Show proactive suggested follow-up questions after each answer."
+    ),
+) -> None:
+    """Start an interactive multi-turn terminal chat with conversation memory."""
+    settings = _settings()
+    configure_logging("WARNING")
+    try:
+        gemini = settings.require_gemini()
+    except ConfigError as exc:
+        _fail(str(exc))
+        return
+
+    with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
+        client = GeminiClient(gemini)
+        embedder = GeminiEmbedder(
+            client,
+            store=store,
+            model=gemini.embed_model,
+            dim=gemini.embed_dim,
+            batch_size=gemini.embed_batch_size,
+            rpm=gemini.embed_rpm,
+            items_per_minute=gemini.embed_items_per_minute,
+        )
+        pipeline = AnswerPipeline(
+            HybridSearcher(store, embedder=embedder),
+            client,
+            decompose=True,
+            step_back=True,
+            crag=True,
+            suggest_followup=suggest_followup,
+            moodle_base_url=settings.moodle.base_url
+            if settings.moodle.base_url
+            else "https://moodle.itech-bs14.de",
+            utility_model=gemini.utility_model,
+        )
+
+        typer.secho("bsbot Multi-Turn Chat (Tippe 'exit' oder Strg+C zum Beenden)\n", bold=True)
+        history: list[tuple[str, str]] = []
+
+        while True:
+            try:
+                question = typer.prompt("Du").strip()
+            except (KeyboardInterrupt, EOFError):
+                typer.echo("\nAuf Wiedersehen!")
+                break
+
+            if not question:
+                continue
+            if question.lower() in ("exit", "quit", "q"):
+                typer.echo("Auf Wiedersehen!")
+                break
+
+            answer = pipeline.answer(question, history=history)
+            if answer.grounded:
+                history.append((question, answer.text))
+
+            colour = typer.colors.GREEN if answer.grounded else typer.colors.YELLOW
+            typer.secho(f"\n{answer.text}\n", fg=colour)
+            if answer.citations:
+                typer.secho("Quellen:", bold=True)
+                for citation in answer.citations:
+                    page = f", S. {citation.page}" if citation.page else ""
+                    typer.echo(f"  [{citation.index}] {citation.header_text}{page}")
+                    if citation.url:
+                        typer.echo(f"      {citation.url}")
+            if answer.suggested_questions:
+                typer.secho("\n💡 Mögliche Folgefragen:", bold=True)
+                for sq in answer.suggested_questions:
+                    typer.echo(f"  • {sq}")
+            typer.echo()
 
 
 @app.command()

@@ -709,3 +709,51 @@ class TestCRAGAndActionableFallback:
         answer = pipeline.answer("LF12 Projektbewertung")
         assert not answer.grounded
         assert "moodle.itech-bs14.de/search/index.php?q=LF12+Projektbewertung" in answer.text
+
+
+class TestConversationalCondensing:
+    def test_followup_question_condenses_with_history(self) -> None:
+        llm = FakeLLM(
+            {
+                "condense_question": "Wo findet die LF5 Klausur statt?",
+            }
+        )
+        searcher = FakeSearcher([hit(1, "Raum 204.")])
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False)  # type: ignore[arg-type]
+        history = [("Wann ist die LF5 Klausur?", "Am 15.03.2026 um 9:00 Uhr.")]
+        pipeline.answer("Und wo findet sie statt?", history=history)
+
+        assert "Wo findet die LF5 Klausur statt?" in searcher.queries
+        answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
+        assert "Bisheriger Gesprächsverlauf:" in answer_prompt
+        assert "Wann ist die LF5 Klausur?" in answer_prompt
+
+    def test_condense_failure_falls_back_to_raw_question(self) -> None:
+        llm = FakeLLM(fail={"condense_question"})
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(searcher, llm, expand=False, rerank=False)  # type: ignore[arg-type]
+        history = [("Erste Frage?", "Erste Antwort.")]
+        pipeline.answer("Folgefrage?", history=history)
+        assert "Folgefrage?" in searcher.queries
+
+
+class TestSuggestedFollowupQuestions:
+    def test_suggests_followup_questions_on_grounded_answer(self) -> None:
+        llm = FakeLLM(
+            {
+                "suggest_followup": "Welche Hilfsmittel sind erlaubt?\nBis wann muss man da sein?",
+            }
+        )
+        pipeline, _, _ = make([hit(1, "Klausurinfo.")], llm=llm, suggest_followup=True)
+        answer = pipeline.answer("Wann ist die Klausur?")
+        assert answer.grounded
+        assert len(answer.suggested_questions) == 2
+        assert "Welche Hilfsmittel sind erlaubt?" in answer.suggested_questions
+        assert "Bis wann muss man da sein?" in answer.suggested_questions
+
+    def test_no_suggested_questions_on_refusal(self) -> None:
+        llm = FakeLLM({"answer": REFUSAL_MARKER})
+        pipeline, _, _ = make([], llm=llm, suggest_followup=True)
+        answer = pipeline.answer("Unbekannte Frage?")
+        assert not answer.grounded
+        assert answer.suggested_questions == []

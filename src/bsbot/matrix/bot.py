@@ -37,7 +37,7 @@ class ClientLike(Protocol):
 
 
 class PipelineLike(Protocol):
-    def answer(self, question: str) -> Answer: ...
+    def answer(self, question: str, *, history: list[tuple[str, str]] | None = ...) -> Answer: ...
 
 
 @dataclass
@@ -57,12 +57,15 @@ class BerufsschuleBot:
         self._pipeline = pipeline
         self._policy = policy
         self._own_events: set[str] = set()
+        self._turn_history: dict[str, tuple[str, str]] = {}
         self._recent: dict[str, list[float]] = {}
         self._notified: set[str] = set()
 
-    def remember_own_message(self, event_id: str) -> None:
+    def remember_own_message(self, event_id: str, turn: tuple[str, str] | None = None) -> None:
         """Track our own messages so a reply to one counts as addressing us."""
         self._own_events.add(event_id)
+        if turn:
+            self._turn_history[event_id] = turn
 
     async def handle_message(self, room: Any, event: Any, *, msgtype: str = "m.text") -> None:
         if msgtype != "m.text":  # AC-14
@@ -94,10 +97,15 @@ class BerufsschuleBot:
             return
         self._notified.discard(sender)
 
+        replied_to = self._get_replied_event_id(event)
+        history: list[tuple[str, str]] = []
+        if replied_to and replied_to in self._turn_history:
+            history.append(self._turn_history[replied_to])
+
         await self._client.room_typing(room.room_id, True)
         grounded = False
         try:
-            answer = self._pipeline.answer(question)
+            answer = self._pipeline.answer(question, history=history or None)
             grounded = answer.grounded
             body_text, formatted = _render(answer)
         except Exception as exc:  # AC-10
@@ -111,11 +119,21 @@ class BerufsschuleBot:
             await self._client.room_typing(room.room_id, False)
 
         await self._send(
-            room.room_id, body_text, formatted, reply_to=getattr(event, "event_id", None)
+            room.room_id,
+            body_text,
+            formatted,
+            reply_to=getattr(event, "event_id", None),
+            turn=(question, body_text) if grounded else None,
         )
+
         log.info("bot.replied", room=room.room_id, grounded=grounded)
 
     # ------------------------------------------------------------------ #
+
+    def _get_replied_event_id(self, event: Any) -> str | None:
+        source = getattr(event, "source", None) or {}
+        relates = (source.get("content") or {}).get("m.relates_to") or {}
+        return (relates.get("m.in_reply_to") or {}).get("event_id")
 
     def _extract_question(self, body: str, event: Any) -> str | None:
         """Decide whether this message is aimed at us, and strip the trigger (AC-4/AC-6)."""
@@ -182,7 +200,8 @@ class BerufsschuleBot:
         formatted: str | None = None,
         *,
         reply_to: str | None = None,
-    ) -> None:
+        turn: tuple[str, str] | None = None,
+    ) -> str | None:
         content: dict[str, Any] = {"msgtype": "m.notice", "body": body}
         if formatted:
             content["format"] = "org.matrix.custom.html"
@@ -200,7 +219,8 @@ class BerufsschuleBot:
         )
         event_id = getattr(response, "event_id", None)
         if event_id:
-            self.remember_own_message(event_id)
+            self.remember_own_message(event_id, turn=turn)
+        return event_id
 
 
 def _render(answer: Answer) -> tuple[str, str | None]:
@@ -224,6 +244,14 @@ def _render(answer: Answer) -> tuple[str, str | None]:
                 )
             else:
                 formatted.append(f"<li>[{citation.index}] {safe}</li>")
+        formatted.append("</ul>")
+
+    if answer.suggested_questions:
+        plain.append("\n💡 Mögliche Folgefragen:")
+        formatted.append("<br/>💡 <b>Mögliche Folgefragen:</b><ul>")
+        for sq in answer.suggested_questions:
+            plain.append(f"• {sq}")
+            formatted.append(f"<li>{html.escape(sq)}</li>")
         formatted.append("</ul>")
 
     return "\n".join(plain), "".join(formatted)

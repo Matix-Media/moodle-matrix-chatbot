@@ -56,9 +56,11 @@ class FakePipeline:
         self._answer = answer or Answer(text="Antwort.", grounded=True)
         self._raises = raises
         self.questions: list[str] = []
+        self.histories: list[list[tuple[str, str]] | None] = []
 
-    def answer(self, question: str) -> Answer:
+    def answer(self, question: str, *, history: list[tuple[str, str]] | None = None) -> Answer:
         self.questions.append(question)
+        self.histories.append(history)
         if self._raises:
             raise RuntimeError("pipeline exploded")
         return self._answer
@@ -293,3 +295,35 @@ class TestTransparencyLogging:
         with structlog.testing.capture_logs() as logs:
             await bot.handle_message(FakeRoom(), FakeEvent("Just chatting, no trigger here"))
         assert not [e for e in logs if e.get("event") == "bot.triggered"]
+
+
+class TestConversationTurns:
+    async def test_reply_to_bot_message_passes_conversation_history(self) -> None:
+        pipeline = FakePipeline(Answer(text="Die Klausur ist am 15. März.", grounded=True))
+        bot, client, pipeline = make_bot(pipeline=pipeline)
+
+        # First turn: bot answers and remembers its sent event
+        first_event = FakeEvent("!bs Wann ist die Klausur?", event_id="$first_q")
+
+        # Configure client response for first message
+        class FakeResponse:
+            event_id = "$bot_reply_1"
+
+        async def fake_room_send(room_id, msg_type, content, **kw):
+            return FakeResponse()
+
+        client.room_send = fake_room_send  # type: ignore[assignment]
+
+        await bot.handle_message(FakeRoom(), first_event)
+        assert pipeline.questions == ["Wann ist die Klausur?"]
+        assert pipeline.histories == [None]
+
+        # Second turn: student replies to bot's reply event $bot_reply_1
+        second_event = FakeEvent(
+            "Und wo findet sie statt?",
+            event_id="$second_q",
+            source={"content": {"m.relates_to": {"m.in_reply_to": {"event_id": "$bot_reply_1"}}}},
+        )
+        await bot.handle_message(FakeRoom(), second_event)
+        assert pipeline.questions == ["Wann ist die Klausur?", "Und wo findet sie statt?"]
+        assert pipeline.histories[1] == [("Wann ist die Klausur?", "Die Klausur ist am 15. März.")]
