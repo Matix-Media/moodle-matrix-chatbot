@@ -147,9 +147,7 @@ class TestHybridSearch:
         assert hit.header_text
         assert hit.text
 
-    def test_native_document_reports_moodle_timemodified_as_source_date(
-        self, store: Store
-    ) -> None:
+    def test_native_document_reports_moodle_timemodified_as_source_date(self, store: Store) -> None:
         """A Moodle-owned file's own timemodified is trustworthy — use it directly."""
         store.persist_crawl([doc("a", timemodified=555)])
         ids = store.replace_chunks("a", [("Inhalt.", {"ordinal": 0})], header_text="X")
