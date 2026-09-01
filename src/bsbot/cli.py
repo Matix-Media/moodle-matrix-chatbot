@@ -654,6 +654,8 @@ def serve(
                 store_dir=settings.matrix_store_dir,
                 answer_all=answer_all,
                 persist_tokens=lambda values: _write_env(values, settings.token_overrides_file),
+                store=store,
+                embedder=embedder,
             )
 
     try:

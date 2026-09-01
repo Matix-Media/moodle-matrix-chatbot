@@ -653,6 +653,134 @@ class Store:
             )
 
     # ------------------------------------------------------------------ #
+    # Matrix Moderator Messages
+    # ------------------------------------------------------------------ #
+
+    def index_matrix_message(
+        self,
+        room_id: str,
+        event_id: str,
+        sender: str,
+        text: str,
+        timemodified: int,
+        *,
+        room_name: str = "",
+        max_history_per_room: int = 10,
+        embedder: Any = None,
+        now: int | None = None,
+    ) -> list[int]:
+        """Index a message from a room moderator with channel-scoped metadata and embed it."""
+        stamp = now if now is not None else int(time.time())
+        doc_id = f"matrix:{room_id}:{event_id}"
+        room_label = room_name or room_id
+        header_path = ["Matrix", room_label, f"Mitteilung von {sender}"]
+        header_text = " › ".join(header_path)
+        chunk_text = f"{header_text}\n\n{text}"
+        module_url = f"https://matrix.to/#/{room_id}/{event_id}"
+        filesize = len(text.encode("utf-8"))
+
+        con = self.connection
+        with con:
+            con.execute(
+                """
+                INSERT INTO documents (
+                    doc_id, course_id, course_name, section_name, module_id, module_name,
+                    modname, title, kind, header_path, module_url, timemodified, text,
+                    filesize, extractable, first_seen, last_seen, tombstoned_at, content_changed_at
+                ) VALUES (
+                    ?, 0, ?, ?, 0, ?,
+                    'matrix_message', ?, 'inline', ?, ?, ?, ?,
+                    ?, 1, ?, ?, NULL, ?
+                )
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    course_name=excluded.course_name,
+                    section_name=excluded.section_name,
+                    module_name=excluded.module_name,
+                    title=excluded.title,
+                    header_path=excluded.header_path,
+                    module_url=excluded.module_url,
+                    timemodified=excluded.timemodified,
+                    text=excluded.text,
+                    filesize=excluded.filesize,
+                    last_seen=excluded.last_seen,
+                    tombstoned_at=NULL,
+                    content_changed_at=excluded.content_changed_at
+                """,
+                (
+                    doc_id,
+                    f"Matrix: {room_label}",
+                    room_id,
+                    f"Mitteilung von {sender}",
+                    f"Mitteilung von {sender}",
+                    json.dumps(header_path, ensure_ascii=False),
+                    module_url,
+                    timemodified,
+                    text,
+                    filesize,
+                    stamp,
+                    stamp,
+                    stamp,
+                ),
+            )
+
+        meta = {
+            "header_text": header_text,
+            "body": text,
+            "room_id": room_id,
+            "sender": sender,
+            "event_id": event_id,
+        }
+        chunk_ids = self.replace_chunks(doc_id, [(chunk_text, meta)], header_text=header_text)
+
+        if embedder is not None and chunk_ids:
+            try:
+                if hasattr(embedder, "embed_documents"):
+                    vecs = embedder.embed_documents([chunk_text])
+                    if vecs and vecs[0]:
+                        self.set_embedding(chunk_ids[0], vecs[0])
+                elif hasattr(embedder, "embed_query"):
+                    vec = embedder.embed_query(chunk_text)
+                    if vec:
+                        self.set_embedding(chunk_ids[0], vec)
+            except Exception as exc:
+                log.warning("store.matrix_embed_failed", doc_id=doc_id, error=str(exc))
+
+        if max_history_per_room > 0:
+            self.prune_matrix_messages(
+                room_id, max_history_per_room=max_history_per_room, now=stamp
+            )
+
+        return chunk_ids
+
+    def prune_matrix_messages(
+        self, room_id: str, *, max_history_per_room: int = 10, now: int | None = None
+    ) -> list[str]:
+        """Keep only the most recent N active moderator messages for a room."""
+        stamp = now if now is not None else int(time.time())
+        con = self.connection
+        rows = con.execute(
+            "SELECT doc_id FROM documents "
+            "WHERE doc_id LIKE 'matrix:' || ? || ':%' AND tombstoned_at IS NULL "
+            "ORDER BY timemodified DESC, rowid DESC",
+            (room_id,),
+        ).fetchall()
+
+        if len(rows) <= max_history_per_room:
+            return []
+
+        excess = [r["doc_id"] for r in rows[max_history_per_room:]]
+        with con:
+            for old_doc_id in excess:
+                self._delete_chunks(con, old_doc_id)
+            marks = ",".join("?" * len(excess))
+            con.execute(
+                f"UPDATE documents SET tombstoned_at=? WHERE doc_id IN ({marks})",
+                [stamp, *excess],
+            )
+        log.info("store.matrix_pruned", room=room_id, count=len(excess))
+        return excess
+
+    # ------------------------------------------------------------------ #
     # Vectors
     # ------------------------------------------------------------------ #
 

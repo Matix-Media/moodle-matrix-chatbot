@@ -37,7 +37,13 @@ class ClientLike(Protocol):
 
 
 class PipelineLike(Protocol):
-    def answer(self, question: str, *, history: list[tuple[str, str]] | None = ...) -> Answer: ...
+    def answer(
+        self,
+        question: str,
+        *,
+        history: list[tuple[str, str]] | None = ...,
+        room_id: str | None = ...,
+    ) -> Answer: ...
 
 
 @dataclass
@@ -49,13 +55,26 @@ class BotPolicy:
     started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     answer_all: bool = False
     max_per_user_per_minute: int = 4
+    mod_power_level: int = 50
+    max_matrix_history: int = 10
+    embed_mod_messages: bool = True
 
 
 class BerufsschuleBot:
-    def __init__(self, client: ClientLike, pipeline: PipelineLike, policy: BotPolicy) -> None:
+    def __init__(
+        self,
+        client: ClientLike,
+        pipeline: PipelineLike,
+        policy: BotPolicy,
+        *,
+        store: Any | None = None,
+        embedder: Any | None = None,
+    ) -> None:
         self._client = client
         self._pipeline = pipeline
         self._policy = policy
+        self._store = store
+        self._embedder = embedder
         self._own_events: set[str] = set()
         self._turn_history: dict[str, tuple[str, str]] = {}
         self._recent: dict[str, list[float]] = {}
@@ -67,6 +86,32 @@ class BerufsschuleBot:
         if turn:
             self._turn_history[event_id] = turn
 
+    def _is_moderator(self, room: Any, sender: str) -> bool:
+        power_levels = getattr(room, "power_levels", None)
+        if power_levels is not None:
+            if hasattr(power_levels, "get_user_level") and callable(power_levels.get_user_level):
+                return int(power_levels.get_user_level(sender)) >= self._policy.mod_power_level
+            if hasattr(power_levels, "users") and isinstance(power_levels.users, dict):
+                default = getattr(power_levels, "users_default", 0) or 0
+                return int(power_levels.users.get(sender, default)) >= self._policy.mod_power_level
+        return False
+
+    def _is_addressed_to_bot(self, body: str, event: Any) -> bool:
+        if not body:
+            return False
+        trigger = self._policy.trigger
+        if body.lower().startswith(trigger.lower()):
+            return True
+        for name in (self._policy.user_id, self._policy.display_name):
+            if not name:
+                continue
+            pattern = re.compile(rf"^{re.escape(name)}\s*[:,]?\s*", re.I)
+            if pattern.match(body):
+                return True
+        if self._is_reply_to_us(event):
+            return True
+        return bool(self._is_mentioned(event))
+
     async def handle_message(self, room: Any, event: Any, *, msgtype: str = "m.text") -> None:
         if msgtype != "m.text":  # AC-14
             return
@@ -75,11 +120,50 @@ class BerufsschuleBot:
         sender = getattr(event, "sender", "")
         if sender == self._policy.user_id:  # AC-2
             return
+
+        body = (getattr(event, "body", "") or "").strip()
+        if not body:
+            return
+
+        # Ingest and embed moderator messages as channel-scoped knowledge
+        if (
+            self._policy.embed_mod_messages
+            and self._store is not None
+            and self._is_moderator(room, sender)
+            and not self._is_addressed_to_bot(body, event)
+        ):
+            event_id = getattr(event, "event_id", "") or f"${int(time.time() * 1000)}"
+            raw_ts = getattr(event, "server_timestamp", 0) or int(time.time() * 1000)
+            timemodified = raw_ts // 1000 if raw_ts > 10_000_000_000 else raw_ts
+            room_name = (
+                getattr(room, "display_name", "")
+                or getattr(room, "name", "")
+                or room.room_id
+            )
+            try:
+                self._store.index_matrix_message(
+                    room_id=room.room_id,
+                    event_id=event_id,
+                    sender=sender,
+                    text=body,
+                    timemodified=timemodified,
+                    room_name=room_name,
+                    max_history_per_room=self._policy.max_matrix_history,
+                    embedder=self._embedder,
+                )
+                log.info(
+                    "matrix.mod_message_embedded",
+                    room=room.room_id,
+                    sender=sender,
+                    event_id=event_id,
+                )
+            except Exception as exc:
+                log.warning("matrix.embed_failed", error=f"{type(exc).__name__}: {exc}")
+
         # AC-3: a restart must not re-answer the room's backlog.
         if getattr(event, "server_timestamp", 0) < self._policy.started_at_ms:
             return
 
-        body = (getattr(event, "body", "") or "").strip()
         question = self._extract_question(body, event)
         if not question:
             return
@@ -105,7 +189,12 @@ class BerufsschuleBot:
         await self._client.room_typing(room.room_id, True)
         grounded = False
         try:
-            answer = self._pipeline.answer(question, history=history or None)
+            try:
+                answer = self._pipeline.answer(
+                    question, history=history or None, room_id=room.room_id
+                )
+            except TypeError:
+                answer = self._pipeline.answer(question, history=history or None)
             grounded = answer.grounded
             body_text, formatted = _render(answer)
         except Exception as exc:  # AC-10

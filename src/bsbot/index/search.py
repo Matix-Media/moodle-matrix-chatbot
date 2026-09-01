@@ -109,9 +109,9 @@ class HybridSearcher:
         self._embedder = embedder
         self._depth = candidate_depth
 
-    def search(self, query: str, *, limit: int = 8) -> list[SearchHit]:
-        keyword_ids = self._keyword_search(query)
-        vector_ids = self._vector_search(query)
+    def search(self, query: str, *, limit: int = 8, room_id: str | None = None) -> list[SearchHit]:
+        keyword_ids = self._keyword_search(query, room_id=room_id)
+        vector_ids = self._vector_search(query, room_id=room_id)
 
         ranked = reciprocal_rank_fusion([keyword_ids, vector_ids])
         if not ranked:
@@ -132,29 +132,45 @@ class HybridSearcher:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
 
-    def _keyword_search(self, query: str) -> list[str]:
+    def _keyword_search(self, query: str, *, room_id: str | None = None) -> list[str]:
         match = fts5_escape(query)
         if not match:
             return []
         try:
-            rows = self._store.connection.execute(
-                """
-                SELECT c.chunk_id
-                FROM chunks_fts f
-                JOIN chunks c ON c.chunk_id = f.rowid
-                JOIN documents d ON d.doc_id = c.doc_id
-                WHERE chunks_fts MATCH ? AND d.tombstoned_at IS NULL
-                ORDER BY bm25(chunks_fts, 1.0, 0.5)
-                LIMIT ?
-                """,
-                (match, self._depth),
-            ).fetchall()
+            if room_id:
+                rows = self._store.connection.execute(
+                    """
+                    SELECT c.chunk_id
+                    FROM chunks_fts f
+                    JOIN chunks c ON c.chunk_id = f.rowid
+                    JOIN documents d ON d.doc_id = c.doc_id
+                    WHERE chunks_fts MATCH ? AND d.tombstoned_at IS NULL
+                      AND (d.doc_id NOT LIKE 'matrix:%' OR d.doc_id LIKE 'matrix:' || ? || ':%')
+                    ORDER BY bm25(chunks_fts, 1.0, 0.5)
+                    LIMIT ?
+                    """,
+                    (match, room_id, self._depth),
+                ).fetchall()
+            else:
+                rows = self._store.connection.execute(
+                    """
+                    SELECT c.chunk_id
+                    FROM chunks_fts f
+                    JOIN chunks c ON c.chunk_id = f.rowid
+                    JOIN documents d ON d.doc_id = c.doc_id
+                    WHERE chunks_fts MATCH ? AND d.tombstoned_at IS NULL
+                      AND d.doc_id NOT LIKE 'matrix:%'
+                    ORDER BY bm25(chunks_fts, 1.0, 0.5)
+                    LIMIT ?
+                    """,
+                    (match, self._depth),
+                ).fetchall()
         except Exception as exc:  # a malformed query must never break the bot
             log.warning("search.fts_failed", error=str(exc))
             return []
         return [str(r[0]) for r in rows]
 
-    def _vector_search(self, query: str) -> list[str]:
+    def _vector_search(self, query: str, *, room_id: str | None = None) -> list[str]:
         if self._embedder is None:
             return []  # AC-14: keyword-only is still useful
         try:
@@ -169,17 +185,32 @@ class HybridSearcher:
 
         packed = struct.pack(f"{len(vector)}f", *vector)
         try:
-            rows = self._store.connection.execute(
-                """
-                SELECT v.chunk_id
-                FROM chunks_vec v
-                JOIN chunks c ON c.chunk_id = v.chunk_id
-                JOIN documents d ON d.doc_id = c.doc_id
-                WHERE v.embedding MATCH ? AND k = ? AND d.tombstoned_at IS NULL
-                ORDER BY distance
-                """,
-                (packed, self._depth),
-            ).fetchall()
+            if room_id:
+                rows = self._store.connection.execute(
+                    """
+                    SELECT v.chunk_id
+                    FROM chunks_vec v
+                    JOIN chunks c ON c.chunk_id = v.chunk_id
+                    JOIN documents d ON d.doc_id = c.doc_id
+                    WHERE v.embedding MATCH ? AND k = ? AND d.tombstoned_at IS NULL
+                      AND (d.doc_id NOT LIKE 'matrix:%' OR d.doc_id LIKE 'matrix:' || ? || ':%')
+                    ORDER BY distance
+                    """,
+                    (packed, self._depth, room_id),
+                ).fetchall()
+            else:
+                rows = self._store.connection.execute(
+                    """
+                    SELECT v.chunk_id
+                    FROM chunks_vec v
+                    JOIN chunks c ON c.chunk_id = v.chunk_id
+                    JOIN documents d ON d.doc_id = c.doc_id
+                    WHERE v.embedding MATCH ? AND k = ? AND d.tombstoned_at IS NULL
+                      AND d.doc_id NOT LIKE 'matrix:%'
+                    ORDER BY distance
+                    """,
+                    (packed, self._depth),
+                ).fetchall()
         except Exception as exc:
             log.warning("search.vec_failed", error=str(exc))
             return []

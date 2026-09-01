@@ -116,6 +116,8 @@ class MatrixRunner:
         answer_all: bool = False,
         trust_room_devices: bool = True,
         persist_tokens: Callable[[dict[str, str]], None] | None = None,
+        store: Any | None = None,
+        embedder: Any | None = None,
     ) -> None:
         self._config = config
         self._pipeline = pipeline
@@ -123,6 +125,8 @@ class MatrixRunner:
         self._answer_all = answer_all
         self._trust = trust_room_devices
         self._persist_tokens = persist_tokens
+        self._store = store
+        self._embedder = embedder
         self._token_lifetime = 0
         # Mutable, unlike self._config: MAS rotates the refresh token on every
         # use, and this is what every subsequent refresh within this process's
@@ -169,7 +173,9 @@ class MatrixRunner:
                 display_name=self._config.device_name,
                 answer_all=self._answer_all,
             )
-            self._bot = BerufsschuleBot(client, self._pipeline, policy)
+            self._bot = BerufsschuleBot(
+                client, self._pipeline, policy, store=self._store, embedder=self._embedder
+            )
 
             client.add_event_callback(self._on_message, RoomMessageText)
             client.add_event_callback(self._on_invite, InviteMemberEvent)
@@ -466,6 +472,8 @@ async def run_bot(
     answer_all: bool = False,
     persist_tokens: Callable[[dict[str, str]], None] | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    store: Any | None = None,
+    embedder: Any | None = None,
 ) -> None:
     """Run the bot, restarting with backoff on any failure (see _run_with_restart).
 
@@ -487,6 +495,8 @@ async def run_bot(
             store_dir=store_dir,
             answer_all=answer_all,
             persist_tokens=persist_tokens,
+            store=store,
+            embedder=embedder,
         )
         await runner.run()
 

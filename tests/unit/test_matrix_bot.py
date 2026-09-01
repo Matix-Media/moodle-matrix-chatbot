@@ -31,9 +31,19 @@ class FakeEvent:
 
 
 @dataclass
+class FakePowerLevels:
+    users: dict[str, int] = field(default_factory=dict)
+    users_default: int = 0
+
+    def get_user_level(self, user_id: str) -> int:
+        return self.users.get(user_id, self.users_default)
+
+
+@dataclass
 class FakeRoom:
     room_id: str = ROOM
     display_name: str = "IT4"
+    power_levels: Any = None
 
 
 class FakeClient:
@@ -58,7 +68,13 @@ class FakePipeline:
         self.questions: list[str] = []
         self.histories: list[list[tuple[str, str]] | None] = []
 
-    def answer(self, question: str, *, history: list[tuple[str, str]] | None = None) -> Answer:
+    def answer(
+        self,
+        question: str,
+        *,
+        history: list[tuple[str, str]] | None = None,
+        room_id: str | None = None,
+    ) -> Answer:
         self.questions.append(question)
         self.histories.append(history)
         if self._raises:
@@ -67,14 +83,17 @@ class FakePipeline:
 
 
 def make_bot(
-    pipeline: FakePipeline | None = None, **policy_kw
+    pipeline: FakePipeline | None = None,
+    store: Any | None = None,
+    embedder: Any | None = None,
+    **policy_kw,
 ) -> tuple[BerufsschuleBot, FakeClient, FakePipeline]:
     client = FakeClient()
     pipeline = pipeline or FakePipeline()
     policy = BotPolicy(
         room_ids={ROOM}, user_id=BOT_ID, display_name="bsbot", started_at_ms=START, **policy_kw
     )
-    bot = BerufsschuleBot(client, pipeline, policy)  # type: ignore[arg-type]
+    bot = BerufsschuleBot(client, pipeline, policy, store=store, embedder=embedder)  # type: ignore[arg-type]
     return bot, client, pipeline
 
 
@@ -361,3 +380,96 @@ class TestConversationTurns:
         relates = client.sent[0]["content"]["m.relates_to"]
         assert relates["event_id"] == "$q1"
         assert relates["m.in_reply_to"]["event_id"] == "$q1"
+
+
+class FakeStore:
+    def __init__(self) -> None:
+        self.indexed: list[dict[str, Any]] = []
+
+    def index_matrix_message(
+        self,
+        room_id: str,
+        event_id: str,
+        sender: str,
+        text: str,
+        timemodified: int,
+        *,
+        room_name: str = "",
+        max_history_per_room: int = 10,
+        embedder: Any = None,
+        now: int | None = None,
+    ) -> list[int]:
+        self.indexed.append(
+            {
+                "room_id": room_id,
+                "event_id": event_id,
+                "sender": sender,
+                "text": text,
+                "timemodified": timemodified,
+                "room_name": room_name,
+                "max_history_per_room": max_history_per_room,
+            }
+        )
+        return [1]
+
+
+class TestModeratorMessageIngestion:
+    async def test_moderator_message_is_indexed_and_embedded(self) -> None:
+        store = FakeStore()
+        bot, _, _ = make_bot(store=store)
+        room = FakeRoom(
+            room_id=ROOM,
+            display_name="IT4",
+            power_levels=FakePowerLevels(users={"@teacher:example.org": 50}),
+        )
+        event = FakeEvent(
+            "Wichtige Ankündigung: Am Freitag kein Unterricht.",
+            sender="@teacher:example.org",
+            event_id="$mod_msg_1",
+            server_timestamp=1725187200000,
+        )
+        await bot.handle_message(room, event)
+
+        assert len(store.indexed) == 1
+        entry = store.indexed[0]
+        assert entry["room_id"] == ROOM
+        assert entry["event_id"] == "$mod_msg_1"
+        assert entry["sender"] == "@teacher:example.org"
+        assert entry["text"] == "Wichtige Ankündigung: Am Freitag kein Unterricht."
+        assert entry["timemodified"] == 1725187200
+        assert entry["room_name"] == "IT4"
+        assert entry["max_history_per_room"] == 10
+
+    async def test_normal_user_message_is_not_indexed(self) -> None:
+        store = FakeStore()
+        bot, _, _ = make_bot(store=store)
+        room = FakeRoom(
+            room_id=ROOM,
+            display_name="IT4",
+            power_levels=FakePowerLevels(users={"@student:example.org": 0}),
+        )
+        event = FakeEvent(
+            "Wer hat die Hausaufgaben?",
+            sender="@student:example.org",
+            event_id="$student_msg_1",
+        )
+        await bot.handle_message(room, event)
+        assert store.indexed == []
+
+    async def test_bot_command_by_moderator_is_not_indexed_as_announcement(self) -> None:
+        store = FakeStore()
+        bot, _, pipeline = make_bot(store=store)
+        room = FakeRoom(
+            room_id=ROOM,
+            display_name="IT4",
+            power_levels=FakePowerLevels(users={"@teacher:example.org": 50}),
+        )
+        event = FakeEvent(
+            "!bs Wann beginnt das Praktikum?",
+            sender="@teacher:example.org",
+            event_id="$mod_cmd_1",
+        )
+        await bot.handle_message(room, event)
+        # It should be answered by the bot, not indexed as a moderator knowledge announcement
+        assert store.indexed == []
+        assert pipeline.questions == ["Wann beginnt das Praktikum?"]

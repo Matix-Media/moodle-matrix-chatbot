@@ -235,3 +235,56 @@ class TestNeighbors:
         )
         neighbors = HybridSearcher(store, embedder=None).neighbors(ids[0], radius=0)
         assert neighbors[0].body == "Nur der Inhalt."
+
+
+class TestChannelScopedRetrieval:
+    def test_channel_scoping_retrieval(self, store: Store) -> None:
+        # Moodle doc
+        store.persist_crawl([doc("moodle_doc", title="Allgemeines Skript")])
+        store.replace_chunks(
+            "moodle_doc",
+            [("LF05IT › Skript\n\nPrüfungsthemen für alle Klassen.", {"ordinal": 0})],
+            header_text="LF05IT › Skript",
+        )
+
+        # Moderator message in Room A
+        store.index_matrix_message(
+            room_id="!roomA:example.org",
+            event_id="$msgA",
+            sender="@lehrerA:example.org",
+            text="Klasse A hat die Prüfung am Montag.",
+            timemodified=1000,
+            room_name="Klasse A",
+        )
+
+        # Moderator message in Room B
+        store.index_matrix_message(
+            room_id="!roomB:example.org",
+            event_id="$msgB",
+            sender="@lehrerB:example.org",
+            text="Klasse B hat die Prüfung am Dienstag.",
+            timemodified=1000,
+            room_name="Klasse B",
+        )
+
+        searcher = HybridSearcher(store, embedder=None)
+
+        # Query from Room A: should get Moodle doc + Room A msg, but NOT Room B msg
+        hits_a = searcher.search("Prüfung", room_id="!roomA:example.org")
+        doc_ids_a = {h.doc_id for h in hits_a}
+        assert "moodle_doc" in doc_ids_a
+        assert "matrix:!roomA:example.org:$msgA" in doc_ids_a
+        assert "matrix:!roomB:example.org:$msgB" not in doc_ids_a
+
+        # Query from Room B: should get Moodle doc + Room B msg, but NOT Room A msg
+        hits_b = searcher.search("Prüfung", room_id="!roomB:example.org")
+        doc_ids_b = {h.doc_id for h in hits_b}
+        assert "moodle_doc" in doc_ids_b
+        assert "matrix:!roomB:example.org:$msgB" in doc_ids_b
+        assert "matrix:!roomA:example.org:$msgA" not in doc_ids_b
+
+        # Query with no room_id: should get Moodle doc, but no matrix messages
+        hits_none = searcher.search("Prüfung", room_id=None)
+        doc_ids_none = {h.doc_id for h in hits_none}
+        assert "moodle_doc" in doc_ids_none
+        assert not any(d.startswith("matrix:") for d in doc_ids_none)

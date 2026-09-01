@@ -361,3 +361,45 @@ class TestTargetedExtractionReset:
     def test_unknown_doc_ids_are_silently_ignored(self, store: Store) -> None:
         store.persist_crawl([item("a")])
         assert store.reset_extraction_for_doc_ids(["does-not-exist"]) == 0
+
+
+class TestMatrixModeratorMessages:
+    def test_index_and_prune_matrix_messages(self, store: Store) -> None:
+        room_id = "!klasse:example.org"
+        chunk_ids = store.index_matrix_message(
+            room_id=room_id,
+            event_id="$msg1",
+            sender="@lehrer:example.org",
+            text="Die Klausur findet am Montag statt.",
+            timemodified=1000,
+            room_name="IT4",
+        )
+        assert len(chunk_ids) == 1
+        doc = store.document(f"matrix:{room_id}:$msg1")
+        assert doc.course_name == "Matrix: IT4"
+        assert doc.module_url == f"https://matrix.to/#/{room_id}/$msg1"
+        assert doc.timemodified == 1000
+
+        # Index 10 more messages to exceed max_history_per_room=10
+        for i in range(2, 12):
+            store.index_matrix_message(
+                room_id=room_id,
+                event_id=f"$msg{i}",
+                sender="@lehrer:example.org",
+                text=f"Mitteilung {i}",
+                timemodified=1000 + i,
+                room_name="IT4",
+                max_history_per_room=10,
+            )
+
+        active = [
+            r["doc_id"]
+            for r in store.connection.execute(
+                "SELECT doc_id FROM documents "
+                "WHERE doc_id LIKE 'matrix:%' AND tombstoned_at IS NULL"
+            ).fetchall()
+        ]
+        assert len(active) == 10
+        assert f"matrix:{room_id}:$msg1" not in active
+        assert f"matrix:{room_id}:$msg11" in active
+        assert store.chunks_for(f"matrix:{room_id}:$msg1") == []

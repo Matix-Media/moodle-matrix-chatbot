@@ -70,7 +70,9 @@ _STRIP_CHARS = " -–—•\t\r\n0123456789.)"
 
 
 class SearcherLike(Protocol):
-    def search(self, query: str, *, limit: int = 12) -> list[SearchHit]: ...
+    def search(
+        self, query: str, *, limit: int = 12, room_id: str | None = None
+    ) -> list[SearchHit]: ...
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]: ...
 
 
@@ -152,9 +154,15 @@ class AnswerPipeline:
     def system_prompt(self) -> str:
         return SYSTEM_PROMPT
 
-    def answer(self, question: str, *, history: list[tuple[str, str]] | None = None) -> Answer:
+    def answer(
+        self,
+        question: str,
+        *,
+        history: list[tuple[str, str]] | None = None,
+        room_id: str | None = None,
+    ) -> Answer:
         question = (question or "").strip()
-        log.info("rag.question", question=question)
+        log.info("rag.question", question=question, room_id=room_id)
 
         search_question = question
         if history and question:
@@ -183,7 +191,7 @@ class AnswerPipeline:
             if step_back and step_back not in queries:
                 queries.append(step_back)
 
-        hits = self._retrieve(search_question, queries)
+        hits = self._retrieve(search_question, queries, room_id=room_id)
         log.info(
             "rag.retrieved",
             queries=queries,
@@ -214,7 +222,7 @@ class AnswerPipeline:
                 followup_query = self._followup_query(search_question, hits[: self._max_context])
                 if followup_query:
                     queries = [*queries, followup_query]
-                    retried = self._retrieve(search_question, queries)
+                    retried = self._retrieve(search_question, queries, room_id=room_id)
                     log.info("rag.followup", query=followup_query, hits=len(retried))
                     if retried:
                         hits, confident = self._reranked(search_question, retried)
@@ -392,7 +400,9 @@ class AnswerPipeline:
         variants = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
         return [v for v in variants if v and v.lower() != question.lower()][: self._expansions]
 
-    def _retrieve(self, question: str, queries: list[str]) -> list[SearchHit]:
+    def _retrieve(
+        self, question: str, queries: list[str], *, room_id: str | None = None
+    ) -> list[SearchHit]:
         """Retrieve per query, fuse, boost, and diversify.
 
         Each query variant is fetched at ``per_query_limit`` — wider than the final
@@ -403,7 +413,15 @@ class AnswerPipeline:
         ranked_lists: list[list[str]] = []
         by_id: dict[str, SearchHit] = {}
         for query in queries:
-            hits = self._searcher.search(query, limit=self._per_query_limit)
+            if room_id is not None:
+                try:
+                    hits = self._searcher.search(
+                        query, limit=self._per_query_limit, room_id=room_id
+                    )
+                except TypeError:
+                    hits = self._searcher.search(query, limit=self._per_query_limit)
+            else:
+                hits = self._searcher.search(query, limit=self._per_query_limit)
             ranked_lists.append([str(h.chunk_id) for h in hits])
             for h in hits:
                 by_id.setdefault(str(h.chunk_id), h)
