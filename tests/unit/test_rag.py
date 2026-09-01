@@ -610,3 +610,115 @@ class TestScheduleDateBoost:
         pipeline.answer("Allgemeine Frage ohne Datumsbezug?")
         _, prompt = llm.prompts[0]
         assert "2026-07-01" in prompt
+
+
+class TestQueryDecomposition:
+    def test_compound_question_decomposes_into_subqueries(self) -> None:
+        llm = FakeLLM(
+            {
+                "decompose": "Brauche ich einen Taschenrechner?\nWann ist die Mathe Klausur?",
+            }
+        )
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(
+            searcher, llm, expand=False, rerank=False, decompose=True
+        )  # type: ignore[arg-type]
+        q = "Brauche ich für Mathe einen Taschenrechner und wann ist die Klausur?"
+        pipeline.answer(q)
+        assert q in searcher.queries
+        assert "Brauche ich einen Taschenrechner?" in searcher.queries
+        assert "Wann ist die Mathe Klausur?" in searcher.queries
+
+    def test_decomposition_failure_falls_back_to_original(self) -> None:
+        llm = FakeLLM(fail={"decompose"})
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(
+            searcher, llm, expand=False, rerank=False, decompose=True
+        )  # type: ignore[arg-type]
+        answer = pipeline.answer("Komplexe Frage?")
+        assert searcher.queries == ["Komplexe Frage?"]
+        assert answer.grounded
+
+
+class TestStepBackPrompting:
+    def test_step_back_query_added_to_retrieval(self) -> None:
+        llm = FakeLLM(
+            {
+                "step_back": "Moodle Kurs Einschreibungen und Abgabefristen",
+            }
+        )
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(
+            searcher, llm, expand=False, rerank=False, step_back=True
+        )  # type: ignore[arg-type]
+        pipeline.answer("Warum habe ich in Moodle keinen Zugriff auf den LF6 Upload?")
+        assert "Warum habe ich in Moodle keinen Zugriff auf den LF6 Upload?" in searcher.queries
+        assert "Moodle Kurs Einschreibungen und Abgabefristen" in searcher.queries
+
+    def test_step_back_failure_gracefully_degrades(self) -> None:
+        llm = FakeLLM(fail={"step_back"})
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(
+            searcher, llm, expand=False, rerank=False, step_back=True
+        )  # type: ignore[arg-type]
+        answer = pipeline.answer("Spezifische Frage?")
+        assert searcher.queries == ["Spezifische Frage?"]
+        assert answer.grounded
+
+
+class TestContextualCompression:
+    def test_compression_extracts_relevant_facts(self) -> None:
+        llm = FakeLLM(
+            {
+                "compress_context": "Klausurtermin: 15.03.2026 um 09:00 Uhr.",
+            }
+        )
+        primary = hit(
+            1,
+            "Unwichtiger Text vorab. Klausurtermin: 15.03.2026 um 09:00 Uhr. Text danach.",
+        )
+        searcher = FakeSearcher([primary])
+        pipeline = AnswerPipeline(
+            searcher, llm, expand=False, rerank=False, compress_context=True
+        )  # type: ignore[arg-type]
+        pipeline.answer("Wann ist die Klausur?")
+        answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
+        assert "Klausurtermin: 15.03.2026 um 09:00 Uhr." in answer_prompt
+        assert "Unwichtiger Text vorab." not in answer_prompt
+
+    def test_compression_failure_falls_back_to_uncompressed_body(self) -> None:
+        llm = FakeLLM(fail={"compress_context"})
+        primary = hit(1, "Originaler Inhalt bleibt erhalten.")
+        searcher = FakeSearcher([primary])
+        pipeline = AnswerPipeline(
+            searcher, llm, expand=False, rerank=False, compress_context=True
+        )  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
+        assert "Originaler Inhalt bleibt erhalten." in answer_prompt
+
+
+class TestCRAGAndActionableFallback:
+    def test_refusal_with_crag_returns_actionable_moodle_search_link(self) -> None:
+        llm = FakeLLM({"answer": REFUSAL_MARKER})
+        pipeline, _, _ = make(
+            [hit(1, "Irrelevanter Inhalt.")],
+            llm=llm,
+            crag=True,
+            moodle_base_url="https://moodle.itech-bs14.de",
+        )
+        answer = pipeline.answer("Wie funktioniert Barcamp?")
+        assert not answer.grounded
+        assert "moodle.itech-bs14.de/search/index.php?q=Wie+funktioniert+Barcamp%3F" in answer.text
+        assert "Direktsuche in Moodle" in answer.text
+
+    def test_no_results_with_crag_returns_actionable_moodle_search_link(self) -> None:
+        pipeline, _, _ = make(
+            [],
+            crag=True,
+            moodle_base_url="https://moodle.itech-bs14.de",
+        )
+        answer = pipeline.answer("LF12 Projektbewertung")
+        assert not answer.grounded
+        assert "moodle.itech-bs14.de/search/index.php?q=LF12+Projektbewertung" in answer.text
+

@@ -376,3 +376,66 @@ class TestExternalAdapters:
 
         assert stats.skipped == 1
         assert stats.failed == 0
+
+
+class TestHyPEAndDocumentAugmentation:
+    async def test_hype_generates_and_indexes_questions(self, store: Store) -> None:
+        store.persist_crawl(
+            [
+                doc(
+                    "a",
+                    ContentKind.INLINE,
+                    text="Kriterienkatalog Barcamp: Präsentation 50%, Doku 50%.",
+                )
+            ]
+        )
+
+        async def fake_hype(text: str) -> list[str]:
+            return ["Wie wird das Barcamp bewertet?", "Was zählt zur Barcamp Note?"]
+
+        stats = await Indexer(
+            store, FakeFetcher({}, store), hype=True, hype_generator=fake_hype
+        ).index_pending()  # type: ignore[arg-type]
+
+        assert stats.indexed == 1
+        chunks = store.chunks_for("a")
+        assert len(chunks) == 1
+        assert "Wie wird das Barcamp bewertet?" in chunks[0].text
+        assert chunks[0].meta.get("questions") == [
+            "Wie wird das Barcamp bewertet?",
+            "Was zählt zur Barcamp Note?",
+        ]
+
+        # Verify FTS5 search finds the document via the generated question
+        rows = store.connection.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'Barcamp bewertet'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == chunks[0].chunk_id
+
+
+class TestHierarchicalSummarization:
+    async def test_hierarchical_summary_generated_for_multichunk_doc(self, store: Store) -> None:
+        long_text = "Dies ist ein sehr langes Dokument über LF5 Netzwerktechnik. " * 40
+        store.persist_crawl([doc("a", ContentKind.INLINE, text=long_text, title="LF5 Skript")])
+
+        async def fake_summary(title: str, text: str) -> str:
+            return "Zusammenfassung: LF5 behandelt Grundlagen der Netzwerktechnik."
+
+        stats = await Indexer(
+            store,
+            FakeFetcher({}, store),
+            target_chars=300,
+            summarize=True,
+            summary_generator=fake_summary,
+        ).index_pending()  # type: ignore[arg-type]
+
+        assert stats.indexed == 1
+        chunks = store.chunks_for("a")
+        # Summary chunk is inserted at ordinal 0
+        assert len(chunks) > 2
+        assert chunks[0].ordinal == 0
+        assert "Zusammenfassung" in chunks[0].header_text
+        assert "Grundlagen der Netzwerktechnik" in chunks[0].text
+        assert chunks[0].meta.get("summary") is True
+

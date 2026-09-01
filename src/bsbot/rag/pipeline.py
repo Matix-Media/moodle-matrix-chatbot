@@ -22,14 +22,19 @@ from pydantic import BaseModel
 from bsbot.index.search import SearchHit, reciprocal_rank_fusion
 from bsbot.rag.prompts import (
     ANSWER_TEMPLATE,
+    COMPRESS_CONTEXT_TEMPLATE,
+    CRAG_EVALUATE_TEMPLATE,
+    DECOMPOSE_TEMPLATE,
     EXPAND_TEMPLATE,
     FOLLOWUP_TEMPLATE,
     REFUSAL_MARKER,
     RERANK_TEMPLATE,
+    STEP_BACK_TEMPLATE,
     SYSTEM_PROMPT,
 )
 
 log = structlog.get_logger(__name__)
+
 
 DEFAULT_MAX_CONTEXT_CHUNKS = 6
 DEFAULT_CANDIDATES = 12
@@ -120,6 +125,11 @@ class AnswerPipeline:
         expand: bool = True,
         rerank: bool = True,
         followup: bool = True,
+        decompose: bool = False,
+        step_back: bool = False,
+        compress_context: bool = False,
+        crag: bool = False,
+        moodle_base_url: str | None = None,
         max_context_chunks: int = DEFAULT_MAX_CONTEXT_CHUNKS,
         candidates: int = DEFAULT_CANDIDATES,
         expansions: int = DEFAULT_EXPANSIONS,
@@ -134,6 +144,11 @@ class AnswerPipeline:
         self._expand = expand
         self._rerank = rerank
         self._followup = followup
+        self._decompose = decompose
+        self._step_back = step_back
+        self._compress_context = compress_context
+        self._crag = crag
+        self._moodle_base_url = moodle_base_url
         self._max_context = max_context_chunks
         self._candidates = candidates
         self._expansions = expansions
@@ -151,8 +166,25 @@ class AnswerPipeline:
         question = (question or "").strip()
         log.info("rag.question", question=question)
         queries = [question] if question else []
+
+        if question and self._decompose:
+            decomposed = self._decomposed_queries(question)
+            for sub_q in decomposed:
+                if sub_q not in queries:
+                    queries.append(sub_q)
+
         if question and self._expand:
-            queries.extend(self._expanded_queries(question))
+            expanded: list[str] = []
+            for q in list(queries):
+                expanded.extend(self._expanded_queries(q))
+            for eq in expanded:
+                if eq not in queries:
+                    queries.append(eq)
+
+        if question and self._step_back:
+            step_back = self._step_back_query(question)
+            if step_back and step_back not in queries:
+                queries.append(step_back)
 
         hits = self._retrieve(question, queries)
         log.info(
@@ -162,7 +194,10 @@ class AnswerPipeline:
             headers=[h.header_text for h in hits[: self._max_context]],
         )
         if not hits:
-            result = Answer(text=NO_ANSWER_TEXT, grounded=False, used_queries=queries)
+            fallback_text = (
+                self._actionable_fallback(question) if (self._crag and question) else NO_ANSWER_TEXT
+            )
+            result = Answer(text=fallback_text, grounded=False, used_queries=queries)
             log.info("rag.answered", grounded=False, citations=0)
             return result
 
@@ -189,7 +224,7 @@ class AnswerPipeline:
         prompt = ANSWER_TEMPLATE.format(
             today=_format_weekday_date(self._clock()),
             question=question,
-            context=self._format_context(context_hits),
+            context=self._format_context(context_hits, question=question),
         )
         try:
             raw = self._llm.generate(prompt, system=SYSTEM_PROMPT, purpose="answer")
@@ -207,11 +242,95 @@ class AnswerPipeline:
             log.info("rag.answered", grounded=False, citations=0)
             return result
 
-        result = self._finalise(raw, context_hits, queries)
+        result = self._finalise(raw, context_hits, queries, question=question)
         log.info("rag.answered", grounded=result.grounded, citations=len(result.citations))
         return result
 
     # ------------------------------------------------------------------ #
+
+    def _decomposed_queries(self, question: str) -> list[str]:
+        """Decompose compound or multi-part questions into sub-queries."""
+        try:
+            raw = self._llm.generate(
+                DECOMPOSE_TEMPLATE.format(question=question),
+                purpose="decompose",
+                model=self._utility_model,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            log.info("rag.decompose_failed", error=str(exc))
+            return []
+        lines = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
+        return [line for line in lines if line and line.lower() != question.lower()][:4]
+
+    def _step_back_query(self, question: str) -> str | None:
+        """Generate a higher-level, broader query to retrieve background context."""
+        try:
+            raw = self._llm.generate(
+                STEP_BACK_TEMPLATE.format(question=question),
+                purpose="step_back",
+                model=self._utility_model,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            log.info("rag.step_back_failed", error=str(exc))
+            return None
+        lines = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return None
+        query = lines[0].strip("\"' ")
+        if not query or query.lower() == question.lower():
+            return None
+        return query[:200]
+
+    def _compress_hit(self, question: str, hit: SearchHit, body: str) -> str:
+        """Extract only the sentences and facts directly relevant to the question."""
+        if not body.strip():
+            return body
+        try:
+            raw = self._llm.generate(
+                COMPRESS_CONTEXT_TEMPLATE.format(question=question, context=body),
+                purpose="compress_context",
+                model=self._utility_model,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            log.info("rag.compress_failed", error=str(exc))
+            return body
+        text = raw.strip()
+        stripped = text.strip(_STRIP_CHARS)
+        if not stripped or stripped == "-":
+            return body
+        return text
+
+    def _evaluate_relevance(self, question: str, hit: SearchHit) -> float:
+        """Score the relevance of a hit to the question on a scale 0.0 to 1.0."""
+        try:
+            raw = self._llm.generate(
+                CRAG_EVALUATE_TEMPLATE.format(question=question, document=hit.text[:1000]),
+                purpose="crag_eval",
+                model=self._utility_model,
+                temperature=0.0,
+            )
+            match = re.search(r"(\d+(?:\.\d+)?)", raw)
+            if match:
+                score = float(match.group(1))
+                return min(max(score, 0.0), 1.0)
+        except Exception as exc:
+            log.info("rag.crag_eval_failed", error=str(exc))
+        return 1.0
+
+    def _actionable_fallback(self, question: str) -> str:
+        """Construct an actionable fallback with a direct Moodle search link."""
+        from urllib.parse import quote_plus
+
+        base = (self._moodle_base_url or "https://moodle.itech-bs14.de").rstrip("/")
+        search_url = f"{base}/search/index.php?q={quote_plus(question)}"
+        return (
+            f"{NO_ANSWER_TEXT}\n\n"
+            f"🔍 **Direktsuche in Moodle:** Du kannst die globale Moodle-Suche ausprobieren:\n"
+            f"{search_url}"
+        )
 
     def _expanded_queries(self, question: str) -> list[str]:
         """Bridge casual phrasing to formal course vocabulary (AC-2)."""
@@ -333,7 +452,7 @@ class AnswerPipeline:
             return hit.body or hit.text
         return "\n\n".join((n.body or n.text) for n in neighbors)
 
-    def _format_context(self, hits: list[SearchHit]) -> str:
+    def _format_context(self, hits: list[SearchHit], question: str | None = None) -> str:
         blocks = []
         for index, hit in enumerate(hits, start=1):
             location = f", S. {hit.page}" if hit.page else ""
@@ -342,16 +461,23 @@ class AnswerPipeline:
             ) if hit.source_date else None
             stand = f" (Stand: {source_date})" if source_date else ""
             body = self._expanded_body(hit)
+            if self._compress_context and question:
+                body = self._compress_hit(question, hit, body)
             blocks.append(
                 f"[QUELLE {index}] {hit.course_name} – {hit.header_text}{location}{stand}\n"
                 f"{_clip(body, MAX_EXPANDED_CHUNK_CHARS)}"
             )
         return "\n\n".join(blocks)
 
-    def _finalise(self, raw: str, hits: list[SearchHit], queries: list[str]) -> Answer:
+    def _finalise(
+        self, raw: str, hits: list[SearchHit], queries: list[str], question: str = ""
+    ) -> Answer:
         text = raw.strip()
         if REFUSAL_MARKER in text:  # AC-10
-            return Answer(text=NO_ANSWER_TEXT, grounded=False, used_queries=queries)
+            fallback_text = (
+                self._actionable_fallback(question) if (self._crag and question) else NO_ANSWER_TEXT
+            )
+            return Answer(text=fallback_text, grounded=False, used_queries=queries)
 
         # AC-9: only keep citation indexes that were actually offered.
         # The model groups citations as "[1, 2]" at least as often as "[1] [2]",
@@ -376,6 +502,7 @@ class AnswerPipeline:
             if 1 <= index <= len(hits)
         ]
         return Answer(text=text, citations=citations, grounded=True, used_queries=queries)
+
 
 
 #: "LF10", "LF 10", "Lernfeld10", "lf06" — every phrasing a student actually types.

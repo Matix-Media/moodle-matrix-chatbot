@@ -206,6 +206,18 @@ def index(
         help="Re-process only the documents named in --aliases, after editing that file. "
         "Cheap: does not touch the rest of the corpus.",
     ),
+    hype: bool = typer.Option(
+        False,
+        help="Generate hypothetical student questions for each chunk (HyPE).",
+    ),
+    summarize: bool = typer.Option(
+        False,
+        help="Generate hierarchical document summaries for multi-chunk documents.",
+    ),
+    semantic: bool = typer.Option(
+        False,
+        help="Use semantic sentence-embedding chunking instead of fixed-size chunking.",
+    ),
 ) -> None:
     """Fetch, extract and chunk everything the manifest reports as pending (M3+M4)."""
     from urllib.parse import urlsplit
@@ -242,12 +254,32 @@ def index(
                     typer.echo(f"re-processing {reset} aliased document(s)")
 
             ocr_hook = None
-            if ocr:
+            gemini_client = None
+            embedder_fn = None
+            if ocr or hype or summarize or semantic:
                 try:
-                    ocr_hook = CachingOcr(GeminiClient(settings.require_gemini()), store)
+                    gemini_cfg = settings.require_gemini()
+                    gemini_client = GeminiClient(gemini_cfg)
+                    if ocr:
+                        ocr_hook = CachingOcr(gemini_client, store)
+                    if semantic:
+                        gem_embedder = GeminiEmbedder(
+                            gemini_client,
+                            store=store,
+                            model=gemini_cfg.embed_model,
+                            dim=gemini_cfg.embed_dim,
+                            batch_size=gemini_cfg.embed_batch_size,
+                            rpm=gemini_cfg.embed_rpm,
+                            items_per_minute=gemini_cfg.embed_items_per_minute,
+                        )
+
+                        def embedder_fn(texts: list[str]) -> list[list[float]]:
+                            res = gem_embedder.embed_documents(texts, skip_failures=True)
+                            return [v for v in res if v is not None]
                 except ConfigError as exc:
-                    _fail(str(exc))
-                    return
+                    if ocr or hype or summarize:
+                        _fail(str(exc))
+                        return
 
             async with Fetcher(
                 store,
@@ -259,10 +291,17 @@ def index(
                     store,
                     fetcher,
                     ocr=ocr_hook,
+                    llm=gemini_client,
+                    utility_model=settings.gemini.utility_model if gemini_client else None,
                     aliases=aliases,
                     moodle_host=urlsplit(moodle.base_url).netloc,
+                    semantic=semantic,
+                    embedder=embedder_fn,
+                    hype=hype,
+                    summarize=summarize,
                 ).index_pending(limit=limit or None)
             total_chunks = store.connection.execute("select count(*) from chunks").fetchone()[0]
+
 
         typer.secho(
             f"indexed {stats.indexed} documents into {stats.chunks} chunks",
@@ -413,6 +452,12 @@ def ask(
     no_expand: bool = typer.Option(False, help="Disable query expansion."),
     no_rerank: bool = typer.Option(False, help="Disable LLM reranking."),
     no_followup: bool = typer.Option(False, help="Disable the second-hop follow-up search."),
+    no_decompose: bool = typer.Option(False, help="Disable query decomposition (sub-queries)."),
+    no_step_back: bool = typer.Option(False, help="Disable step-back query generation."),
+    compress_context: bool = typer.Option(
+        False, help="Extract only relevant sentences from chunks before generating answer."
+    ),
+    no_crag: bool = typer.Option(False, help="Disable CRAG actionable fallback search links."),
 ) -> None:
     """Answer a question from the indexed Moodle content, with citations (M6)."""
     settings = _settings()
@@ -440,6 +485,11 @@ def ask(
             expand=not no_expand,
             rerank=not no_rerank,
             followup=not no_followup,
+            decompose=not no_decompose,
+            step_back=not no_step_back,
+            compress_context=compress_context,
+            crag=not no_crag,
+            moodle_base_url=settings.moodle.base_url if settings.moodle.base_url else "https://moodle.itech-bs14.de",
             utility_model=gemini.utility_model,
         )
         answer = pipeline.answer(question)
@@ -464,6 +514,12 @@ def serve(
         help="Also answer plain questions, not only messages addressed to the bot. "
         "Noisier; start without it.",
     ),
+    no_decompose: bool = typer.Option(False, help="Disable query decomposition."),
+    no_step_back: bool = typer.Option(False, help="Disable step-back prompting."),
+    compress_context: bool = typer.Option(
+        False, help="Extract only relevant sentences from chunks before generating answer."
+    ),
+    no_crag: bool = typer.Option(False, help="Disable CRAG actionable fallback search links."),
 ) -> None:
     """Run the Matrix bot (M7). Requires Matrix and Gemini configuration."""
     settings = _settings()
@@ -492,6 +548,11 @@ def serve(
             pipeline = AnswerPipeline(
                 HybridSearcher(store, embedder=embedder),
                 client,
+                decompose=not no_decompose,
+                step_back=not no_step_back,
+                compress_context=compress_context,
+                crag=not no_crag,
+                moodle_base_url=settings.moodle.base_url if settings.moodle.base_url else "https://moodle.itech-bs14.de",
                 utility_model=gemini.utility_model,
             )
             await run_bot(

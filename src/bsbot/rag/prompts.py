@@ -90,3 +90,81 @@ beantworten, und sortiere sie von am hilfreichsten nach am wenigsten hilfreich.
 Antworte nur mit den Nummern, durch Komma getrennt, höchstens {k} Stück.
 Wenn keiner passt, antworte mit einem Bindestrich.
 """
+
+DECOMPOSE_TEMPLATE = """\
+Eine Schülerin oder ein Schüler einer Berufsschule stellt diese Frage:
+
+"{question}"
+
+Prüfe, ob die Frage aus mehreren verschiedenen Teilfragen besteht (z. B. Fragen zu
+verschiedenen Themen oder Fächern wie "Brauche ich in Mathe Rechner und wann ist Prüfung?").
+Falls ja, zerlege sie in 2 bis 4 eigenständige, präzise Einzelfragen.
+Falls nein (einfache Einzelfrage), gib nur die ursprüngliche Frage unverändert aus.
+
+Gib nur die Fragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
+"""
+
+STEP_BACK_TEMPLATE = """\
+Eine Schülerin oder ein Schüler stellt diese spezifische Frage zu Schule oder Moodle:
+
+"{question}"
+
+Formuliere eine übergeordnete, allgemeinere Suchanfrage (Step-Back Query), um grundlegende
+Hintergrundinformationen, Richtlinien, Kurs-Strukturen oder allgemeine Konzepte zu finden.
+
+Beispiel:
+Frage: "Warum habe ich in Moodle keinen Zugriff auf den LF6 Upload?"
+Step-back: "Moodle Kurs Einschreibungen und Abgabefristen"
+
+Gib NUR die eine übergeordnete Suchanfrage aus, ohne Anführungszeichen und ohne Erklärung.
+"""
+
+COMPRESS_CONTEXT_TEMPLATE = """\
+Frage: {question}
+
+Textauszug:
+{context}
+
+Extrahiere aus dem Textauszug NUR die Sätze und Fakten, die für die Frage direkt relevant sind.
+Verändere die Fakten nicht und erfinde nichts hinzu.
+Falls der Textauszug keine relevanten Infos enthält, antworte nur mit einem Bindestrich (-).
+"""
+
+CRAG_EVALUATE_TEMPLATE = """\
+Frage: {question}
+
+Auszug aus Moodle:
+{document}
+
+Bewerte auf einer Skala von 0.0 bis 1.0, wie relevant dieser Auszug für die Frage ist:
+0.0 = völlig irrelevant
+0.5 = teilweise relevant / erwähnt verwandte Begriffe
+1.0 = beantwortet die Frage direkt und vollständig
+
+Antworte nur mit der Dezimalzahl zwischen 0.0 und 1.0 (z. B. 0.8 oder 0.2).
+"""
+
+HYPE_TEMPLATE = """\
+Analysiere den folgenden Textauszug aus Moodle einer Berufsschule:
+
+{text}
+
+Formuliere {n} konkrete Fragen, die eine Schülerin oder ein Schüler stellen könnte
+und die durch diesen Text beantwortet werden.
+Verwende dabei sowohl umgangssprachliche Formulierungen als auch offizielle Begriffe.
+
+Gib nur die Fragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
+"""
+
+DOCUMENT_SUMMARY_TEMPLATE = """\
+Erstelle eine prägnante Zusammenfassung (1-2 kurze Absätze) des folgenden Dokuments.
+Konzentriere dich auf die behandelten Hauptthemen, Lernfelder, wichtige Termine und Kernregeln.
+
+Dokument-Titel: {title}
+Inhalt:
+{text}
+
+Gib nur die Zusammenfassung aus, ohne Einleitung oder Floskeln.
+"""
+
+

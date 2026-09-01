@@ -37,6 +37,7 @@ from bsbot.ingest.taskcards import (
     share_token_from_url,
 )
 from bsbot.ingest.youtube import TranscriptApi, extract_video_id, fetch_transcript
+from bsbot.rag.prompts import DOCUMENT_SUMMARY_TEMPLATE, HYPE_TEMPLATE
 
 #: filename hints so the generic extractor dispatches correctly for a fetched
 #: export (magic bytes cover pptx/xlsx; a plain-text export has no signature).
@@ -46,11 +47,30 @@ TaskcardsFetch = Callable[
     ..., Awaitable[dict[str, Any] | None]
 ]  # (http, host, board_id, *, share_token=...)
 
+HypeGenerator = Callable[[str], Awaitable[list[str]] | list[str]]
+SummaryGenerator = Callable[[str, str], Awaitable[str | None] | str | None]
+
 log = structlog.get_logger(__name__)
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
 class FetcherLike(Protocol):
     async def fetch(self, url: str, *, moodle_timemodified: int | None = None) -> FetchResult: ...
+
+
+class LLMLike(Protocol):
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system: str | None = ...,
+        model: str | None = ...,
+        temperature: float = ...,
+        purpose: str = ...,
+    ) -> str: ...
 
 
 @dataclass
@@ -68,6 +88,8 @@ class Indexer:
         fetcher: FetcherLike,
         *,
         ocr: OcrCallable | None = None,
+        llm: LLMLike | None = None,
+        utility_model: str | None = None,
         extract_version: int = EXTRACT_VERSION,
         target_chars: int = DEFAULT_TARGET_CHARS,
         overlap_chars: int = DEFAULT_OVERLAP_CHARS,
@@ -75,10 +97,18 @@ class Indexer:
         moodle_host: str | None = None,
         youtube_api: TranscriptApi | None = None,
         taskcards_fetch: TaskcardsFetch | None = None,
+        semantic: bool = False,
+        embedder: Callable[[list[str]], list[list[float]]] | None = None,
+        hype: bool = False,
+        hype_generator: HypeGenerator | None = None,
+        summarize: bool = False,
+        summary_generator: SummaryGenerator | None = None,
     ) -> None:
         self._store = store
         self._fetcher = fetcher
         self._ocr = ocr
+        self._llm = llm
+        self._utility_model = utility_model
         self._extract_version = extract_version
         self._target = target_chars
         self._overlap = overlap_chars
@@ -92,6 +122,12 @@ class Indexer:
         self._moodle_host = moodle_host
         self._youtube_api = youtube_api
         self._taskcards_fetch: TaskcardsFetch = taskcards_fetch or fetch_board
+        self._semantic = semantic
+        self._embedder = embedder
+        self._hype = hype
+        self._hype_generator = hype_generator
+        self._summarize = summarize
+        self._summary_generator = summary_generator
 
     async def index_pending(self, *, limit: int | None = None) -> IndexStats:
         pending = self._store.documents_needing_extraction(extract_version=self._extract_version)
@@ -118,7 +154,54 @@ class Indexer:
         )
         return stats
 
+    async def _generate_hype(self, text: str) -> list[str]:
+        if not text.strip():
+            return []
+        if self._hype_generator is not None:
+            res = self._hype_generator(text)
+            if asyncio.iscoroutine(res):
+                return await res
+            return res  # type: ignore[return-value]
+        if self._llm is not None:
+            try:
+                raw = await asyncio.to_thread(
+                    self._llm.generate,
+                    HYPE_TEMPLATE.format(text=_clip(text, 2000), n=3),
+                    purpose="hype",
+                    model=self._utility_model,
+                    temperature=0.3,
+                )
+                return [line.strip(" -•\t") for line in raw.splitlines() if line.strip(" -•\t")]
+            except Exception as exc:
+                log.info("index.hype_failed", error=str(exc))
+        return []
+
+    async def _generate_summary(self, title: str, text: str) -> str | None:
+        if not text.strip():
+            return None
+        if self._summary_generator is not None:
+            res = self._summary_generator(title, text)
+            if asyncio.iscoroutine(res):
+                return await res
+            return res  # type: ignore[return-value]
+        if self._llm is not None:
+            try:
+                raw = await asyncio.to_thread(
+                    self._llm.generate,
+                    DOCUMENT_SUMMARY_TEMPLATE.format(title=title, text=_clip(text, 4000)),
+                    purpose="summary",
+                    model=self._utility_model,
+                    temperature=0.2,
+                )
+                summary = raw.strip()
+                return summary if summary else None
+            except Exception as exc:
+                log.info("index.summary_failed", error=str(exc))
+        return None
+
     async def _index_one(self, document: Document, stats: IndexStats) -> None:
+        from bsbot.ingest.chunk import Chunk
+
         segments, blob_sha = await self._segments_for(document, stats)
         aliases = self._aliases.get(document.doc_id)
 
@@ -133,6 +216,8 @@ class Indexer:
                 header_path=document.header_path,
                 target_chars=self._target,
                 overlap_chars=self._overlap,
+                semantic=self._semantic,
+                embedder=self._embedder,
             )
             if segments is not None
             else []
@@ -155,6 +240,31 @@ class Indexer:
             )
             return
 
+        # Hierarchical Indexing: generate document summary for multi-chunk documents
+        if (self._summarize or self._summary_generator) and len(chunks) >= 2:
+            full_text = "\n\n".join(c.body for c in chunks)
+            summary_text = await self._generate_summary(document.title, full_text)
+            if summary_text:
+                summary_chunk = Chunk(
+                    body=summary_text,
+                    header_text=f"{document.header_text} › Zusammenfassung",
+                    page=None,
+                    ordinal=0,
+                )
+                chunks.insert(0, summary_chunk)
+
+        # Re-assign ordinals
+        for ordinal, chunk in enumerate(chunks):
+            chunk.ordinal = ordinal
+
+        # HyPE / Document Augmentation: generate hypothetical questions per chunk
+        chunk_questions: dict[int, list[str]] = {}
+        if self._hype or self._hype_generator:
+            for idx, chunk in enumerate(chunks):
+                qs = await self._generate_hype(chunk.body)
+                if qs:
+                    chunk_questions[idx] = qs
+
         text_sha256 = content_sha256("\n".join(c.body for c in chunks))
         # External content (a live TaskCards board, a HackMD note) is re-fetched on
         # a schedule we don't control the granularity of, so re-extraction happens
@@ -172,20 +282,30 @@ class Indexer:
             )
             return
 
+        formatted_chunks = []
+        for idx, chunk in enumerate(chunks):
+            qs = chunk_questions.get(idx, [])
+            # If questions were generated, append them to searchable text
+            text_to_index = chunk.text
+            if qs:
+                text_to_index = f"{chunk.text}\n\nFragen:\n" + "\n".join(qs)
+
+            meta: dict[str, Any] = {
+                "ordinal": chunk.ordinal,
+                "page": chunk.page,
+                "header_text": chunk.header_text,
+                "body": chunk.body,
+            }
+            if qs:
+                meta["questions"] = qs
+            if "Zusammenfassung" in chunk.header_text:
+                meta["summary"] = True
+
+            formatted_chunks.append((text_to_index, meta))
+
         self._store.replace_chunks(
             document.doc_id,
-            [
-                (
-                    chunk.text,
-                    {
-                        "ordinal": chunk.ordinal,
-                        "page": chunk.page,
-                        "header_text": chunk.header_text,
-                        "body": chunk.body,
-                    },
-                )
-                for chunk in chunks
-            ],
+            formatted_chunks,
             header_text=chunks[0].header_text,
         )
         self._store.record_extraction(
@@ -203,6 +323,7 @@ class Indexer:
         # Inline text (labels, module intros) needs no network at all.
         if document.text:
             return [Segment(text=document.text)], None
+
 
         # YouTube and TaskCards produce text directly (a transcript, a rendered
         # board) rather than bytes to run through the generic extractor, so they

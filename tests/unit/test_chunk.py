@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from bsbot.ingest.chunk import Segment, chunk_segments
 
 HEADER = ["LF05IT", "Lernfeld 5", "Skript"]
@@ -105,3 +107,65 @@ class TestNormalisation:
         a = texts(chunk_segments(segs, header_path=HEADER, target_chars=400, overlap_chars=80))
         b = texts(chunk_segments(segs, header_path=HEADER, target_chars=400, overlap_chars=80))
         assert a == b
+
+
+class TestSemanticChunking:
+    def test_semantic_chunking_splits_on_topic_change(self) -> None:
+        # Two distinct topics: Topic A (sentences 1-2) vs Topic B (sentences 3-4)
+        topic_a_1 = "Das Netzwerkprotokoll TCP garantiert fehlerfreie Übertragung."
+        topic_a_2 = "IP-Adressen adressieren einzelne Rechner im Netz."
+        topic_b_1 = "Die Abschlussprüfung findet im Mai in der Sporthalle statt."
+        topic_b_2 = "Mitzubringen sind Personalausweis und ein Taschenrechner."
+
+        text = f"{topic_a_1} {topic_a_2}\n\n{topic_b_1} {topic_b_2}"
+
+        def fake_embedder(sentences: list[str]) -> list[list[float]]:
+            # Vector [1.0, 0.0] for networking, [0.0, 1.0] for exams
+            return [
+                [1.0, 0.0] if ("TCP" in s or "IP-Adresse" in s) else [0.0, 1.0]
+                for s in sentences
+            ]
+
+        chunks = chunk_segments(
+            [Segment(text=text)],
+            header_path=HEADER,
+            semantic=True,
+            embedder=fake_embedder,
+            breakpoint_type="percentile",
+            breakpoint_amount=50,
+        )
+        assert len(chunks) == 2
+        assert "TCP" in chunks[0].body and "IP-Adressen" in chunks[0].body
+        assert "Abschlussprüfung" in chunks[1].body and "Taschenrechner" in chunks[1].body
+
+    @pytest.mark.parametrize(
+        "b_type", ["percentile", "standard_deviation", "interquartile", "gradient"]
+    )
+    def test_semantic_chunking_threshold_types(self, b_type: str) -> None:
+        text = "Satz eins. Satz zwei. Neuer Abschnitt Satz drei. Satz vier."
+        def fake_embedder(sentences: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0] if i < 2 else [0.0, 1.0] for i in range(len(sentences))]
+
+        chunks = chunk_segments(
+            [Segment(text=text)],
+            header_path=HEADER,
+            semantic=True,
+            embedder=fake_embedder,
+            breakpoint_type=b_type,
+        )
+        assert len(chunks) >= 1
+
+    def test_semantic_chunking_fallback_on_embedder_failure(self) -> None:
+        def failing_embedder(sentences: list[str]) -> list[list[float]]:
+            raise RuntimeError("Embed service down")
+
+        text = "Ein langer Text. " * 30
+        chunks = chunk_segments(
+            [Segment(text=text)],
+            header_path=HEADER,
+            semantic=True,
+            embedder=failing_embedder,
+            target_chars=200,
+        )
+        assert len(chunks) > 1
+
