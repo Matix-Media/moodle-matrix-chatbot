@@ -1,0 +1,418 @@
+# Real golden question set for `bsbot bench` — see specs/012-benchmarks.md.
+#
+# Sourced from this deployment's actual index (Klassenkurs IT4bili, Schuljahr
+# 2026/27). doc_ids and dates below were confirmed by querying data/index.db
+# directly on 2026-09-01; re-verify with `bsbot search` if the corpus changes.
+#
+# This file names real course/document structure (same kind of detail already
+# committed in config/document_aliases.yaml) but no individual student data —
+# still, check with your school before committing if you'd rather not.
+#
+# Two entries below (blockplan-heute, montag-schulbeginn) resolve relative dates
+# ("heute", "am Montag") against the pipeline's real clock by default, so what
+# they expect changes with the run date. Pin it for a reproducible comparison:
+#
+#   bsbot bench --golden config/golden_questions.yaml --as-of 2026-09-01
+#
+# Without --as-of, blockplan-heute and lf10-bewertungsbogen-alias still work
+# (their doc_id covers every week of the Blockplan / doesn't depend on the date
+# at all), but montag-schulbeginn's expected_keywords can go stale — a later
+# Monday may have a different arrival time than the one recorded below.
+
+- id: design-thinking-task
+  question: "what is the task for the international design thinking workshop at itech?"
+  category: casual-phrasing
+  notes: >
+    English question against German+English course material. The workshop's dates
+    live in one chunk (International Design Thinking Workshop), the actual task
+    description in another (Input 'Empathize and define!' / FE). Either answers
+    "what is the task", so both headers count.
+  expected_header_contains: ["International Design Thinking Workshop", "Empathize and define"]
+
+- id: blockplan-heute
+  question: "wie ist der blockplan für heute?"
+  category: temporal
+  notes: >
+    Date-relative (AC-18-style boost in pipeline.py's `_boost`/`_detect_target_date`).
+    "heute" must resolve to the real clock date and match the Blockplan chunk
+    covering that date (Dienstag 2026-09-01, chunk_id 2017). The doc_id check
+    below stays valid on any run date — the whole Blockplan (every week) is one
+    document — but a later run is no longer testing the same chunk/date pair
+    this note describes; pass --as-of 2026-09-01 to pin it exactly. This entry
+    stops being valid at all once the Blockplan document itself is superseded
+    by a new term's document.
+  expected_doc_ids: ["2250:170418:0"]
+
+- id: montag-schulbeginn
+  question: "wann muss ich am montag in die schule gehen?"
+  category: casual-phrasing
+  notes: >
+    "montag" resolves to the next Monday relative to "today" — 2026-09-07 only
+    when run with --as-of 2026-09-01 (or on that real date). expected_keywords
+    below is that Monday's specific arrival time (9:15 Uhr); a different Monday
+    can have a different one (8:15 Uhr appears elsewhere in the same document),
+    so without pinning --as-of this entry's keyword_coverage can fail for a
+    reason that has nothing to do with retrieval or answer quality. Good
+    regression case regardless: plain hybrid search (keyword+vector, no
+    boost/rerank) ranks this Blockplan chunk 4th behind two unrelated
+    Q&A-board hits — baseline vs. a technique-augmented preset should show a
+    real difference here, not just theoretical.
+  expected_doc_ids: ["2250:170418:0"]
+  expected_keywords: ["9:15"]
+
+- id: block-10-ambiguous
+  question: "was muss ich in block 10 machen?"
+  category: ambiguous
+  notes: >
+    Genuinely ambiguous as-is: "Block 10" could mean the Blockplan's 10th lesson
+    period (16:15-17:00, present in every Blockplan day) or Lernfeld 10 generally.
+    No doc_id/header asserted on purpose — a wrong guess here would silently
+    penalize correct retrieval. Kept as an answerable-only smoke test; tighten it
+    once you know what a real student meant by it.
+
+- id: board-fragen
+  question: "was sind für fragen auf dem board?"
+  category: ambiguous
+  notes: >
+    At least three different "Board" documents exist (LF2 QA Board, LF10 Q&A
+    Board, Bosschallenge QA Board) and the question doesn't say which course. No
+    retrieval target asserted for the same reason as block-10-ambiguous.
+
+- id: lf10-bewertungsbogen-alias
+  question: "Was steht im Bewertungsbogen für Lernfeld 10 für alles für Bewertungsfelder und wie ist die Punkteverteilung?"
+  category: institutional-knowledge
+  notes: >
+    This is the exact alias case documented in specs/007-retrieval.md and
+    config/document_aliases.yaml: the file is titled "Bewertung Barcamp" (named
+    after the event, not what it grades) with alias phrases baked in
+    ("Bewertungsbogen Lernfeld 10", "Punkteverteilung Lernfeld 10 Projekt", ...).
+    A run where this entry fails but lf-hk-bewertung succeeds points at the
+    alias file/reindex, not at the pipeline.
+  expected_doc_ids: ["2250:170434:0"]
+  expected_header_contains: ["Bewertung Barcamp"]
+
+- id: lf-hk-bewertung
+  question: "Was steht im HK Bewertungsbogen für die betriebliche Projektarbeit?"
+  category: lexical-needle
+  notes: "A second, differently-worded Lernfeld 10 grading document — no alias needed."
+  expected_doc_ids: ["2250:171105:0"]
+  expected_header_contains: ["HK Bewertungskriterien"]
+
+- id: wetter-unanswerable
+  question: "Wie ist das Wetter heute in Hamburg?"
+  category: unanswerable
+  answerable: false
+
+# --- 50 everyday questions added 2026-09-02, spanning the corpus outside Lernfeld
+# 10 (employment law, exam/documentation rules, school admin, communication skills,
+# contract law, ethical hacking, agile retros, Lernfeld 6, the Taiwan workshop, and
+# the staff roster) — the 8 entries above are edge-case regression tests and stay,
+# these are here to give answerable_accuracy real statistical weight instead of n=8.
+# Every doc_id/keyword below was confirmed against a real chunk in data/index.db on
+# 2026-09-02; re-verify with `bsbot search`/direct chunk lookup if the corpus changes.
+
+- id: wer-ist-heiko-meiwes
+  question: "wer ist dieser Heiko Meiwes?"
+  category: people
+  notes: "Teacher roster entry: Heiko Meiwes (Mw), Schwerpunkt AE/IT."
+  expected_doc_ids: ["2250:137195:0"]
+  expected_header_contains: ["Klassenteam"]
+
+- id: wer-ist-michael-heinemann
+  question: "wer ist Michael Heinemann?"
+  category: people
+  expected_doc_ids: ["2250:137195:0"]
+  expected_header_contains: ["Klassenteam"]
+
+- id: wer-ist-annette-ritter-fink
+  question: "was unterrichtet Annette Ritter-Fink?"
+  category: people
+  notes: "Roster lists her as (Rt), Schwerpunkte OuG, FE."
+  expected_doc_ids: ["2250:137195:0"]
+  expected_header_contains: ["Klassenteam"]
+
+- id: taiwan-begleitung
+  question: "wer begleitet den Design-Thinking-Workshop in Taiwan?"
+  category: people
+  expected_doc_ids: ["323:141787:0"]
+  expected_keywords: ["Diane Hülsmann"]
+
+- id: taiwan-kontakt
+  question: "an wen wende ich mich bei Fragen zur Taiwan-Reise?"
+  category: people
+  notes: "Same fact as taiwan-begleitung, asked the way a student actually would."
+  expected_doc_ids: ["323:127218:1"]
+  expected_keywords: ["Heiko.Meiwes@itech-bs14.de"]
+
+- id: kuendigung-schriftform
+  question: "muss eine Kündigung schriftlich erfolgen?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:0"]
+  expected_keywords: ["623"]
+
+- id: kuendigungsschutzgesetz-mitarbeiterzahl
+  question: "ab wie vielen Mitarbeitern gilt das Kündigungsschutzgesetz?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:0"]
+  expected_keywords: ["zehn"]
+
+- id: betriebsrat-anhoerung
+  question: "muss der Betriebsrat vor einer Kündigung angehört werden?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:0"]
+  expected_keywords: ["Betriebsrat"]
+
+- id: azubi-kuendigungsschutz
+  question: "welchen Kündigungsschutz habe ich als Azubi nach der Probezeit?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:1"]
+  expected_keywords: ["wichtigem Grund"]
+
+- id: mutterschutz-kuendigung
+  question: "wie lange dürfen schwangere Arbeitnehmerinnen nicht gekündigt werden?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:1"]
+  expected_keywords: ["vier Monate"]
+
+- id: arten-der-kuendigung
+  question: "was ist der Unterschied zwischen einer ordentlichen und einer außerordentlichen Kündigung?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:2"]
+  expected_header_contains: ["Arten der Kündigung", "Außerordentliche Kündigung"]
+
+- id: kuendigungsfrist-erste-zwei-jahre
+  question: "wie lang ist meine Kündigungsfrist in den ersten zwei Jahren?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:2"]
+  expected_keywords: ["vier Wochen"]
+
+- id: fristlose-kuendigung-grund
+  question: "was braucht es für eine fristlose Kündigung?"
+  category: employment-law
+  expected_doc_ids: ["507:54674:3"]
+  expected_keywords: ["626"]
+
+- id: arbeitsvertrag-mindestinhalte
+  question: "was muss mindestens in meinem Arbeitsvertrag stehen?"
+  category: employment-law
+  expected_doc_ids: ["507:54576:0"]
+  expected_keywords: ["Arbeitsort"]
+
+- id: arbeitsvertrag-schriftform
+  question: "muss mein Arbeitsvertrag schriftlich sein?"
+  category: employment-law
+  notes: "Trap question: verbal contracts are valid, the Nachweisgesetz only requires written terms afterwards. A shallow keyword match on 'schriftlich' would miss this nuance."
+  expected_doc_ids: ["507:54576:0"]
+  expected_keywords: ["Nachweisgesetz"]
+
+- id: befristete-arbeitsvertraege
+  question: "wann sind befristete Arbeitsverträge überhaupt erlaubt?"
+  category: employment-law
+  expected_doc_ids: ["507:54576:1"]
+  expected_keywords: ["TzBfG"]
+
+- id: arbeitgeber-fuersorgepflicht
+  question: "welche Pflichten hat mein Arbeitgeber mir gegenüber?"
+  category: employment-law
+  expected_doc_ids: ["507:54576:4"]
+  expected_keywords: ["Fürsorge"]
+
+- id: anspruch-arbeitszeugnis
+  question: "habe ich nach der Ausbildung Anspruch auf ein Arbeitszeugnis?"
+  category: employment-law
+  expected_doc_ids: ["507:54576:4"]
+  expected_keywords: ["Arbeitszeugnis"]
+
+- id: doku-titelblatt
+  question: "was muss auf das Titelblatt meiner Projektdokumentation?"
+  category: exam-prep
+  expected_doc_ids: ["619:33395:0"]
+  expected_keywords: ["Titelblatt"]
+
+- id: doku-zeilenabstand
+  question: "welchen Zeilenabstand soll ich in meiner Doku verwenden?"
+  category: exam-prep
+  expected_doc_ids: ["619:33395:0"]
+  expected_keywords: ["Zeilenabstand"]
+
+- id: doku-gliederung
+  question: "wie soll meine Projektdokumentation gegliedert sein?"
+  category: exam-prep
+  expected_doc_ids: ["619:33395:0"]
+  expected_keywords: ["Inhaltsverzeichnis"]
+
+- id: projektarbeit-systemintegration-stunden
+  question: "wie viele Stunden habe ich für die Projektarbeit in der Fachrichtung Systemintegration?"
+  category: exam-prep
+  expected_doc_ids: ["619:33405:0"]
+  expected_keywords: ["35 Stunden"]
+
+- id: pflichtenheft-pruefung
+  question: "muss ich für die Abschlussprüfung ein Pflichtenheft entwickeln?"
+  category: exam-prep
+  expected_doc_ids: ["619:33405:0"]
+  expected_keywords: ["Pflichtenheft"]
+
+- id: faq-wertsachen
+  question: "wo kann ich meine Wertsachen abschließen?"
+  category: unanswerable
+  notes: >
+    Real corpus gap, not a made-up control: the FAQ page literally asks this
+    question and then answers it with "???" — the fact pattern is present but
+    the actual answer never was. A good pipeline should refuse here rather than
+    invent a locker room out of the retrieved (empty) FAQ entry.
+  answerable: false
+
+- id: fehlzeit-melden
+  question: "wie melde ich mich krank / meine Fehlzeit?"
+  category: school-admin
+  expected_doc_ids: ["2250:137195:0"]
+  expected_keywords: ["klassenleitung@itech-bs14.de"]
+
+- id: beurlaubung-beantragen
+  question: "wie beantrage ich eine Beurlaubung vom Betrieb?"
+  category: school-admin
+  expected_doc_ids: ["2250:137195:0"]
+  expected_keywords: ["1 Woche"]
+
+- id: leistungsnachweis-verpasst-krankheit
+  question: "was mache ich, wenn ich einen Leistungsnachweis wegen Krankheit verpasse?"
+  category: school-admin
+  expected_doc_ids: ["2250:137195:0"]
+  expected_keywords: ["Attest"]
+
+- id: klassenteam-lerncoaching
+  question: "wo bekomme ich Unterstützung beim Lerncoaching?"
+  category: school-admin
+  expected_doc_ids: ["2250:137195:0"]
+  expected_keywords: ["Lerncoaching"]
+
+- id: fachraum-ohne-lehrkraft
+  question: "darf ich mich ohne Lehrkraft in einem Fachraum aufhalten?"
+  category: school-admin
+  expected_doc_ids: ["2250:138207:1"]
+  expected_keywords: ["Anwesenheit"]
+
+- id: hausordnung-covid
+  question: "was sagt die Hausordnung zu Krankheitssymptomen?"
+  category: school-admin
+  expected_doc_ids: ["2250:138207:0"]
+  expected_keywords: ["COVID"]
+
+- id: schulweg-unfallversichert
+  question: "bin ich auf dem Schulweg unfallversichert?"
+  category: school-admin
+  expected_doc_ids: ["2250:138207:0"]
+  expected_keywords: ["unfallversichert"]
+
+- id: aktives-passives-zuhoeren
+  question: "was ist der Unterschied zwischen aktivem und passivem Zuhören?"
+  category: communication
+  expected_doc_ids: ["600:30210:0"]
+  expected_keywords: ["Passives Zuhören"]
+
+- id: gespraechsrahmen-zweck
+  question: "wozu dient der Gesprächsrahmen zu Beginn eines Gesprächs?"
+  category: communication
+  expected_doc_ids: ["600:29971:0"]
+  expected_keywords: ["Hauptthemen"]
+
+- id: werkvertrag-definition
+  question: "was regelt ein Werkvertrag?"
+  category: contracts
+  expected_doc_ids: ["916:45124:0"]
+  expected_keywords: ["631"]
+
+- id: kaufvertrag-paragraph
+  question: "in welchem Paragraphen ist der Kaufvertrag geregelt?"
+  category: contracts
+  expected_doc_ids: ["916:45124:0"]
+  expected_keywords: ["433"]
+
+- id: it-vertrag-consulting
+  question: "welche Art von Vertrag brauche ich für ein IT-Consulting-Projekt?"
+  category: contracts
+  expected_doc_ids: ["916:45124:0"]
+  expected_keywords: ["Consulting"]
+
+- id: sla-inhalt
+  question: "was wird in einem Service Level Agreement festgelegt?"
+  category: contracts
+  expected_doc_ids: ["916:46474:0"]
+  expected_keywords: ["Messgrößen"]
+
+- id: wlan-monitor-mode
+  question: "wie versetze ich einen WLAN-Adapter in den Monitor-Mode?"
+  category: technical
+  expected_doc_ids: ["2454:170997:2"]
+  expected_keywords: ["airmon-ng"]
+
+- id: wpa2-handshake-tool
+  question: "mit welchem Tool knacke ich einen WPA2-Handshake?"
+  category: technical
+  expected_doc_ids: ["2454:170997:2"]
+  expected_keywords: ["aircrack-ng"]
+
+- id: wlan-handshake-aufzeichnen
+  question: "wie zeichne ich einen WLAN-Handshake auf?"
+  category: technical
+  expected_doc_ids: ["2454:170997:2"]
+  expected_keywords: ["airodump"]
+
+- id: passwortliste-erstellen
+  question: "wie kann ich mir selbst eine Passwortliste erstellen?"
+  category: technical
+  expected_doc_ids: ["2454:170997:2"]
+  expected_keywords: ["crunch"]
+
+- id: sprint-retro-erster-schritt
+  question: "was ist der erste Schritt einer guten Sprint-Retrospektive?"
+  category: agile
+  expected_doc_ids: ["1046:51594:0"]
+  expected_keywords: ["Set the Stage"]
+
+- id: retro-generating-insights
+  question: "was passiert im dritten Schritt einer Retrospektive?"
+  category: agile
+  expected_doc_ids: ["1046:51594:0"]
+  expected_keywords: ["Generating Insights"]
+
+- id: lf6-thema
+  question: "worum geht es in Lernfeld 6?"
+  category: lernfeld-content
+  expected_doc_ids: ["805:141746:0"]
+  expected_keywords: ["Fehlerursachen"]
+
+- id: lf6-firma-szenario
+  question: "bei welcher fiktiven Firma spielt das Lernfeld-6-Szenario?"
+  category: lernfeld-content
+  expected_doc_ids: ["805:141749:0"]
+  expected_keywords: ["Solutions IT"]
+
+- id: taiwan-teilnehmerzahl
+  question: "wie viele Teilnehmende hat der Taiwan-Workshop?"
+  category: workshop
+  expected_doc_ids: ["323:141787:0"]
+  expected_keywords: ["20"]
+
+- id: taiwan-universitaet
+  question: "an welcher Universität findet der Taiwan-Workshop statt?"
+  category: workshop
+  expected_doc_ids: ["323:141787:0"]
+  expected_keywords: ["Ming Chi"]
+
+- id: taiwan-stadt
+  question: "in welcher Stadt findet der Design-Thinking-Workshop in Taiwan statt?"
+  category: workshop
+  expected_doc_ids: ["323:141787:0"]
+  expected_keywords: ["Taipeh"]
+
+- id: wechselkurs-unanswerable
+  question: "wie ist der aktuelle Wechselkurs von Euro zu US-Dollar?"
+  category: unanswerable
+  answerable: false
+
+- id: zugverbindung-unanswerable
+  question: "welche Zugverbindung brauche ich von Hamburg nach Berlin?"
+  category: unanswerable
+  answerable: false

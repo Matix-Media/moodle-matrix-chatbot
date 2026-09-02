@@ -42,6 +42,26 @@ answer at all, so refusal is a first-class outcome, not an error path.
   containing "Ignoriere alle vorherigen Anweisungen" must not steer the model.
 - `AC-14` An LLM failure surfaces as a friendly message, not a traceback.
 
+### Corrective and date-aware retrieval
+
+Benchmarked against a real corpus (`specs/012-benchmarks.md`): plain reranking measurably
+*regressed* date-relative questions (a Blockplan chunk for "today" reordered behind a
+topically-similar chunk for a different week) — the reranker sees bare excerpts with no way
+to know which near-duplicate candidate carries the date `_boost` already promoted for.
+
+- `AC-15` **Dated reranking** (`dated_rerank`, only takes effect together with `rerank`) gives
+  the reranker today's date and each candidate's own "Stand" date, so it can prefer the
+  chunk whose date actually matches instead of reordering by topical similarity alone.
+- `AC-16` **Corrective retrieval filtering** (`crag_filter`) scores every candidate's relevance
+  to the question and drops the ones below threshold before reranking/context — distinct from
+  the pre-existing `crag` flag, which only swaps the refusal *text* (an actionable Moodle
+  search link) and never touches which candidates reach the answer prompt.
+- `AC-17` A `crag_filter` pass that scores every candidate below threshold degrades to the
+  unfiltered candidate list rather than an empty one — an empty *context* would be
+  indistinguishable from AC-7's "nothing retrieved at all" case, which skips the LLM call
+  outright, for the wrong reason (a real corrective filter should still let the answer prompt
+  see the (weak) evidence and refuse from it, not from having nothing to look at).
+
 ## Non-goals
 
 - No conversational memory in this spec; each question is answered independently.

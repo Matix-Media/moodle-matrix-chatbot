@@ -73,3 +73,33 @@ Verified against the live corpus (333 file-kind documents): 16 files had no extr
   assuming PNG — a real gap caught during implementation: the original OCR interface hardcoded
   `mime_type="image/png"`, harmless while the only caller was the always-PNG PDF-scan path,
   but would have silently mis-declared WEBP bytes the moment a second image format was added.
+
+## Index-time augmentation (2026-09-02)
+
+`bsbot index` grew several optional per-chunk/per-document augmentation passes over time
+(`--hype`, `--summarize`, `--semantic`) without this spec being updated for them — a gap this
+addendum only partially closes: those three remain undocumented (`src/bsbot/ingest/indexer.py`,
+tested in `tests/unit/test_indexer.py`), and are named here only so the gap itself is visible.
+The one addition made alongside `specs/012-benchmarks.md`'s comparison of RAG techniques is
+documented below.
+
+- `AC-25` **Contextual retrieval** (`--contextualize`, Anthropic's published technique):
+  prepends a short LLM-written sentence to a chunk's own indexed text, situating it within its
+  document (which week, which Lernfeld) before embedding — the same problem `AC-15`'s
+  `header_path` prefix addresses at the document level, applied per-chunk. Targets the
+  Blockplan-chunk case `DEFAULT_NEIGHBOR_RADIUS` in `rag/pipeline.py` already documents: a
+  schedule document arbitrarily cut into fixed-size chunks, where a chunk's own text often
+  cannot say by itself which week it covers. Skips a document's own `--summarize` summary
+  chunk when both are enabled together — contextualizing an already-generated summary would
+  be circular.
+- `AC-26` Enabling `--hype`, `--summarize`, or `--contextualize` for a document already
+  extracted without it reprocesses that document, even though its raw text hasn't changed.
+  Found live running `AC-25`'s first real pilot: the unchanged-content skip in `_index_one`
+  hashed only chunk *bodies*, which none of these three augmentations touch — they only
+  extend the *indexed* text, built after that hash check — so flipping one of these flags on
+  for already-extracted content spent the LLM call and then silently discarded the result at
+  the skip. Fixed by folding which augmentations are active into the hash alongside the
+  content itself, so identical content *and* identical augmentation flags still skip (the
+  original point of the check), but a newly-enabled flag no longer does. This bug predates
+  `--contextualize` — it affected `--hype`/`--summarize` identically, from whenever either
+  was first turned on for an already-indexed corpus.

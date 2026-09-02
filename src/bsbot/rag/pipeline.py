@@ -30,6 +30,7 @@ from bsbot.rag.prompts import (
     FOLLOWUP_TEMPLATE,
     REFUSAL_MARKER,
     RERANK_TEMPLATE,
+    RERANK_TEMPLATE_DATED,
     STEP_BACK_TEMPLATE,
     SUGGEST_FOLLOWUP_TEMPLATE,
     SYSTEM_PROMPT,
@@ -104,6 +105,11 @@ class Answer(BaseModel):
     error: str | None = None
     used_queries: list[str] = []
     suggested_questions: list[str] = []
+    #: doc_id of every chunk that actually reached the answer prompt, in context
+    #: order — i.e. after fuse/boost/diversify/rerank, not just something some query
+    #: variant happened to surface. Populated even on refusal (empty then). Exists
+    #: for retrieval-quality measurement (see `bsbot.eval`); has no effect on answering.
+    context_doc_ids: list[str] = []
 
 
 class AnswerPipeline:
@@ -119,6 +125,22 @@ class AnswerPipeline:
         step_back: bool = False,
         compress_context: bool = False,
         crag: bool = False,
+        #: Gives the reranker today's date and each candidate's own "Stand" date, so
+        #: it can tell "the chunk for this week" from "the chunk for six weeks ago"
+        #: instead of reordering by topical similarity alone. Without this, reranking
+        #: can (and, measured on this corpus, does) undo `_boost`'s date match —
+        #: the reranker has no way to know which near-duplicate Blockplan chunk is
+        #: "today's" once it only sees bare excerpts. Only takes effect when
+        #: ``rerank`` is also on.
+        dated_rerank: bool = False,
+        #: Corrective RAG: score every candidate's relevance to the question
+        #: (0.0-1.0, see `_evaluate_relevance`) and drop the ones below
+        #: ``crag_filter_threshold`` before they reach reranking/context — one LLM
+        #: call per candidate, so it is the most expensive technique here. Distinct
+        #: from ``crag``, which only swaps the refusal *text* and touches nothing
+        #: about retrieval.
+        crag_filter: bool = False,
+        crag_filter_threshold: float = 0.3,
         suggest_followup: bool = False,
         moodle_base_url: str | None = None,
         max_context_chunks: int = DEFAULT_MAX_CONTEXT_CHUNKS,
@@ -139,6 +161,9 @@ class AnswerPipeline:
         self._step_back = step_back
         self._compress_context = compress_context
         self._crag = crag
+        self._dated_rerank = dated_rerank
+        self._crag_filter = crag_filter
+        self._crag_filter_threshold = crag_filter_threshold
         self._suggest_followup = suggest_followup
         self._moodle_base_url = moodle_base_url
         self._max_context = max_context_chunks
@@ -208,6 +233,9 @@ class AnswerPipeline:
             log.info("rag.answered", grounded=False, citations=0)
             return result
 
+        if self._crag_filter:
+            hits = self._crag_filtered(search_question, hits)
+
         if self._rerank:
             hits, confident = self._reranked(search_question, hits)
             # A second, bounded hop: whenever the first pass looks thin — the
@@ -251,6 +279,7 @@ class AnswerPipeline:
                 grounded=False,
                 error=f"{type(exc).__name__}: {exc}",
                 used_queries=queries,
+                context_doc_ids=[h.doc_id for h in context_hits],
             )
             log.info("rag.answered", grounded=False, citations=0)
             return result
@@ -373,6 +402,22 @@ class AnswerPipeline:
             log.info("rag.crag_eval_failed", error=str(exc))
         return 1.0
 
+    def _crag_filtered(self, question: str, hits: list[SearchHit]) -> list[SearchHit]:
+        """Corrective RAG: drop candidates ``_evaluate_relevance`` scores as
+        off-topic before they reach reranking/context, rather than trusting fusion
+        order alone to keep noise out. One LLM call per candidate.
+
+        Never returns an empty list: if every candidate scores below threshold,
+        that is a real "nothing relevant was retrieved" situation the answer
+        prompt itself is better placed to refuse from (via REFUSAL_MARKER) than
+        an artificially emptied context, which would look like AC-7's "no hits at
+        all" case for the wrong reason and skip the LLM call in `answer` entirely.
+        """
+        kept = [
+            h for h in hits if self._evaluate_relevance(question, h) >= self._crag_filter_threshold
+        ]
+        return kept or hits
+
     def _actionable_fallback(self, question: str) -> str:
         """Construct an actionable fallback with a direct Moodle search link."""
         from urllib.parse import quote_plus
@@ -446,14 +491,27 @@ class AnswerPipeline:
         confidently picked only 2 of 12 candidates is a much stronger "this needs
         more" signal than the reordered list alone would expose.
         """
-        candidates = "\n\n".join(
-            f"[{i}] {h.header_text}\n{_clip(h.text, 500)}" for i, h in enumerate(hits, start=1)
-        )
+        if self._dated_rerank:
+            candidates = "\n\n".join(
+                f"[{i}] {h.header_text}{self._stand_suffix(h)}\n{_clip(h.text, 500)}"
+                for i, h in enumerate(hits, start=1)
+            )
+            prompt = RERANK_TEMPLATE_DATED.format(
+                question=question,
+                today=_format_weekday_date(self._clock()),
+                candidates=candidates,
+                k=self._max_context,
+            )
+        else:
+            candidates = "\n\n".join(
+                f"[{i}] {h.header_text}\n{_clip(h.text, 500)}" for i, h in enumerate(hits, start=1)
+            )
+            prompt = RERANK_TEMPLATE.format(
+                question=question, candidates=candidates, k=self._max_context
+            )
         try:
             raw = self._llm.generate(
-                RERANK_TEMPLATE.format(
-                    question=question, candidates=candidates, k=self._max_context
-                ),
+                prompt,
                 purpose="rerank",
                 model=self._utility_model,
                 temperature=0.0,
@@ -515,18 +573,20 @@ class AnswerPipeline:
             return hit.body or hit.text
         return "\n\n".join((n.body or n.text) for n in neighbors)
 
+    def _stand_suffix(self, hit: SearchHit) -> str:
+        """ " (Stand: TT.MM.JJJJ)" for a hit with a known source date, else ""."""
+        if not hit.source_date:
+            return ""
+        source_date = _format_weekday_date(
+            datetime.fromtimestamp(hit.source_date, tz=_SCHOOL_TZ), weekday=False
+        )
+        return f" (Stand: {source_date})"
+
     def _format_context(self, hits: list[SearchHit], question: str | None = None) -> str:
         blocks = []
         for index, hit in enumerate(hits, start=1):
             location = f", S. {hit.page}" if hit.page else ""
-            source_date = (
-                _format_weekday_date(
-                    datetime.fromtimestamp(hit.source_date, tz=_SCHOOL_TZ), weekday=False
-                )
-                if hit.source_date
-                else None
-            )
-            stand = f" (Stand: {source_date})" if source_date else ""
+            stand = self._stand_suffix(hit)
             body = self._expanded_body(hit)
             if self._compress_context and question:
                 body = self._compress_hit(question, hit, body)
@@ -540,11 +600,14 @@ class AnswerPipeline:
         self, raw: str, hits: list[SearchHit], queries: list[str], question: str = ""
     ) -> Answer:
         text = raw.strip()
+        doc_ids = [h.doc_id for h in hits]
         if REFUSAL_MARKER in text:  # AC-10
             fallback_text = (
                 self._actionable_fallback(question) if (self._crag and question) else NO_ANSWER_TEXT
             )
-            return Answer(text=fallback_text, grounded=False, used_queries=queries)
+            return Answer(
+                text=fallback_text, grounded=False, used_queries=queries, context_doc_ids=doc_ids
+            )
 
         # AC-9: only keep citation indexes that were actually offered.
         # The model groups citations as "[1, 2]" at least as often as "[1] [2]",
@@ -568,7 +631,13 @@ class AnswerPipeline:
             for index in cited
             if 1 <= index <= len(hits)
         ]
-        return Answer(text=text, citations=citations, grounded=True, used_queries=queries)
+        return Answer(
+            text=text,
+            citations=citations,
+            grounded=True,
+            used_queries=queries,
+            context_doc_ids=doc_ids,
+        )
 
 
 #: "LF10", "LF 10", "Lernfeld10", "lf06" — every phrasing a student actually types.

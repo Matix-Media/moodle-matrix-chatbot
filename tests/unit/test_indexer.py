@@ -438,3 +438,109 @@ class TestHierarchicalSummarization:
         assert "Zusammenfassung" in chunks[0].header_text
         assert "Grundlagen der Netzwerktechnik" in chunks[0].text
         assert chunks[0].meta.get("summary") is True
+
+
+class TestContextualRetrieval:
+    """A chunk's own text often can't say which week/Lernfeld it belongs to — see
+    DEFAULT_NEIGHBOR_RADIUS in rag/pipeline.py for the same corpus problem worked
+    around at query time. contextualize prepends that missing context at index time
+    instead, so both keyword and vector search see it directly."""
+
+    async def test_contextualize_prepends_context_to_indexed_text(self, store: Store) -> None:
+        long_text = "Montag 17.08.: Workshop A. " * 20 + "Dienstag 18.08.: Workshop B. " * 20
+        store.persist_crawl([doc("a", ContentKind.INLINE, text=long_text, title="Blockplan")])
+
+        async def fake_context(full_text: str, chunk_body: str) -> str:
+            return "Dieser Abschnitt behandelt die Woche vom 17.-18.08.2026 (Lernfeld 10)."
+
+        stats = await Indexer(
+            store,
+            FakeFetcher({}, store),
+            target_chars=300,
+            contextualize=True,
+            context_generator=fake_context,
+        ).index_pending()  # type: ignore[arg-type]
+
+        assert stats.indexed == 1
+        chunks = store.chunks_for("a")
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert chunk.text.startswith("Dieser Abschnitt behandelt die Woche vom 17.-18.08.2026")
+            assert chunk.meta.get("context") == (
+                "Dieser Abschnitt behandelt die Woche vom 17.-18.08.2026 (Lernfeld 10)."
+            )
+
+        # The situating sentence itself is now searchable, not just the raw chunk text.
+        rows = store.connection.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'Lernfeld'"
+        ).fetchall()
+        assert len(rows) == len(chunks)
+
+    async def test_contextualize_off_by_default_leaves_text_unchanged(self, store: Store) -> None:
+        store.persist_crawl([doc("a", ContentKind.INLINE, text="Kurzer Text.")])
+        stats = await Indexer(store, FakeFetcher({}, store)).index_pending()  # type: ignore[arg-type]
+
+        assert stats.indexed == 1
+        chunks = store.chunks_for("a")
+        assert chunks[0].text.strip().endswith("Kurzer Text.")
+        assert "context" not in chunks[0].meta
+
+    async def test_contextualize_skips_the_summary_chunk(self, store: Store) -> None:
+        """Contextualizing a document summary would be circular — the summary
+        already is a document-level context, not a fragment that needs one."""
+        long_text = "Dies ist ein sehr langes Dokument über LF5 Netzwerktechnik. " * 40
+        store.persist_crawl([doc("a", ContentKind.INLINE, text=long_text, title="LF5 Skript")])
+
+        calls: list[str] = []
+
+        async def fake_summary(title: str, text: str) -> str:
+            return "Zusammenfassung: LF5 behandelt Grundlagen der Netzwerktechnik."
+
+        async def fake_context(full_text: str, chunk_body: str) -> str:
+            calls.append(chunk_body)
+            return "Kontext-Satz."
+
+        await Indexer(
+            store,
+            FakeFetcher({}, store),
+            target_chars=300,
+            summarize=True,
+            summary_generator=fake_summary,
+            contextualize=True,
+            context_generator=fake_context,
+        ).index_pending()  # type: ignore[arg-type]
+
+        chunks = store.chunks_for("a")
+        assert "Zusammenfassung" in chunks[0].header_text
+        assert not chunks[0].text.startswith("Kontext-Satz.")
+        assert all("Zusammenfassung" not in body for body in calls)
+
+    async def test_enabling_contextualize_later_reprocesses_unchanged_content(
+        self, store: Store
+    ) -> None:
+        """Regression: the change-detection hash used to hash only chunk *bodies*,
+        which contextualize never touches (it only affects the indexed text built
+        after that hash check) — so turning --contextualize on for a document
+        already extracted without it looked unchanged, spent the LLM call, and then
+        silently discarded the result. A doc-id reset (the same one --realias uses)
+        must actually take effect, not be swallowed by the unchanged-content skip.
+        """
+        store.persist_crawl([doc("a", ContentKind.INLINE, text="Kurzer Text.")])
+        first = await Indexer(store, FakeFetcher({}, store)).index_pending()  # type: ignore[arg-type]
+        assert first.indexed == 1
+        assert "context" not in store.chunks_for("a")[0].meta
+
+        store.reset_extraction_for_doc_ids(["a"])
+
+        async def fake_context(full_text: str, chunk_body: str) -> str:
+            return "Kontext-Satz."
+
+        second = await Indexer(
+            store, FakeFetcher({}, store), contextualize=True, context_generator=fake_context
+        ).index_pending()  # type: ignore[arg-type]
+
+        assert second.indexed == 1
+        assert second.skipped == 0
+        chunks = store.chunks_for("a")
+        assert chunks[0].meta.get("context") == "Kontext-Satz."
+        assert chunks[0].text.startswith("Kontext-Satz.")
