@@ -136,9 +136,7 @@ class BerufsschuleBot:
             raw_ts = getattr(event, "server_timestamp", 0) or int(time.time() * 1000)
             timemodified = raw_ts // 1000 if raw_ts > 10_000_000_000 else raw_ts
             room_name = (
-                getattr(room, "display_name", "")
-                or getattr(room, "name", "")
-                or room.room_id
+                getattr(room, "display_name", "") or getattr(room, "name", "") or room.room_id
             )
             try:
                 self._store.index_matrix_message(
