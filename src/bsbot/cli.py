@@ -13,6 +13,8 @@ import typer
 from pydantic import ValidationError
 
 from bsbot.config import ConfigError, Settings, load_settings
+from bsbot.eval.golden import GoldenSetError, load_golden_set
+from bsbot.eval.runner import PRESETS, run_benchmark
 from bsbot.index.search import HybridSearcher
 from bsbot.index.store import Store
 from bsbot.ingest.crawler import CourseCrawler
@@ -218,6 +220,11 @@ def index(
         False,
         help="Use semantic sentence-embedding chunking instead of fixed-size chunking.",
     ),
+    contextualize: bool = typer.Option(
+        False,
+        help="Prepend a short LLM-written situating sentence to each chunk before "
+        "indexing (Anthropic's contextual retrieval). One LLM call per chunk.",
+    ),
 ) -> None:
     """Fetch, extract and chunk everything the manifest reports as pending (M3+M4)."""
     from urllib.parse import urlsplit
@@ -256,7 +263,7 @@ def index(
             ocr_hook = None
             gemini_client = None
             embedder_fn = None
-            if ocr or hype or summarize or semantic:
+            if ocr or hype or summarize or semantic or contextualize:
                 try:
                     gemini_cfg = settings.require_gemini()
                     gemini_client = GeminiClient(gemini_cfg)
@@ -277,7 +284,7 @@ def index(
                             res = gem_embedder.embed_documents(texts, skip_failures=True)
                             return [v for v in res if v is not None]
                 except ConfigError as exc:
-                    if ocr or hype or summarize:
+                    if ocr or hype or summarize or contextualize:
                         _fail(str(exc))
                         return
 
@@ -299,6 +306,7 @@ def index(
                     embedder=embedder_fn,
                     hype=hype,
                     summarize=summarize,
+                    contextualize=contextualize,
                 ).index_pending(limit=limit or None)
             total_chunks = store.connection.execute("select count(*) from chunks").fetchone()[0]
 
@@ -457,6 +465,12 @@ def ask(
         False, help="Extract only relevant sentences from chunks before generating answer."
     ),
     no_crag: bool = typer.Option(False, help="Disable CRAG actionable fallback search links."),
+    dated_rerank: bool = typer.Option(
+        False, help="Give the reranker today's date and each candidate's own date."
+    ),
+    crag_filter: bool = typer.Option(
+        False, help="Drop candidates the model scores as off-topic before reranking/context."
+    ),
     suggest_followup: bool = typer.Option(
         False, help="Generate proactive suggested follow-up questions."
     ),
@@ -491,6 +505,8 @@ def ask(
             step_back=not no_step_back,
             compress_context=compress_context,
             crag=not no_crag,
+            dated_rerank=dated_rerank,
+            crag_filter=crag_filter,
             suggest_followup=suggest_followup,
             moodle_base_url=settings.moodle.base_url
             if settings.moodle.base_url
@@ -514,6 +530,141 @@ def ask(
             typer.echo(f"  • {sq}")
     if answer.used_queries and len(answer.used_queries) > 1:
         typer.secho(f"\n(Suchanfragen: {' | '.join(answer.used_queries)})", dim=True)
+
+
+@app.command()
+def bench(
+    golden: Path = typer.Option(
+        ...,
+        "--golden",
+        help="Golden question set (YAML) — see config/golden_questions.example.yaml.",
+    ),
+    methods: str = typer.Option(
+        "all",
+        help=f"Comma-separated preset names to run, or 'all'. Available: {', '.join(PRESETS)}.",
+    ),
+    judge: bool = typer.Option(
+        False,
+        help="Also score each grounded answer 1-5 with an LLM judge. Costs one extra "
+        "LLM call per answered question, so off by default.",
+    ),
+    limit: int = typer.Option(0, help="Only run the first N golden questions (0 = all)."),
+    as_of: str = typer.Option(
+        None,
+        "--as-of",
+        help="Pin 'today' to this date (YYYY-MM-DD) instead of the real clock, so a "
+        "date-relative question ('heute', 'am Montag') resolves the same way on every "
+        "run. Without this, a golden entry whose expected_keywords depend on which "
+        "day it names (e.g. a Blockplan's per-day arrival time) can pass today and "
+        "fail next week for no pipeline reason at all — see specs/012-benchmarks.md.",
+    ),
+    output: Path = typer.Option(
+        None, "--output", help="Also write the full report (per-question detail) as JSON here."
+    ),
+) -> None:
+    """Run the golden question set through each RAG technique preset and compare (spec 012).
+
+    Retrieval-time techniques (expand, rerank, decompose, step_back, compress, crag) are
+    compared directly by this command. HyPE and semantic chunking are index-time — build
+    two indexes with `bsbot index --hype`/`--semantic` and run this command against each
+    (`BSBOT_DATA_DIR` or a copied index.db), then diff the two --output reports.
+    """
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    clock = None
+    if as_of:
+        try:
+            fixed_date = date.fromisoformat(as_of)
+        except ValueError:
+            _fail(f"--as-of must be YYYY-MM-DD, got {as_of!r}")
+            return
+        fixed = datetime(
+            fixed_date.year,
+            fixed_date.month,
+            fixed_date.day,
+            12,
+            0,
+            tzinfo=ZoneInfo("Europe/Berlin"),
+        )
+        clock = lambda: fixed  # noqa: E731
+
+    settings = _settings()
+    configure_logging("WARNING")
+    try:
+        gemini = settings.require_gemini()
+    except ConfigError as exc:
+        _fail(str(exc))
+        return
+
+    try:
+        golden_set = load_golden_set(golden)
+    except GoldenSetError as exc:
+        _fail(str(exc))
+        return
+    if not golden_set:
+        _fail(f"{golden}: no questions found")
+        return
+    if limit:
+        golden_set = golden_set[:limit]
+
+    if methods == "all":
+        selected = PRESETS
+    else:
+        names = [m.strip() for m in methods.split(",") if m.strip()]
+        unknown = [n for n in names if n not in PRESETS]
+        if unknown:
+            _fail(f"unknown preset(s) {unknown}; available: {', '.join(PRESETS)}")
+            return
+        selected = {n: PRESETS[n] for n in names}
+
+    with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
+        client = GeminiClient(gemini)
+        embedder = GeminiEmbedder(
+            client,
+            store=store,
+            model=gemini.embed_model,
+            dim=gemini.embed_dim,
+            batch_size=gemini.embed_batch_size,
+            rpm=gemini.embed_rpm,
+            items_per_minute=gemini.embed_items_per_minute,
+        )
+        searcher = HybridSearcher(store, embedder=embedder)
+
+        as_of_note = f" (as of {as_of})" if as_of else ""
+        typer.echo(
+            f"running {len(golden_set)} question(s) x {len(selected)} preset(s){as_of_note}..."
+        )
+        pipeline_kwargs: dict[str, object] = {
+            "moodle_base_url": settings.moodle.base_url
+            if settings.moodle.base_url
+            else "https://moodle.itech-bs14.de",
+            "utility_model": gemini.utility_model,
+        }
+        if clock is not None:
+            pipeline_kwargs["clock"] = clock
+        report = run_benchmark(
+            golden_set,
+            searcher,
+            client,
+            presets=selected,
+            judge=judge,
+            pipeline_kwargs=pipeline_kwargs,
+        )
+
+    typer.echo()
+    typer.echo(report.to_table())
+
+    for pr in report.presets:
+        for r in pr.results:
+            if r.error:
+                typer.secho(
+                    f"  [{pr.preset}] {r.question_id} failed: {r.error}", fg=typer.colors.RED
+                )
+
+    if output:
+        output.write_text(report.to_json())
+        typer.echo(f"\nfull report written to {output}")
 
 
 @app.command()

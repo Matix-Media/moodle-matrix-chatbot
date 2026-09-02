@@ -1,0 +1,54 @@
+# Example golden question set for `bsbot bench` — see specs/012-benchmarks.md.
+#
+# This file is a TEMPLATE, not real data: nobody outside this deployment's Moodle
+# knows its actual course names, teacher abbreviations or Lernfeld numbers, so these
+# entries only illustrate the schema. Copy this file to golden_questions.yaml (not
+# committed if it contains real student-facing details you don't want in git — check
+# with your school) and replace the entries with real questions from this corpus:
+#
+#   - Ask `bsbot search "<question>"` first to find the doc_id and header text of the
+#     chunk that should answer it; put the doc_id in expected_doc_ids.
+#   - Prefer questions you already know the answer to (from a real "wo finde ich..."
+#     you had to look up, or a question a student actually asked in the chat).
+#   - Mix in a few `answerable: false` entries — questions genuinely not covered by
+#     Moodle — to measure refusal, not just retrieval.
+#
+# Every field except `id` and `question` is optional (AC-1). Only fields present are
+# scored — see the Metrics section of specs/012-benchmarks.md for what each does.
+#
+# Run with:
+#   bsbot bench --golden config/golden_questions.yaml
+#   bsbot bench --golden config/golden_questions.yaml --methods baseline,expand,rerank
+#   bsbot bench --golden config/golden_questions.yaml --judge --output bench_report.json
+
+- id: exam-date-lexical
+  question: "Wann ist die Abschlussprüfung Teil 1?"
+  category: lexical-needle
+  # From `bsbot search`, the doc_id (course_id:module_id:ordinal) of the chunk that
+  # actually names the date. Replace with a real one from this corpus.
+  expected_doc_ids: ["1234:56789:0"]
+  expected_keywords: ["Abschlussprüfung"]
+
+- id: exam-date-casual-phrasing
+  question: "wann is die prüfung"
+  category: casual-phrasing
+  notes: >
+    Same underlying fact as exam-date-lexical, phrased the way a student actually
+    types it. Retrieval-any should improve markedly with query expansion on.
+  expected_header_contains: ["Abschlussprüfung"]
+
+- id: lernfeld-scoped
+  question: "Was steht im Blockplan für Lernfeld 10 diese Woche?"
+  category: temporal
+  expected_header_contains: ["Lernfeld 10"]
+
+- id: multi-part
+  question: "Brauche ich in Mathe einen Taschenrechner und wann ist die nächste Klausur?"
+  category: multi-part
+  notes: "Two unrelated sub-questions in one message — a decomposition test case."
+  expected_keywords: ["Taschenrechner"]
+
+- id: out-of-scope
+  question: "Wie wird das Wetter morgen?"
+  category: unanswerable
+  answerable: false

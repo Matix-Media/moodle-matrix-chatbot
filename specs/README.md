@@ -46,3 +46,4 @@ Design rationale, external constraints, links.
 | [007](007-retrieval.md) | Embeddings and hybrid retrieval | `test_embed.py`, `test_search.py` | active |
 | [008](008-answering.md) | Grounded answering | `test_rag.py` | active |
 | [009](009-matrix-bot.md) | Matrix bot | `test_matrix_bot.py` | active |
+| [012](012-benchmarks.md) | RAG method benchmarks | `test_bench.py` | active |

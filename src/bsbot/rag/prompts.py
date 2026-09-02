@@ -124,6 +124,23 @@ Antworte nur mit den Nummern, durch Komma getrennt, höchstens {k} Stück.
 Wenn keiner passt, antworte mit einem Bindestrich.
 """
 
+RERANK_TEMPLATE_DATED = """\
+Frage: {question}
+Heute ist {today}.
+
+Unten stehen nummerierte Textauszüge. Manche sind mit "(Stand: TT.MM.JJJJ)" markiert,
+dem Datum, auf das sich ihr Inhalt bezieht (z. B. welche Woche ein Blockplan-Auszug
+zeigt). Wähle die Auszüge aus, die die Frage tatsächlich beantworten, und sortiere sie
+von am hilfreichsten nach am wenigsten hilfreich. Bevorzuge bei mehreren inhaltlich
+ähnlichen Auszügen (z. B. mehrere Wochen desselben Blockplans) den, dessen Stand-Datum
+am besten zum heutigen Datum oder zu einem in der Frage genannten Datum passt.
+
+{candidates}
+
+Antworte nur mit den Nummern, durch Komma getrennt, höchstens {k} Stück.
+Wenn keiner passt, antworte mit einem Bindestrich.
+"""
+
 DECOMPOSE_TEMPLATE = """\
 Eine Schülerin oder ein Schüler einer Berufsschule stellt diese Frage:
 
@@ -187,6 +204,38 @@ und die durch diesen Text beantwortet werden.
 Verwende dabei sowohl umgangssprachliche Formulierungen als auch offizielle Begriffe.
 
 Gib nur die Fragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
+"""
+
+JUDGE_TEMPLATE = """\
+Frage einer Schülerin / eines Schülers: {question}
+
+Erwartete Stichworte, die eine gute Antwort enthalten sollte (nicht zwingend wörtlich,
+aber inhaltlich): {expected_keywords}
+
+Tatsächliche Antwort des Assistenten:
+{answer}
+
+Bewerte auf einer Skala von 1 bis 5, wie gut die tatsächliche Antwort die Frage
+beantwortet und die erwarteten Stichworte inhaltlich abdeckt:
+1 = falsch oder beantwortet die Frage nicht
+3 = teilweise richtig, wichtige Details fehlen
+5 = vollständig richtig und deckt die erwarteten Stichworte ab
+
+Antworte nur mit der Zahl (1, 2, 3, 4 oder 5), ohne Erklärung.
+"""
+
+CONTEXTUAL_CHUNK_TEMPLATE = """\
+Gesamtes Dokument (ggf. gekürzt):
+{document}
+
+Textabschnitt aus diesem Dokument:
+{chunk}
+
+Schreibe 1-2 kurze Sätze auf Deutsch, die diesen Abschnitt innerhalb des
+Gesamtdokuments einordnen (z. B. welcher Zeitraum, welche Woche, welches Lernfeld
+oder welcher Themenblock). Nenne dabei konkrete Daten, Wochentage oder Bezeichner aus
+dem Dokument, falls im Abschnitt vorhanden. Gib NUR diese 1-2 Sätze aus, ohne
+Einleitung, ohne den Abschnitt zu wiederholen.
 """
 
 DOCUMENT_SUMMARY_TEMPLATE = """\

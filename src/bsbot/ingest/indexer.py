@@ -37,7 +37,7 @@ from bsbot.ingest.taskcards import (
     share_token_from_url,
 )
 from bsbot.ingest.youtube import TranscriptApi, extract_video_id, fetch_transcript
-from bsbot.rag.prompts import DOCUMENT_SUMMARY_TEMPLATE, HYPE_TEMPLATE
+from bsbot.rag.prompts import CONTEXTUAL_CHUNK_TEMPLATE, DOCUMENT_SUMMARY_TEMPLATE, HYPE_TEMPLATE
 
 #: filename hints so the generic extractor dispatches correctly for a fetched
 #: export (magic bytes cover pptx/xlsx; a plain-text export has no signature).
@@ -49,6 +49,8 @@ TaskcardsFetch = Callable[
 
 HypeGenerator = Callable[[str], Awaitable[list[str]] | list[str]]
 SummaryGenerator = Callable[[str, str], Awaitable[str | None] | str | None]
+#: (full document text, this chunk's own body) -> a 1-2 sentence situating context.
+ContextGenerator = Callable[[str, str], Awaitable[str | None] | str | None]
 
 log = structlog.get_logger(__name__)
 
@@ -103,6 +105,15 @@ class Indexer:
         hype_generator: HypeGenerator | None = None,
         summarize: bool = False,
         summary_generator: SummaryGenerator | None = None,
+        #: Contextual retrieval (Anthropic's published technique): prepend a short
+        #: LLM-written sentence situating each chunk within its document (which
+        #: week of a Blockplan, which Lernfeld) before it is embedded/indexed. A
+        #: chunk's own text alone often can't say that — a Blockplan is one
+        #: continuous document arbitrarily cut into fixed-size chunks (see
+        #: DEFAULT_NEIGHBOR_RADIUS in rag/pipeline.py) — but full-corpus reindexing
+        #: costs one LLM call per chunk, same order of cost as ``hype``.
+        contextualize: bool = False,
+        context_generator: ContextGenerator | None = None,
     ) -> None:
         self._store = store
         self._fetcher = fetcher
@@ -128,6 +139,8 @@ class Indexer:
         self._hype_generator = hype_generator
         self._summarize = summarize
         self._summary_generator = summary_generator
+        self._contextualize = contextualize
+        self._context_generator = context_generator
 
     async def index_pending(self, *, limit: int | None = None) -> IndexStats:
         pending = self._store.documents_needing_extraction(extract_version=self._extract_version)
@@ -199,6 +212,48 @@ class Indexer:
                 log.info("index.summary_failed", error=str(exc))
         return None
 
+    def _augmentation_signature(self) -> str:
+        """Which per-chunk augmentations are active this run, as a stable string.
+
+        Folded into the change-detection hash below `_index_one` so that toggling
+        ``--hype``/``--summarize``/``--contextualize`` on for a document whose raw
+        text is unchanged still triggers reprocessing. Without this, the hash
+        compared only chunk *bodies* — which none of these three touch, they only
+        add to the indexed text built after the hash check — so flipping one of
+        these flags on for an already-extracted document spent the LLM calls and
+        then silently discarded the result at the "unchanged" skip below.
+        """
+        return (
+            f"hype={bool(self._hype or self._hype_generator)}"
+            f",summarize={bool(self._summarize or self._summary_generator)}"
+            f",contextualize={bool(self._contextualize or self._context_generator)}"
+        )
+
+    async def _generate_context(self, full_text: str, chunk_body: str) -> str | None:
+        if not chunk_body.strip():
+            return None
+        if self._context_generator is not None:
+            res = self._context_generator(full_text, chunk_body)
+            if asyncio.iscoroutine(res):
+                return await res
+            return res  # type: ignore[return-value]
+        if self._llm is not None:
+            try:
+                raw = await asyncio.to_thread(
+                    self._llm.generate,
+                    CONTEXTUAL_CHUNK_TEMPLATE.format(
+                        document=_clip(full_text, 3000), chunk=_clip(chunk_body, 1500)
+                    ),
+                    purpose="contextualize",
+                    model=self._utility_model,
+                    temperature=0.0,
+                )
+                context = raw.strip()
+                return context if context else None
+            except Exception as exc:
+                log.info("index.contextualize_failed", error=str(exc))
+        return None
+
     async def _index_one(self, document: Document, stats: IndexStats) -> None:
         from bsbot.ingest.chunk import Chunk
 
@@ -265,7 +320,24 @@ class Indexer:
                 if qs:
                     chunk_questions[idx] = qs
 
-        text_sha256 = content_sha256("\n".join(c.body for c in chunks))
+        # Contextual Retrieval: prepend a short situating sentence to each chunk's
+        # own indexed text. Skips a summary chunk (inserted above) — it already is
+        # the document-level context, contextualizing it would be circular.
+        chunk_context: dict[int, str] = {}
+        if self._contextualize or self._context_generator:
+            full_text = "\n\n".join(
+                c.body for c in chunks if "Zusammenfassung" not in c.header_text
+            )
+            for idx, chunk in enumerate(chunks):
+                if "Zusammenfassung" in chunk.header_text:
+                    continue
+                ctx = await self._generate_context(full_text, chunk.body)
+                if ctx:
+                    chunk_context[idx] = ctx
+
+        text_sha256 = content_sha256(
+            "\n".join(c.body for c in chunks) + "|" + self._augmentation_signature()
+        )
         # External content (a live TaskCards board, a HackMD note) is re-fetched on
         # a schedule we don't control the granularity of, so re-extraction happens
         # far more often than the text actually changes. Comparing hashes here is
@@ -285,10 +357,14 @@ class Indexer:
         formatted_chunks = []
         for idx, chunk in enumerate(chunks):
             qs = chunk_questions.get(idx, [])
-            # If questions were generated, append them to searchable text
+            ctx = chunk_context.get(idx)
+            # Situating context goes first (it frames the excerpt), hypothetical
+            # questions last (they extend, rather than reframe, the searchable text).
             text_to_index = chunk.text
+            if ctx:
+                text_to_index = f"{ctx}\n\n{text_to_index}"
             if qs:
-                text_to_index = f"{chunk.text}\n\nFragen:\n" + "\n".join(qs)
+                text_to_index = f"{text_to_index}\n\nFragen:\n" + "\n".join(qs)
 
             meta: dict[str, Any] = {
                 "ordinal": chunk.ordinal,
@@ -298,6 +374,8 @@ class Indexer:
             }
             if qs:
                 meta["questions"] = qs
+            if ctx:
+                meta["context"] = ctx
             if "Zusammenfassung" in chunk.header_text:
                 meta["summary"] = True
 

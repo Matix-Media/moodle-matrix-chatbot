@@ -127,6 +127,27 @@ class TestGrounding:
         _, prompt = llm.prompts[0]
         assert prompt.count("[QUELLE ") == 4
 
+    def test_context_doc_ids_reflect_what_was_actually_shown(self) -> None:
+        """Answer.context_doc_ids exists for retrieval-quality measurement — see
+        bsbot.eval / specs/012-benchmarks.md — and must match the chunks that
+        actually reached the answer prompt, not the whole candidate pool."""
+        hits = [hit(i, f"Absatz {i}") for i in range(1, 21)]
+        pipeline, _, _ = make(hits, max_context_chunks=3)
+        answer = pipeline.answer("Frage?")
+        assert answer.context_doc_ids == ["d1", "d2", "d3"]
+
+    def test_context_doc_ids_present_on_refusal(self) -> None:
+        """A refusal still shows the model something; that context is worth knowing."""
+        llm = FakeLLM({"answer": REFUSAL_MARKER})
+        pipeline, _, _ = make([hit(1, "Etwas anderes.")], llm=llm)
+        answer = pipeline.answer("Wann ist die Prüfung?")
+        assert answer.context_doc_ids == ["d1"]
+
+    def test_context_doc_ids_empty_when_nothing_retrieved(self) -> None:
+        pipeline, _, _ = make([])
+        answer = pipeline.answer("Wie ist das Wetter?")
+        assert answer.context_doc_ids == []
+
 
 class TestPromptSafety:
     def test_retrieved_text_is_marked_as_data(self) -> None:
@@ -224,6 +245,99 @@ class TestTemporalContext:
         _, prompt = llm.prompts[0]
         source_line = next(line for line in prompt.splitlines() if line.startswith("[QUELLE 1]"))
         assert "(Stand:" not in source_line
+
+
+class TestDatedRerank:
+    """dated_rerank exists because plain rerank was measured (bsbot bench, spec 012)
+    undoing _boost's date match on Blockplan-style content: the reranker had no way
+    to tell which near-duplicate chunk was "today's" from bare excerpts alone."""
+
+    def test_dated_rerank_shows_today_and_each_candidates_stand_date(self) -> None:
+        fixed = datetime(2026, 8, 21, 12, 0, tzinfo=_BERLIN)  # a Friday
+        llm = FakeLLM({"rerank": "1"})
+        hits = [hit(1, "Diese Woche", source_date=1_700_000_000), hit(2, "Andere Woche")]
+        pipeline = AnswerPipeline(
+            FakeSearcher(hits),
+            llm,
+            expand=False,
+            rerank=True,
+            dated_rerank=True,
+            clock=lambda: fixed,
+        )  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        rerank_prompt = next(p for kind, p in llm.prompts if kind == "rerank")
+        assert "Heute ist Freitag, 21.08.2026" in rerank_prompt
+        assert "(Stand:" in rerank_prompt
+
+    def test_plain_rerank_carries_no_date_context(self) -> None:
+        """dated_rerank defaults off — existing rerank behaviour is unchanged."""
+        llm = FakeLLM({"rerank": "1"})
+        hits = [hit(1, "Diese Woche", source_date=1_700_000_000)]
+        pipeline = AnswerPipeline(FakeSearcher(hits), llm, expand=False, rerank=True)  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        rerank_prompt = next(p for kind, p in llm.prompts if kind == "rerank")
+        assert "Heute ist" not in rerank_prompt
+        assert "(Stand:" not in rerank_prompt
+
+    def test_dated_rerank_without_rerank_has_no_effect(self) -> None:
+        """dated_rerank only takes effect when rerank is also on."""
+        llm = FakeLLM()
+        hits = [hit(1, "Inhalt.")]
+        pipeline = AnswerPipeline(
+            FakeSearcher(hits), llm, expand=False, rerank=False, dated_rerank=True
+        )  # type: ignore[arg-type]
+        pipeline.answer("Frage?")
+        assert not any(kind == "rerank" for kind, _ in llm.prompts)
+
+
+class TestCragFilter:
+    """crag_filter wires the existing (previously dead) _evaluate_relevance scorer
+    into an actual filtering step — distinct from `crag`, which only swaps the
+    refusal *text* and never touches which candidates reach the answer prompt."""
+
+    class _ScoredLLM:
+        """Scores a candidate by a substring match in its own crag_eval prompt,
+        so two different hits in the same call can get two different scores."""
+
+        def __init__(self) -> None:
+            self.prompts: list[tuple[str, str]] = []
+
+        def generate(
+            self, prompt: str, *, system: str | None = None, purpose: str = "answer", **kw
+        ) -> str:
+            self.prompts.append((purpose, prompt))
+            if purpose == "crag_eval":
+                return "0.9" if "Relevanter Inhalt" in prompt else "0.05"
+            return "Die Prüfung ist am 15.03.2026. [1]"
+
+    def test_crag_filter_drops_a_low_scoring_candidate(self) -> None:
+        llm = self._ScoredLLM()
+        hits = [hit(1, "Relevanter Inhalt"), hit(2, "Irrelevanter Kram")]
+        pipeline = AnswerPipeline(
+            FakeSearcher(hits), llm, expand=False, rerank=False, crag_filter=True
+        )  # type: ignore[arg-type]
+        answer = pipeline.answer("Frage?")
+        assert answer.context_doc_ids == ["d1"]
+
+    def test_crag_filter_off_by_default_keeps_every_candidate(self) -> None:
+        llm = self._ScoredLLM()
+        hits = [hit(1, "Relevanter Inhalt"), hit(2, "Irrelevanter Kram")]
+        pipeline = AnswerPipeline(FakeSearcher(hits), llm, expand=False, rerank=False)  # type: ignore[arg-type]
+        answer = pipeline.answer("Frage?")
+        assert set(answer.context_doc_ids) == {"d1", "d2"}
+        assert not any(kind == "crag_eval" for kind, _ in llm.prompts)
+
+    def test_crag_filter_never_empties_the_context(self) -> None:
+        """Even a uniformly-low-scoring pool degrades to unfiltered, not to nothing —
+        an artificially empty context would look like AC-7's 'no hits' case (which
+        skips the LLM call outright) for the wrong reason."""
+        llm = FakeLLM({"crag_eval": "0.0"})
+        hits = [hit(1, "Irrelevant")]
+        pipeline = AnswerPipeline(
+            FakeSearcher(hits), llm, expand=False, rerank=False, crag_filter=True
+        )  # type: ignore[arg-type]
+        answer = pipeline.answer("Frage?")
+        assert answer.context_doc_ids == ["d1"]
 
 
 class TestNeighborExpansion:

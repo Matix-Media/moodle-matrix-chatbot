@@ -54,3 +54,15 @@ def test_doctor_on_empty_config_still_succeeds(env_file: Path) -> None:
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "not configured" in result.output
+
+
+def test_bench_rejects_a_malformed_as_of_date(env_file: Path) -> None:
+    """specs/012-benchmarks.md AC-16: fails fast on a bad --as-of, before touching
+    Gemini config at all, so this needs no credentials to exercise."""
+    env_file.write_text("")
+    result = runner.invoke(
+        app, ["bench", "--golden", "config/golden_questions.example.yaml", "--as-of", "2026-13-40"]
+    )
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "--as-of" in result.output
