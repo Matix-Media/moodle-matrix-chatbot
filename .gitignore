@@ -27,3 +27,8 @@ build/
 .idea/
 .vscode/
 bsbot.log
+
+# Exported Moodle content
+/moodle_export/
+/chunks/
+all_content*

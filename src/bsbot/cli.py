@@ -923,6 +923,53 @@ def matrix_login() -> None:
         _fail(str(exc))
 
 
+@app.command()
+def export(
+    output_dir: Path = typer.Option(
+        Path("moodle_export"),
+        "--output-dir",
+        "-o",
+        help="Directory to save all individual markdown files.",
+    ),
+    combined_file: Path = typer.Option(
+        Path("all_content_combined.txt"),
+        "--combined-file",
+        "-c",
+        help="Path to save the master combined text file.",
+    ),
+    combined_md: Path = typer.Option(
+        Path("all_content_combined.md"),
+        "--combined-md",
+        help="Path to save the master combined markdown file.",
+    ),
+) -> None:
+    """Export all Moodle courses and documents as Markdown files and a combined text file."""
+    from bsbot.export import export_all
+
+    settings = _settings()
+    configure_logging(settings.log_level)
+
+    with Store(settings.index_db, embed_dim=settings.gemini.embed_dim) as store:
+        stats = export_all(
+            store,
+            output_dir=output_dir,
+            combined_txt_path=combined_file,
+            combined_md_path=combined_md,
+        )
+
+    typer.secho(
+        f"Exported {stats['exported_files']} documents "
+        f"({stats['with_text']} with extracted text) into {stats['output_dir']}",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(
+        f"Combined text file: {stats['combined_txt_path']} "
+        f"({stats['combined_txt_size_bytes']:,} bytes)"
+    )
+    if stats.get("combined_md_path"):
+        typer.echo(f"Combined markdown file: {stats['combined_md_path']}")
+
+
 def _write_env(values: dict[str, str], path: Path) -> None:
     """Update an env file in place, replacing only the given keys.
 

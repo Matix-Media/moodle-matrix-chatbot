@@ -203,6 +203,8 @@ _DROP_TAGS = ("script", "style", "nav", "header", "footer", "noscript", "svg")
 
 
 def extract_html(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment]:
+    import base64
+
     from selectolax.parser import HTMLParser
 
     markup = _decode(data)
@@ -214,6 +216,33 @@ def extract_html(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment
     for tag in _DROP_TAGS:
         for node in tree.css(tag):
             node.decompose()
+
+    # Replace <img> tags with readable alt labels or OCR transcription
+    for img in tree.css("img"):
+        alt = (img.attributes.get("alt") or "").strip()
+        src = img.attributes.get("src") or ""
+        ocr_text = ""
+
+        if ocr is not None and src.startswith("data:image/"):
+            try:
+                header, b64data = src.split(",", 1)
+                mime = header.split(";")[0].removeprefix("data:")
+                img_bytes = base64.b64decode(b64data)
+                if len(img_bytes) > 500:  # ignore tiny spacers/tracking icons
+                    ocr_text = ocr(img_bytes, page=None, mime_type=mime)
+            except Exception as exc:
+                log.warning("extract.html_img_ocr_failed", error=str(exc))
+
+        replacement_text = ocr_text.strip() if ocr_text else (f"[Bild: {alt}]" if alt else "[Bild]")
+        try:
+            replacement_node = HTMLParser(f"<span> {replacement_text} </span>").body.child
+            if replacement_node:
+                img.replace_with(replacement_node)
+            else:
+                img.decompose()
+        except Exception:
+            img.decompose()
+
     body = tree.body or tree.root
     if body is None:
         return []
@@ -224,6 +253,32 @@ def extract_html(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment
 def extract_text(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment]:
     text = _decode(data)
     return [Segment(text=text)] if text.strip() else []
+
+
+def extract_odt(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment]:
+    import xml.etree.ElementTree as ET
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            content = archive.read("content.xml")
+        root = ET.fromstring(content)
+        texts: list[str] = []
+        for elem in root.iter():
+            if elem.tag.endswith(("}p", "}h", "p", "h")):
+                t = "".join(elem.itertext()).strip()
+                if t:
+                    texts.append(t)
+        return [Segment(text="\n\n".join(texts))] if texts else []
+    except Exception as exc:
+        raise ExtractionError(f"cannot open ODT: {exc}") from exc
+
+
+def extract_url_file(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment]:
+    text = _decode(data)
+    for line in text.splitlines():
+        if line.strip().startswith("URL="):
+            return [Segment(text=line.strip()[4:].strip())]
+    return [Segment(text=text.strip())] if text.strip() else []
 
 
 #: Gemini's officially supported image input types (verified against the API
@@ -289,12 +344,14 @@ _BY_EXTENSION: dict[str, Extractor] = {
     "pptx": extract_pptx,
     "xlsx": extract_xlsx,
     "xls": extract_xls,
+    "odt": extract_odt,
     "html": extract_html,
     "htm": extract_html,
     "txt": extract_text,
     "md": extract_text,
     "sql": extract_text,
     "csv": extract_text,
+    "url": extract_url_file,
     "png": extract_image,
     "jpg": extract_image,
     "jpeg": extract_image,
@@ -305,6 +362,7 @@ _OOXML_MARKERS: list[tuple[str, Extractor]] = [
     ("word/document.xml", extract_docx),
     ("ppt/presentation.xml", extract_pptx),
     ("xl/workbook.xml", extract_xlsx),
+    ("content.xml", extract_odt),
 ]
 
 _HTML_RE = re.compile(rb"<\s*(!doctype\s+html|html|body|div|p|h[1-6])\b", re.I)

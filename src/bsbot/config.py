@@ -107,6 +107,9 @@ class GeminiSection(BaseModel):
     # Google meters embeddings by ITEMS per minute (measured: 3000 for
     # gemini-embedding-001). This is the limit that actually bites.
     embed_items_per_minute: int = 2500
+    # Image ingestion mode: "placeholder" (clean link/alt), "ocr" (text transcription),
+    # or "describe" (AI vision semantic explanation)
+    image_mode: str = "placeholder"
 
 
 class MatrixSection(BaseModel):
@@ -179,6 +182,7 @@ class GeminiConfig(BaseModel):
     embed_batch_size: int
     embed_rpm: int
     embed_items_per_minute: int
+    image_mode: str = "placeholder"
 
 
 class MatrixConfig(BaseModel):
@@ -319,6 +323,7 @@ class Settings(BaseSettings):
             embed_batch_size=self.gemini.embed_batch_size,
             embed_rpm=self.gemini.embed_rpm,
             embed_items_per_minute=self.gemini.embed_items_per_minute,
+            image_mode=self.gemini.image_mode,
         )
 
     def require_matrix(self) -> MatrixConfig:

@@ -114,7 +114,11 @@ class Fetcher:
         ):
             return FetchResult(url, FetchOutcome.SKIPPED, error=record.error)
 
-        cached = record is not None and record.sha256 is not None
+        cached = (
+            record is not None
+            and record.sha256 is not None
+            and self._store.blob_path(record.sha256).exists()
+        )
         if cached:
             assert record is not None
             moved = (
@@ -139,8 +143,15 @@ class Fetcher:
         *,
         force: bool,
     ) -> FetchResult:
-        # When Moodle says the file moved, validators would only mislead us.
-        return await self._download(url, record, moodle_timemodified, now, conditional=not force)
+        blob_exists = (
+            record is not None
+            and record.sha256 is not None
+            and self._store.blob_path(record.sha256).exists()
+        )
+        # When Moodle says the file moved or blob is missing, validators would only mislead us.
+        return await self._download(
+            url, record, moodle_timemodified, now, conditional=(not force and blob_exists)
+        )
 
     async def _download(
         self,

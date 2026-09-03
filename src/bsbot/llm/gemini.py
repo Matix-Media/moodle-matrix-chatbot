@@ -71,6 +71,33 @@ class GeminiClient:
         )
         return (response.text or "").strip()
 
+    def describe_image(
+        self, image: bytes, *, mime_type: str = "image/png"
+    ) -> str:
+        """Analyze and describe an image/diagram/chart for semantic understanding.
+
+        Runs on the utility model and describes visible elements, diagram flow,
+        labels, and meaning so it can be indexed and searched semantically.
+        """
+        instruction = (
+            "Beschreibe dieses Bild oder Diagramm präzise für Schüler und eine semantische Suche. "
+            "Erkläre, was dargestellt ist (z.B. Architektur, Ablauf, Netzwerk, UML, Tabelle), "
+            "benenne alle sichtbaren Komponenten, Schritte und Beschriftungen. "
+            "Fasse die Bedeutung kurz und strukturiert zusammen."
+        )
+        parts: list[types.PartUnionDict] = [
+            types.Part.from_bytes(data=image, mime_type=mime_type),
+            types.Part.from_text(text=instruction),
+        ]
+        response = self._client.models.generate_content(
+            model=self._config.utility_model,
+            contents=parts,
+            config=types.GenerateContentConfig(
+                temperature=0.2, automatic_function_calling=_NO_AFC
+            ),
+        )
+        return (response.text or "").strip()
+
     # -- generation ----------------------------------------------------- #
 
     def generate(
@@ -107,16 +134,24 @@ class GeminiClient:
 
 
 class CachingOcr:
-    """OCR with a persistent per-image cache (spec 006 AC-11).
+    """OCR and AI vision understanding with a persistent per-image cache (spec 006 AC-11).
 
-    A scanned page image hashes to the same key every run, so a document that is
-    re-extracted after a chunker change costs nothing in OCR.
+    Supports both:
+    - mode="ocr": verbatim text/table transcription
+    - mode="describe": semantic explanation of diagrams, charts, and figures
     """
 
-    def __init__(self, client: GeminiClient, store: Any, model_tag: str = "ocr-v1") -> None:
+    def __init__(
+        self,
+        client: GeminiClient,
+        store: Any,
+        model_tag: str = "ocr-v1",
+        mode: str = "ocr",
+    ) -> None:
         self._client = client
         self._store = store
         self._tag = model_tag
+        self._mode = mode
 
     def __call__(
         self, image: bytes, *, page: int | None = None, mime_type: str = "image/png"
@@ -127,6 +162,10 @@ class CachingOcr:
         cached = self._store.cached_ocr(digest, self._tag)
         if cached is not None:
             return cached
-        text = self._client.transcribe_image(image, page=page, mime_type=mime_type)
+        if self._mode == "describe":
+            text = self._client.describe_image(image, mime_type=mime_type)
+        else:
+            text = self._client.transcribe_image(image, page=page, mime_type=mime_type)
         self._store.cache_ocr(digest, self._tag, text)
         return text
+
