@@ -78,9 +78,20 @@ predictable, and incapable of replaying history or spamming.
   buried under per-event trace lines like "Room X handling event of type Y".
 
 ### Politeness
-- `AC-13` Per-user rate limiting: a user exceeding the limit gets one notice, not a reply per
-  message.
+- `AC-13` Per-user rate limiting: a user exceeding a limit gets one notice, not a reply per
+  message; the notice repeats only after the user drops back under the limit and hits it
+  again.
 - `AC-14` Only `m.text` messages are considered; images, files and reactions are ignored.
+- `AC-27` Beyond the short-window burst limit (`AC-13`), each user gets a separate **daily
+  quota** — `max_per_user_per_day`, default 5 — counted per calendar day in UTC. It is
+  independent of the burst limit: exhausting one does not count against the other, and a
+  user comfortably under the burst limit can still be blocked for the day once the quota is
+  spent.
+- `AC-28` A configured allowlist of user IDs (`rate_limit_bypass_users`, e.g. teachers or
+  moderators) is exempt from **both** the burst limit and the daily quota entirely — no
+  counting, no notice, no eventual block.
+- `AC-29` The burst notice and the daily-quota notice are worded differently, so a student
+  hitting the daily cap is told to come back tomorrow rather than "slow down."
 
 ## Non-goals
 

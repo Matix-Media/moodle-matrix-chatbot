@@ -262,6 +262,8 @@ class TestRunBotReloadsConfigOnRestart:
                 oauth_token_endpoint=None,
                 device_name="bsbot",
                 room_ids=[],
+                rate_limit_per_day=5,
+                rate_limit_bypass_users=[],
             )
 
         async def fake_sleep(seconds: float) -> None:
@@ -309,6 +311,8 @@ class TestRefreshTokenRotation:
             oauth_token_endpoint="https://matrix.example/token",
             device_name="bsbot",
             room_ids=[],
+            rate_limit_per_day=5,
+            rate_limit_bypass_users=[],
         )
         runner = MatrixRunner(config, pipeline=object(), store_dir=tmp_path)  # type: ignore[arg-type]
 
