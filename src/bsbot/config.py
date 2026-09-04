@@ -135,6 +135,10 @@ class MatrixSection(BaseModel):
     # Comma-separated in the environment; split by require_matrix(). Kept as a
     # plain string here because pydantic-settings would otherwise try to JSON-decode it.
     room_ids: str | None = None
+    #: AC-27 (specs/009-matrix-bot.md): per-user daily question quota.
+    rate_limit_per_day: int = 5
+    #: AC-28: user IDs (comma-separated, e.g. teachers) exempt from all rate limits.
+    rate_limit_bypass_users: str | None = None
 
     @field_validator("homeserver")
     @classmethod
@@ -199,6 +203,8 @@ class MatrixConfig(BaseModel):
     oauth_token_endpoint: str | None
     device_name: str
     room_ids: list[str]
+    rate_limit_per_day: int
+    rate_limit_bypass_users: list[str]
 
 
 # --------------------------------------------------------------------------- #
@@ -343,6 +349,11 @@ class Settings(BaseSettings):
         rooms = [part.strip() for part in (self.matrix.room_ids or "").split(",")]
         rooms = [room for room in rooms if room]
 
+        bypass_users = [
+            part.strip() for part in (self.matrix.rate_limit_bypass_users or "").split(",")
+        ]
+        bypass_users = [user for user in bypass_users if user]
+
         assert self.matrix.homeserver is not None
         assert self.matrix.user_id is not None
         return MatrixConfig(
@@ -357,6 +368,8 @@ class Settings(BaseSettings):
             oauth_token_endpoint=self.matrix.oauth_token_endpoint,
             device_name=self.matrix.device_name,
             room_ids=rooms,
+            rate_limit_per_day=self.matrix.rate_limit_per_day,
+            rate_limit_bypass_users=bypass_users,
         )
 
 
