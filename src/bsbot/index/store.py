@@ -185,6 +185,18 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     created_at  INTEGER NOT NULL,
     PRIMARY KEY (text_sha256, model, dim, task_type)
 );
+
+-- Reversible PII token -> real-value mapping (spec 013). Never sent to an
+-- LLM/embedding API; consulted only to detokenize a final answer or export.
+CREATE TABLE IF NOT EXISTS pii_tokens (
+    token        TEXT PRIMARY KEY,
+    entity_type  TEXT NOT NULL,
+    normalized   TEXT NOT NULL,
+    original     TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pii_tokens_type ON pii_tokens(entity_type);
 """
 
 
@@ -447,6 +459,22 @@ class Store:
             )
         return int(cursor.rowcount or 0)
 
+    def reset_extraction_for_all_documents(self) -> int:
+        """Mark every live, extractable document as un-extracted, and return the count.
+
+        Used once after enabling PII tokenization on a deployment with an
+        existing index (spec 013 AC-24), so the next ``bsbot index`` fully
+        re-tokenizes the corpus. Unlike ``reset_extraction_for_empty_documents``,
+        this is not scoped to documents with no chunks yet — every document must
+        be re-extracted, since the change affects text that already indexed fine.
+        """
+        with self.connection as con:
+            cursor = con.execute(
+                "UPDATE documents SET extract_version = NULL, extracted_timemodified = NULL "
+                "WHERE tombstoned_at IS NULL AND extractable = 1"
+            )
+        return int(cursor.rowcount or 0)
+
     def reset_extraction_for_doc_ids(self, doc_ids: list[str]) -> int:
         """Mark specific documents as un-extracted, and return how many changed.
 
@@ -667,10 +695,21 @@ class Store:
         room_name: str = "",
         max_history_per_room: int = 10,
         embedder: Any = None,
+        pii_tokenizer: Any = None,
         now: int | None = None,
     ) -> list[int]:
-        """Index a message from a room moderator with channel-scoped metadata and embed it."""
+        """Index a message from a room moderator with channel-scoped metadata and embed it.
+
+        ``text`` is tokenized first, before anything derived from it is built or
+        stored (spec 013 AC-14) — there is no separate raw-vs-chunked text for a
+        one-message-one-document unit here, unlike Moodle content, so this also
+        tokenizes the stored ``documents.text`` row for a Matrix-message
+        document. ``sender`` (a Matrix user ID) is never tokenized — it is a
+        protocol identifier, not free-text content.
+        """
         stamp = now if now is not None else int(time.time())
+        if pii_tokenizer is not None:
+            text = pii_tokenizer.tokenize(text)
         doc_id = f"matrix:{room_id}:{event_id}"
         room_label = room_name or room_id
         header_path = ["Matrix", room_label, f"Mitteilung von {sender}"]
@@ -824,6 +863,48 @@ class Store:
             (text_sha256, model, dim, task_type),
         ).fetchone()
         return _unpack(row[0]) if row else None
+
+    # ------------------------------------------------------------------ #
+    # PII token mapping (spec 013)
+    # ------------------------------------------------------------------ #
+
+    def upsert_pii_token(
+        self,
+        token: str,
+        entity_type: str,
+        normalized: str,
+        original: str,
+        *,
+        now: int | None = None,
+    ) -> None:
+        """Insert a token -> real-value mapping, or refresh ``last_seen_at``.
+
+        The first-seen ``original`` casing always wins and is never
+        overwritten (AC-10), so detokenizing a token that recurs later under
+        different casing still returns the surface form a human actually
+        wrote first.
+        """
+        stamp = now if now is not None else int(time.time())
+        with self.connection as con:
+            con.execute(
+                "INSERT INTO pii_tokens (token, entity_type, normalized, original, "
+                "created_at, last_seen_at) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(token) DO UPDATE SET last_seen_at=excluded.last_seen_at",
+                (token, entity_type, normalized, original, stamp, stamp),
+            )
+
+    def pii_original(self, token: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT original FROM pii_tokens WHERE token=?", (token,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def all_pii_tokens(self) -> dict[str, str]:
+        """Every token -> real-value pair, for a single bulk detokenize lookup."""
+        return {
+            r["token"]: r["original"]
+            for r in self.connection.execute("SELECT token, original FROM pii_tokens")
+        }
 
     # ------------------------------------------------------------------ #
 

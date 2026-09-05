@@ -471,6 +471,7 @@ class FakeStore:
         room_name: str = "",
         max_history_per_room: int = 10,
         embedder: Any = None,
+        pii_tokenizer: Any = None,
         now: int | None = None,
     ) -> list[int]:
         self.indexed.append(

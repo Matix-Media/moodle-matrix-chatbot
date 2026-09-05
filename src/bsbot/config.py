@@ -112,6 +112,16 @@ class GeminiSection(BaseModel):
     image_mode: str = "placeholder"
 
 
+class PiiSection(BaseModel):
+    """PII tokenization (spec 013) — off by default, see AC-23."""
+
+    #: A new, offline NER dependency and an extra local processing pass per
+    #: document/message/question. Existing deployments must opt in and then
+    #: run a one-time reindex — see ``Store.reset_extraction_for_all_documents``.
+    enabled: bool = False
+    spacy_model: str = "de_core_news_md"
+
+
 class MatrixSection(BaseModel):
     homeserver: str | None = None
     user_id: str | None = None
@@ -255,6 +265,7 @@ class Settings(BaseSettings):
     moodle: MoodleSection = Field(default_factory=MoodleSection)
     gemini: GeminiSection = Field(default_factory=GeminiSection)
     matrix: MatrixSection = Field(default_factory=MatrixSection)
+    pii: PiiSection = Field(default_factory=PiiSection)
 
     data_dir: Path = Path("./data")
     log_level: str = "INFO"

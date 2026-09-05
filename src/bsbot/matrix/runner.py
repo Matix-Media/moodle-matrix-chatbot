@@ -118,6 +118,7 @@ class MatrixRunner:
         persist_tokens: Callable[[dict[str, str]], None] | None = None,
         store: Any | None = None,
         embedder: Any | None = None,
+        pii_tokenizer: Any | None = None,
     ) -> None:
         self._config = config
         self._pipeline = pipeline
@@ -127,6 +128,7 @@ class MatrixRunner:
         self._persist_tokens = persist_tokens
         self._store = store
         self._embedder = embedder
+        self._pii_tokenizer = pii_tokenizer
         self._token_lifetime = 0
         # Mutable, unlike self._config: MAS rotates the refresh token on every
         # use, and this is what every subsequent refresh within this process's
@@ -176,7 +178,12 @@ class MatrixRunner:
                 rate_limit_bypass_users=frozenset(self._config.rate_limit_bypass_users),
             )
             self._bot = BerufsschuleBot(
-                client, self._pipeline, policy, store=self._store, embedder=self._embedder
+                client,
+                self._pipeline,
+                policy,
+                store=self._store,
+                embedder=self._embedder,
+                pii_tokenizer=self._pii_tokenizer,
             )
 
             client.add_event_callback(self._on_message, RoomMessageText)
@@ -476,6 +483,7 @@ async def run_bot(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     store: Any | None = None,
     embedder: Any | None = None,
+    pii_tokenizer: Any | None = None,
 ) -> None:
     """Run the bot, restarting with backoff on any failure (see _run_with_restart).
 
@@ -499,6 +507,7 @@ async def run_bot(
             persist_tokens=persist_tokens,
             store=store,
             embedder=embedder,
+            pii_tokenizer=pii_tokenizer,
         )
         await runner.run()
 

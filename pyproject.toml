@@ -31,6 +31,13 @@ dependencies = [
 bsbot = "bsbot.cli:app"
 
 [project.optional-dependencies]
+# Only needed when BSBOT_PII__ENABLED=true — kept out of the base install and
+# out of `dev` so the common case pays no cost for it. After installing, also
+# run `python -m spacy download de_core_news_md` (or the model named by
+# BSBOT_PII__SPACY_MODEL).
+pii = [
+    "spacy>=3.7,<4.0",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

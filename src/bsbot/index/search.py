@@ -23,6 +23,7 @@ import structlog
 from pydantic import BaseModel
 
 from bsbot.index.store import Store, normalise
+from bsbot.pii.tokenizer import PiiTokenizer
 
 log = structlog.get_logger(__name__)
 
@@ -104,10 +105,12 @@ class HybridSearcher:
         *,
         embedder: Embedder | None,
         candidate_depth: int = CANDIDATE_DEPTH,
+        pii_tokenizer: PiiTokenizer | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._depth = candidate_depth
+        self._pii_tokenizer = pii_tokenizer
 
     def search(self, query: str, *, limit: int = 8, room_id: str | None = None) -> list[SearchHit]:
         keyword_ids = self._keyword_search(query, room_id=room_id)
@@ -240,7 +243,7 @@ class HybridSearcher:
             """,
             chunk_ids,
         ).fetchall()
-        return [
+        hits = [
             SearchHit(
                 chunk_id=r["chunk_id"],
                 doc_id=r["doc_id"],
@@ -257,6 +260,17 @@ class HybridSearcher:
             )
             for r in rows
         ]
+        # PII tokenization (spec 013): `course_name`/`module_name`/`title` are read
+        # straight from the raw `documents` table above (chunk text is already
+        # tokenized at write time, but these breadcrumb fields are not derived
+        # from it) — without this, they would reach the LLM prompt and citations
+        # untokenized on every query, independent of anything done at ingest time.
+        if self._pii_tokenizer is not None:
+            for hit in hits:
+                hit.course_name = self._pii_tokenizer.tokenize(hit.course_name)
+                hit.module_name = self._pii_tokenizer.tokenize(hit.module_name)
+                hit.title = self._pii_tokenizer.tokenize(hit.title)
+        return hits
 
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]:
         """Chunks within ``radius`` positions of ``chunk_id`` in the same document,

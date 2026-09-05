@@ -56,7 +56,12 @@ def _suggested_delay(error: Exception) -> float | None:
 
 
 def _preview(text: str) -> str:
-    """Trim a text for the log so one giant chunk cannot flood the output."""
+    """Trim a text for the log so one giant chunk cannot flood the output.
+
+    Callers are responsible for tokenizing PII out of ``texts`` before calling
+    ``embed_documents``/``embed_query`` (spec 013) — this preview reflects
+    exactly what they hand in, nothing is redacted here.
+    """
     collapsed = " ".join(text.split())
     if len(collapsed) <= LOG_PREVIEW_CHARS:
         return collapsed

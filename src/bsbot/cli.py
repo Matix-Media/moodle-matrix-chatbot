@@ -26,6 +26,7 @@ from bsbot.llm.gemini import CachingOcr, GeminiClient
 from bsbot.logging import configure_logging
 from bsbot.moodle.client import MoodleClient
 from bsbot.moodle.errors import MoodleError
+from bsbot.pii import build_pii_tokenizer
 from bsbot.rag.pipeline import AnswerPipeline
 
 app = typer.Typer(
@@ -74,6 +75,18 @@ def doctor() -> None:
             typer.secho(f"  [ ] {name}: not configured", fg=typer.colors.YELLOW)
         else:
             typer.secho(f"  [x] {name}: configured", fg=typer.colors.GREEN)
+
+    if settings.pii.enabled:
+        try:
+            from bsbot.pii.spacy_model import load_spacy_model
+
+            load_spacy_model(settings.pii.spacy_model)
+        except RuntimeError as exc:
+            typer.secho(f"  [ ] pii tokenization: {exc}", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(
+                f"  [x] pii tokenization: {settings.pii.spacy_model} loaded", fg=typer.colors.GREEN
+            )
 
 
 @app.command()
@@ -198,6 +211,13 @@ def index(
         help="Re-process documents that previously yielded no text. Combine with --ocr "
         "to pick up scanned PDFs without re-extracting the whole corpus.",
     ),
+    reset_all: bool = typer.Option(
+        False,
+        "--reset-all",
+        help="Re-process every document, not just pending ones. Needed once after "
+        "enabling BSBOT_PII__ENABLED on a deployment with an existing index, so the "
+        "whole corpus gets retokenized — see specs/013-pii-tokenization.md.",
+    ),
     aliases_path: Path = typer.Option(
         Path("config/document_aliases.yaml"),
         "--aliases",
@@ -246,6 +266,10 @@ def index(
             token = await client.login()
 
         with Store(settings.index_db, embed_dim=settings.gemini.embed_dim) as store:
+            if reset_all:
+                reset = store.reset_extraction_for_all_documents()
+                typer.echo(f"resetting {reset} document(s) for full re-extraction")
+
             if retry_empty:
                 reset = store.reset_extraction_for_empty_documents()
                 typer.echo(f"retrying {reset} document(s) that previously yielded no text")
@@ -259,6 +283,8 @@ def index(
                 else:
                     reset = store.reset_extraction_for_doc_ids(list(aliases.keys()))
                     typer.echo(f"re-processing {reset} aliased document(s)")
+
+            pii_tok = build_pii_tokenizer(settings, store)
 
             ocr_hook = None
             gemini_client = None
@@ -307,6 +333,7 @@ def index(
                     hype=hype,
                     summarize=summarize,
                     contextualize=contextualize,
+                    pii_tokenizer=pii_tok,
                 ).index_pending(limit=limit or None)
             total_chunks = store.connection.execute("select count(*) from chunks").fetchone()[0]
 
@@ -437,7 +464,10 @@ def search(
             except ConfigError:
                 typer.secho("no Gemini key: keyword-only search", fg=typer.colors.YELLOW)
 
-        hits = HybridSearcher(store, embedder=embedder).search(query, limit=limit)
+        pii_tok = build_pii_tokenizer(settings, store)
+        hits = HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok).search(
+            query, limit=limit
+        )
 
     if not hits:
         typer.secho("no matches", fg=typer.colors.YELLOW)
@@ -495,8 +525,9 @@ def ask(
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
         )
+        pii_tok = build_pii_tokenizer(settings, store)
         pipeline = AnswerPipeline(
-            HybridSearcher(store, embedder=embedder),
+            HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
             client,
             expand=not no_expand,
             rerank=not no_rerank,
@@ -512,6 +543,7 @@ def ask(
             if settings.moodle.base_url
             else "https://moodle.itech-bs14.de",
             utility_model=gemini.utility_model,
+            pii_tokenizer=pii_tok,
         )
         answer = pipeline.answer(question)
 
@@ -629,7 +661,8 @@ def bench(
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
         )
-        searcher = HybridSearcher(store, embedder=embedder)
+        pii_tok = build_pii_tokenizer(settings, store)
+        searcher = HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok)
 
         as_of_note = f" (as of {as_of})" if as_of else ""
         typer.echo(
@@ -640,6 +673,7 @@ def bench(
             if settings.moodle.base_url
             else "https://moodle.itech-bs14.de",
             "utility_model": gemini.utility_model,
+            "pii_tokenizer": pii_tok,
         }
         if clock is not None:
             pipeline_kwargs["clock"] = clock
@@ -693,8 +727,9 @@ def chat(
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
         )
+        pii_tok = build_pii_tokenizer(settings, store)
         pipeline = AnswerPipeline(
-            HybridSearcher(store, embedder=embedder),
+            HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
             client,
             decompose=True,
             step_back=True,
@@ -704,6 +739,7 @@ def chat(
             if settings.moodle.base_url
             else "https://moodle.itech-bs14.de",
             utility_model=gemini.utility_model,
+            pii_tokenizer=pii_tok,
         )
 
         typer.secho("bsbot Multi-Turn Chat (Tippe 'exit' oder Strg+C zum Beenden)\n", bold=True)
@@ -783,8 +819,9 @@ def serve(
                 rpm=gemini.embed_rpm,
                 items_per_minute=gemini.embed_items_per_minute,
             )
+            pii_tok = build_pii_tokenizer(settings, store)
             pipeline = AnswerPipeline(
-                HybridSearcher(store, embedder=embedder),
+                HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
                 client,
                 decompose=not no_decompose,
                 step_back=not no_step_back,
@@ -795,6 +832,7 @@ def serve(
                 if settings.moodle.base_url
                 else "https://moodle.itech-bs14.de",
                 utility_model=gemini.utility_model,
+                pii_tokenizer=pii_tok,
             )
             await run_bot(
                 # Re-resolved on every restart attempt, not just once — see
@@ -807,6 +845,7 @@ def serve(
                 persist_tokens=lambda values: _write_env(values, settings.token_overrides_file),
                 store=store,
                 embedder=embedder,
+                pii_tokenizer=pii_tok,
             )
 
     try:
@@ -950,11 +989,13 @@ def export(
     configure_logging(settings.log_level)
 
     with Store(settings.index_db, embed_dim=settings.gemini.embed_dim) as store:
+        pii_tok = build_pii_tokenizer(settings, store)
         stats = export_all(
             store,
             output_dir=output_dir,
             combined_txt_path=combined_file,
             combined_md_path=combined_md,
+            pii_tokenizer=pii_tok,
         )
 
     typer.secho(

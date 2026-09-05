@@ -26,6 +26,7 @@ from bsbot.ingest.indexer import Indexer
 from bsbot.llm.embed import GeminiEmbedder
 from bsbot.llm.gemini import GeminiClient
 from bsbot.moodle.client import MoodleClient
+from bsbot.pii import build_pii_tokenizer
 
 log = structlog.get_logger(__name__)
 
@@ -73,6 +74,7 @@ async def index_once(settings: Settings, moodle: MoodleConfig, aliases_path: Pat
                 fetcher,
                 aliases=aliases,
                 moodle_host=urlsplit(moodle.base_url).netloc,
+                pii_tokenizer=build_pii_tokenizer(settings, store),
             ).index_pending()
     log.info(
         "cron.index",
