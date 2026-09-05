@@ -109,6 +109,39 @@ class TestRoomIds:
         assert matrix.room_ids == ["!aaa:example.org", "!bbb:example.org"]
 
 
+class TestRateLimitConfig:
+    """Spec 009 AC-27/AC-28: daily quota and bypass allowlist are configurable."""
+
+    def _base(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BSBOT_MATRIX__HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("BSBOT_MATRIX__USER_ID", "@bsbot:example.org")
+        monkeypatch.setenv("BSBOT_MATRIX__PASSWORD", "pw")
+        monkeypatch.setenv("BSBOT_MATRIX__ROOM_IDS", "!room:example.org")
+
+    def test_daily_quota_defaults_to_five(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AC-27"""
+        self._base(monkeypatch)
+        matrix = Settings(_env_file=None).require_matrix()  # type: ignore[call-arg]
+        assert matrix.rate_limit_per_day == 5
+        assert matrix.rate_limit_bypass_users == []
+
+    def test_daily_quota_is_configurable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AC-27"""
+        self._base(monkeypatch)
+        monkeypatch.setenv("BSBOT_MATRIX__RATE_LIMIT_PER_DAY", "20")
+        matrix = Settings(_env_file=None).require_matrix()  # type: ignore[call-arg]
+        assert matrix.rate_limit_per_day == 20
+
+    def test_comma_separated_bypass_users_are_split(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AC-28"""
+        self._base(monkeypatch)
+        monkeypatch.setenv(
+            "BSBOT_MATRIX__RATE_LIMIT_BYPASS_USERS", " @lehrer:example.org , @mod:example.org ,, "
+        )
+        matrix = Settings(_env_file=None).require_matrix()  # type: ignore[call-arg]
+        assert matrix.rate_limit_bypass_users == ["@lehrer:example.org", "@mod:example.org"]
+
+
 class TestDataDir:
     def test_data_dir_is_absolute_with_derived_paths(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

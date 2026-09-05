@@ -235,11 +235,9 @@ def extract_html(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment
 
         replacement_text = ocr_text.strip() if ocr_text else (f"[Bild: {alt}]" if alt else "[Bild]")
         try:
-            replacement_node = HTMLParser(f"<span> {replacement_text} </span>").body.child
-            if replacement_node:
-                img.replace_with(replacement_node)
-            else:
-                img.decompose()
+            # A plain string is inserted as a text node (auto-escaped), which is exactly
+            # what we want here — no need to build and parse a throwaway <span> wrapper.
+            img.replace_with(replacement_text)
         except Exception:
             img.decompose()
 

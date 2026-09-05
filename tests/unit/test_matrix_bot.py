@@ -7,6 +7,7 @@ form, how often), which is where the bugs that annoy a real class live.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -86,6 +87,7 @@ def make_bot(
     pipeline: FakePipeline | None = None,
     store: Any | None = None,
     embedder: Any | None = None,
+    now: Any | None = None,
     **policy_kw,
 ) -> tuple[BerufsschuleBot, FakeClient, FakePipeline]:
     client = FakeClient()
@@ -93,7 +95,7 @@ def make_bot(
     policy = BotPolicy(
         room_ids={ROOM}, user_id=BOT_ID, display_name="bsbot", started_at_ms=START, **policy_kw
     )
-    bot = BerufsschuleBot(client, pipeline, policy, store=store, embedder=embedder)  # type: ignore[arg-type]
+    bot = BerufsschuleBot(client, pipeline, policy, store=store, embedder=embedder, now=now)  # type: ignore[arg-type]
     return bot, client, pipeline
 
 
@@ -234,6 +236,78 @@ class TestPoliteness:
         await bot.handle_message(FakeRoom(), FakeEvent("!bs A?", sender="@a:example.org"))
         await bot.handle_message(FakeRoom(), FakeEvent("!bs B?", sender="@b:example.org"))
         assert len(pipeline.questions) == 2
+
+    async def test_daily_quota_blocks_after_default_five(self) -> None:
+        """AC-27: default daily quota is 5, independent of the burst limit."""
+        bot, client, pipeline = make_bot(max_per_user_per_minute=100)
+        for i in range(7):
+            await bot.handle_message(FakeRoom(), FakeEvent(f"!bs Frage {i}?", event_id=f"$e{i}"))
+        assert len(pipeline.questions) == 5
+        notices = [s for s in client.sent if "limit" in s["content"]["body"].lower()]
+        assert len(notices) == 1
+
+    async def test_daily_quota_is_configurable(self) -> None:
+        """AC-27"""
+        bot, _, pipeline = make_bot(max_per_user_per_minute=100, max_per_user_per_day=2)
+        for i in range(4):
+            await bot.handle_message(FakeRoom(), FakeEvent(f"!bs Frage {i}?", event_id=f"$e{i}"))
+        assert len(pipeline.questions) == 2
+
+    async def test_daily_quota_is_per_user(self) -> None:
+        """AC-27"""
+        bot, _, pipeline = make_bot(max_per_user_per_minute=100, max_per_user_per_day=1)
+        await bot.handle_message(FakeRoom(), FakeEvent("!bs A?", sender="@a:example.org"))
+        await bot.handle_message(FakeRoom(), FakeEvent("!bs B?", sender="@b:example.org"))
+        assert len(pipeline.questions) == 2
+
+    async def test_daily_quota_resets_on_a_new_day(self) -> None:
+        """AC-27: the quota is per calendar day (UTC), not a rolling 24h window."""
+        from datetime import datetime
+
+        day1 = datetime(2026, 1, 1, 23, 0, tzinfo=UTC)
+        day2 = datetime(2026, 1, 2, 0, 30, tzinfo=UTC)
+        clock = {"now": day1}
+        bot, _, pipeline = make_bot(
+            max_per_user_per_minute=100, max_per_user_per_day=1, now=lambda: clock["now"]
+        )
+        await bot.handle_message(FakeRoom(), FakeEvent("!bs A?", event_id="$e1"))
+        clock["now"] = day2
+        await bot.handle_message(FakeRoom(), FakeEvent("!bs B?", event_id="$e2"))
+        assert len(pipeline.questions) == 2
+
+    async def test_bypass_user_is_exempt_from_burst_and_daily_limits(self) -> None:
+        """AC-28"""
+        bot, client, pipeline = make_bot(
+            max_per_user_per_minute=1,
+            max_per_user_per_day=1,
+            rate_limit_bypass_users=frozenset({USER}),
+        )
+        for i in range(5):
+            await bot.handle_message(FakeRoom(), FakeEvent(f"!bs Frage {i}?", event_id=f"$e{i}"))
+        assert len(pipeline.questions) == 5
+        assert client.sent == [] or all(
+            "limit" not in s["content"]["body"].lower()
+            and "zu viele" not in s["content"]["body"].lower()
+            for s in client.sent
+        )
+
+    async def test_burst_and_daily_notices_are_worded_differently(self) -> None:
+        """AC-29"""
+        burst_bot, burst_client, _ = make_bot(max_per_user_per_minute=1, max_per_user_per_day=100)
+        for i in range(2):
+            await burst_bot.handle_message(
+                FakeRoom(), FakeEvent(f"!bs Frage {i}?", event_id=f"$e{i}")
+            )
+        burst_notice = burst_client.sent[-1]["content"]["body"]
+
+        daily_bot, daily_client, _ = make_bot(max_per_user_per_minute=100, max_per_user_per_day=1)
+        for i in range(2):
+            await daily_bot.handle_message(
+                FakeRoom(), FakeEvent(f"!bs Frage {i}?", event_id=f"$e{i}")
+            )
+        daily_notice = daily_client.sent[-1]["content"]["body"]
+
+        assert burst_notice != daily_notice
 
     async def test_non_text_events_are_ignored(self) -> None:
         """AC-14"""

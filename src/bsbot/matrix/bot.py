@@ -12,7 +12,9 @@ from __future__ import annotations
 import html
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
 import structlog
@@ -22,6 +24,13 @@ from bsbot.rag.pipeline import Answer
 log = structlog.get_logger(__name__)
 
 DEFAULT_TRIGGER = "!bs"
+#: AC-13: never a reply per message when someone is sending too fast.
+_BURST_NOTICE = "Das sind gerade zu viele Fragen auf einmal – ich melde mich gleich wieder. 🙂"
+#: AC-27/AC-29: worded differently from the burst notice — "come back tomorrow", not
+#: "slow down", since retrying sooner will not help.
+_DAILY_LIMIT_NOTICE = (
+    "Du hast dein tägliches Frage-Limit erreicht. Morgen bin ich wieder für dich da! 🙂"
+)
 #: Cheap heuristic for answer_all mode. German question words plus a question mark.
 _QUESTION_RE = re.compile(
     r"(\?|^\s*(wann|was|wie|wo|wer|warum|weshalb|welche[rsn]?|gibt es|kann man|muss ich)\b)",
@@ -55,6 +64,10 @@ class BotPolicy:
     started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     answer_all: bool = False
     max_per_user_per_minute: int = 4
+    #: AC-27: default daily quota, "5 messages per day" for the start.
+    max_per_user_per_day: int = 5
+    #: AC-28: user IDs exempt from both the burst limit and the daily quota.
+    rate_limit_bypass_users: frozenset[str] = field(default_factory=frozenset)
     mod_power_level: int = 50
     max_matrix_history: int = 10
     embed_mod_messages: bool = True
@@ -70,6 +83,7 @@ class BerufsschuleBot:
         store: Any | None = None,
         embedder: Any | None = None,
         pii_tokenizer: Any | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
         self._pipeline = pipeline
@@ -77,9 +91,12 @@ class BerufsschuleBot:
         self._store = store
         self._embedder = embedder
         self._pii_tokenizer = pii_tokenizer
+        self._now = now or (lambda: datetime.now(UTC))
         self._own_events: set[str] = set()
         self._turn_history: dict[str, tuple[str, str]] = {}
         self._recent: dict[str, list[float]] = {}
+        #: AC-27: calendar day (UTC) a sender's count was last reset, plus that count.
+        self._daily: dict[str, tuple[date, int]] = {}
         self._notified: set[str] = set()
 
     def remember_own_message(self, event_id: str, turn: tuple[str, str] | None = None) -> None:
@@ -171,12 +188,14 @@ class BerufsschuleBot:
 
         log.info("bot.triggered", room=room.room_id, sender=sender)
 
-        if not self._allow(sender):  # AC-13
+        allowed, notice = self._allow(sender)  # AC-13/AC-27/AC-28
+        if not allowed:
+            assert notice is not None  # _allow always pairs False with a notice
             if sender not in self._notified:
                 self._notified.add(sender)
                 await self._send(
                     room.room_id,
-                    "Das sind gerade zu viele Fragen auf einmal – ich melde mich gleich wieder. 🙂",
+                    notice,
                     reply_to=getattr(event, "event_id", None),
                 )
             return
@@ -287,18 +306,37 @@ class BerufsschuleBot:
         user_ids = mentions.get("user_ids") or []
         return self._policy.user_id in user_ids
 
-    def _allow(self, sender: str) -> bool:
-        limit = self._policy.max_per_user_per_minute
-        if limit <= 0:
-            return True
-        now = time.monotonic()
-        recent = [t for t in self._recent.get(sender, []) if now - t < 60.0]
-        if len(recent) >= limit:
+    def _allow(self, sender: str) -> tuple[bool, str | None]:
+        """Burst limit and daily quota, in that order (AC-13/AC-27); bypass skips both (AC-28)."""
+        if sender in self._policy.rate_limit_bypass_users:
+            return True, None
+
+        burst_limit = self._policy.max_per_user_per_minute
+        if burst_limit > 0:
+            now = time.monotonic()
+            recent = [t for t in self._recent.get(sender, []) if now - t < 60.0]
+            if len(recent) >= burst_limit:
+                self._recent[sender] = recent
+                return False, _BURST_NOTICE
+
+        day_limit = self._policy.max_per_user_per_day
+        if day_limit > 0:
+            today = self._now().date()
+            last_day, count = self._daily.get(sender, (today, 0))
+            if last_day != today:
+                count = 0
+            if count >= day_limit:
+                self._daily[sender] = (today, count)
+                return False, _DAILY_LIMIT_NOTICE
+            self._daily[sender] = (today, count + 1)
+
+        if burst_limit > 0:
+            now = time.monotonic()
+            recent = [t for t in self._recent.get(sender, []) if now - t < 60.0]
+            recent.append(now)
             self._recent[sender] = recent
-            return False
-        recent.append(now)
-        self._recent[sender] = recent
-        return True
+
+        return True, None
 
     async def _send(
         self,

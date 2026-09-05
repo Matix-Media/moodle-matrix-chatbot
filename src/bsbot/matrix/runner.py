@@ -174,6 +174,8 @@ class MatrixRunner:
                 user_id=client.user_id,
                 display_name=self._config.device_name,
                 answer_all=self._answer_all,
+                max_per_user_per_day=self._config.rate_limit_per_day,
+                rate_limit_bypass_users=frozenset(self._config.rate_limit_bypass_users),
             )
             self._bot = BerufsschuleBot(
                 client,
