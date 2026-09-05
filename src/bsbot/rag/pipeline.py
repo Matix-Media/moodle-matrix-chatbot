@@ -310,7 +310,14 @@ class AnswerPipeline:
             # value by `_finalise`, and this call sends its `answer` argument to
             # Gemini for follow-up-question suggestions. Passing `result.text`
             # here would re-leak exactly the PII tokenization exists to protect.
-            result.suggested_questions = self._suggest_followup_questions(question, raw)
+            # The *returned* suggestions are still in token space (the model
+            # can echo a token from the tokenized answer/question it was given
+            # into a suggested follow-up), so each one is detokenized before
+            # it reaches the user — the mirror image of the leak-prevention
+            # above, and easy to miss since it's a separate direction.
+            result.suggested_questions = [
+                self._detok(q) for q in self._suggest_followup_questions(question, raw)
+            ]
         log.info("rag.answered", grounded=result.grounded, citations=len(result.citations))
         return result
 

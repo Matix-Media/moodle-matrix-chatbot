@@ -443,19 +443,32 @@ class TestPipeline:
         assert "Mueller" in answer.text
         assert "⟦PII" not in answer.text
 
-    def test_suggest_followup_receives_tokenized_text_not_the_final_answer(self) -> None:
-        """AC-20: a regression test for the gap found during plan verification —
-        this call must never receive the already-detokenized `Answer.text`."""
+    def test_suggest_followup_tokenizes_input_and_detokenizes_output(self) -> None:
+        """AC-20, both directions.
+
+        Input: this call must never receive the already-detokenized
+        `Answer.text` (found during plan verification — passing it would
+        re-leak PII to Gemini in this second call).
+
+        Output: found live (user report) — the model's suggested follow-up
+        questions can themselves echo a token from the tokenized context it
+        was given (e.g. "Wie erreiche ich ⟦PIIPERSON...⟧?"), and those
+        reached the user un-detokenized because only the main answer text
+        was resolved back to real values, not this list."""
         store_ = FakePiiStore()
         email_token = make_token("EMAIL", normalize_email("mueller@schule.de"))
+        person_token = make_token("PERSON", normalize_person("Herr Mueller"))
         store_.upsert_pii_token(
             email_token, "EMAIL", normalize_email("mueller@schule.de"), "mueller@schule.de"
+        )
+        store_.upsert_pii_token(
+            person_token, "PERSON", normalize_person("Herr Mueller"), "Herr Mueller"
         )
         tok = PiiTokenizer(store_, nlp=FakeNlp([]))
         llm = FakeLLM(
             responses={
                 "answer": f"Die E-Mail ist {email_token}. [1]",
-                "suggest_followup": "Wann ist Sprechstunde?",
+                "suggest_followup": f"Welche Fächer unterrichtet {person_token}?",
             }
         )
         h = hit(1, f"Kontakt: {email_token}")
@@ -468,11 +481,13 @@ class TestPipeline:
             pii_tokenizer=tok,
         )
 
-        pipeline.answer("Wie ist die E-Mail?")
+        answer = pipeline.answer("Wie ist die E-Mail?")
 
         followup_prompt = next(p for kind, p in llm.prompts if kind == "suggest_followup")
         assert "mueller@schule.de" not in followup_prompt
         assert email_token in followup_prompt
+
+        assert answer.suggested_questions == ["Welche Fächer unterrichtet Herr Mueller?"]
 
 
 # --------------------------------------------------------------------------- #
