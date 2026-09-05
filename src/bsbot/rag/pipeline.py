@@ -20,6 +20,7 @@ import structlog
 from pydantic import BaseModel
 
 from bsbot.index.search import SearchHit, reciprocal_rank_fusion
+from bsbot.pii.tokenizer import PiiTokenizer
 from bsbot.rag.prompts import (
     ANSWER_TEMPLATE,
     COMPRESS_CONTEXT_TEMPLATE,
@@ -151,6 +152,7 @@ class AnswerPipeline:
         neighbor_radius: int = DEFAULT_NEIGHBOR_RADIUS,
         utility_model: str | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(_SCHOOL_TZ),
+        pii_tokenizer: PiiTokenizer | None = None,
     ) -> None:
         self._searcher = searcher
         self._llm = llm
@@ -174,6 +176,10 @@ class AnswerPipeline:
         self._max_per_document = max_per_document
         self._utility_model = utility_model
         self._clock = clock
+        self._pii_tokenizer = pii_tokenizer
+
+    def _detok(self, text: str) -> str:
+        return self._pii_tokenizer.detokenize(text) if self._pii_tokenizer else text
 
     @property
     def system_prompt(self) -> str:
@@ -188,6 +194,15 @@ class AnswerPipeline:
     ) -> Answer:
         question = (question or "").strip()
         log.info("rag.question", question=question, room_id=room_id)
+
+        # PII tokenization (spec 013): a name/email in the student's own question
+        # must never reach the LLM either — everything from here on (condense,
+        # decompose, expand, step-back, embedding, rerank, the final answer
+        # prompt) works on the tokenized question. `raw_question` is kept only
+        # for local, never-sent-to-Gemini uses (the Moodle-search fallback URL).
+        raw_question = question
+        if self._pii_tokenizer is not None:
+            question = self._pii_tokenizer.tokenize(question)
 
         search_question = question
         if history and question:
@@ -224,8 +239,10 @@ class AnswerPipeline:
             headers=[h.header_text for h in hits[: self._max_context]],
         )
         if not hits:
+            # A local URL, never sent to Gemini — must reflect the student's
+            # literal wording, not the tokenized search query.
             fallback_text = (
-                self._actionable_fallback(search_question)
+                self._actionable_fallback(raw_question)
                 if (self._crag and search_question)
                 else NO_ANSWER_TEXT
             )
@@ -284,9 +301,16 @@ class AnswerPipeline:
             log.info("rag.answered", grounded=False, citations=0)
             return result
 
-        result = self._finalise(raw, context_hits, queries, question=question)
+        result = self._finalise(
+            raw, context_hits, queries, question=question, raw_question=raw_question
+        )
         if self._suggest_followup and result.grounded and result.text:
-            result.suggested_questions = self._suggest_followup_questions(question, result.text)
+            # Pass the pre-detokenization `raw` text, not `result.text` — the
+            # latter has already had every PII token resolved back to a real
+            # value by `_finalise`, and this call sends its `answer` argument to
+            # Gemini for follow-up-question suggestions. Passing `result.text`
+            # here would re-leak exactly the PII tokenization exists to protect.
+            result.suggested_questions = self._suggest_followup_questions(question, raw)
         log.info("rag.answered", grounded=result.grounded, citations=len(result.citations))
         return result
 
@@ -597,17 +621,32 @@ class AnswerPipeline:
         return "\n\n".join(blocks)
 
     def _finalise(
-        self, raw: str, hits: list[SearchHit], queries: list[str], question: str = ""
+        self,
+        raw: str,
+        hits: list[SearchHit],
+        queries: list[str],
+        question: str = "",
+        raw_question: str = "",
     ) -> Answer:
         text = raw.strip()
         doc_ids = [h.doc_id for h in hits]
         if REFUSAL_MARKER in text:  # AC-10
+            # A local URL, never sent to Gemini — must reflect the student's
+            # literal wording, not the tokenized search query.
+            fallback_question = raw_question or question
             fallback_text = (
-                self._actionable_fallback(question) if (self._crag and question) else NO_ANSWER_TEXT
+                self._actionable_fallback(fallback_question)
+                if (self._crag and fallback_question)
+                else NO_ANSWER_TEXT
             )
             return Answer(
                 text=fallback_text, grounded=False, used_queries=queries, context_doc_ids=doc_ids
             )
+
+        # PII tokenization (spec 013): everything upstream of here worked in
+        # "token space" — resolve tokens back to real values before the answer
+        # leaves the pipeline. This is the single point that does so.
+        text = self._detok(text)
 
         # AC-9: only keep citation indexes that were actually offered.
         # The model groups citations as "[1, 2]" at least as often as "[1] [2]",
@@ -622,9 +661,9 @@ class AnswerPipeline:
         citations = [
             Citation(
                 index=index,
-                title=hits[index - 1].title,
-                course_name=hits[index - 1].course_name,
-                header_text=hits[index - 1].header_text,
+                title=self._detok(hits[index - 1].title),
+                course_name=self._detok(hits[index - 1].course_name),
+                header_text=self._detok(hits[index - 1].header_text),
                 url=hits[index - 1].module_url,
                 page=hits[index - 1].page,
             )

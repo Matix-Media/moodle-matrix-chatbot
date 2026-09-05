@@ -71,9 +71,7 @@ class GeminiClient:
         )
         return (response.text or "").strip()
 
-    def describe_image(
-        self, image: bytes, *, mime_type: str = "image/png"
-    ) -> str:
+    def describe_image(self, image: bytes, *, mime_type: str = "image/png") -> str:
         """Analyze and describe an image/diagram/chart for semantic understanding.
 
         Runs on the utility model and describes visible elements, diagram flow,
@@ -92,9 +90,7 @@ class GeminiClient:
         response = self._client.models.generate_content(
             model=self._config.utility_model,
             contents=parts,
-            config=types.GenerateContentConfig(
-                temperature=0.2, automatic_function_calling=_NO_AFC
-            ),
+            config=types.GenerateContentConfig(temperature=0.2, automatic_function_calling=_NO_AFC),
         )
         return (response.text or "").strip()
 
@@ -168,4 +164,3 @@ class CachingOcr:
             text = self._client.transcribe_image(image, page=page, mime_type=mime_type)
         self._store.cache_ocr(digest, self._tag, text)
         return text
-

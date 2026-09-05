@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -37,6 +37,7 @@ from bsbot.ingest.taskcards import (
     share_token_from_url,
 )
 from bsbot.ingest.youtube import TranscriptApi, extract_video_id, fetch_transcript
+from bsbot.pii.tokenizer import PiiTokenizer
 from bsbot.rag.prompts import CONTEXTUAL_CHUNK_TEMPLATE, DOCUMENT_SUMMARY_TEMPLATE, HYPE_TEMPLATE
 
 #: filename hints so the generic extractor dispatches correctly for a fetched
@@ -114,6 +115,7 @@ class Indexer:
         #: costs one LLM call per chunk, same order of cost as ``hype``.
         contextualize: bool = False,
         context_generator: ContextGenerator | None = None,
+        pii_tokenizer: PiiTokenizer | None = None,
     ) -> None:
         self._store = store
         self._fetcher = fetcher
@@ -141,6 +143,7 @@ class Indexer:
         self._summary_generator = summary_generator
         self._contextualize = contextualize
         self._context_generator = context_generator
+        self._pii_tokenizer = pii_tokenizer
 
     async def index_pending(self, *, limit: int | None = None) -> IndexStats:
         pending = self._store.documents_needing_extraction(extract_version=self._extract_version)
@@ -265,10 +268,26 @@ class Indexer:
         # findable in the meantime.
         if segments is None and aliases is None:
             return
+
+        # PII tokenization (spec 013): every segment, plus the course/section/module
+        # breadcrumb, is tokenized before anything downstream — chunking, HyPE,
+        # summarization, contextual retrieval, embedding — touches it. `document`
+        # itself is never mutated, so `documents.text`/header fields stay raw for
+        # local export.
+        header_path = document.header_path
+        title = document.title
+        if self._pii_tokenizer is not None:
+            if segments is not None:
+                segments = [
+                    replace(seg, text=self._pii_tokenizer.tokenize(seg.text)) for seg in segments
+                ]
+            header_path = [self._pii_tokenizer.tokenize(p) for p in document.header_path]
+            title = self._pii_tokenizer.tokenize(document.title)
+
         chunks = (
             chunk_segments(
                 segments,
-                header_path=document.header_path,
+                header_path=header_path,
                 target_chars=self._target,
                 overlap_chars=self._overlap,
                 semantic=self._semantic,
@@ -280,9 +299,7 @@ class Indexer:
 
         if aliases:
             chunks.extend(
-                chunk_segments(
-                    [Segment(text=alias_text(aliases))], header_path=document.header_path
-                )
+                chunk_segments([Segment(text=alias_text(aliases))], header_path=header_path)
             )
 
         if not chunks:
@@ -298,11 +315,12 @@ class Indexer:
         # Hierarchical Indexing: generate document summary for multi-chunk documents
         if (self._summarize or self._summary_generator) and len(chunks) >= 2:
             full_text = "\n\n".join(c.body for c in chunks)
-            summary_text = await self._generate_summary(document.title, full_text)
+            summary_text = await self._generate_summary(title, full_text)
             if summary_text:
+                header_text = " › ".join(p for p in header_path if p)
                 summary_chunk = Chunk(
                     body=summary_text,
-                    header_text=f"{document.header_text} › Zusammenfassung",
+                    header_text=f"{header_text} › Zusammenfassung",
                     page=None,
                     ordinal=0,
                 )

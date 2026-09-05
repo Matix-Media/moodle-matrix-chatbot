@@ -69,12 +69,14 @@ class BerufsschuleBot:
         *,
         store: Any | None = None,
         embedder: Any | None = None,
+        pii_tokenizer: Any | None = None,
     ) -> None:
         self._client = client
         self._pipeline = pipeline
         self._policy = policy
         self._store = store
         self._embedder = embedder
+        self._pii_tokenizer = pii_tokenizer
         self._own_events: set[str] = set()
         self._turn_history: dict[str, tuple[str, str]] = {}
         self._recent: dict[str, list[float]] = {}
@@ -148,6 +150,7 @@ class BerufsschuleBot:
                     room_name=room_name,
                     max_history_per_room=self._policy.max_matrix_history,
                     embedder=self._embedder,
+                    pii_tokenizer=self._pii_tokenizer,
                 )
                 log.info(
                     "matrix.mod_message_embedded",

@@ -19,6 +19,7 @@ import tiktoken
 
 from bsbot.index.store import Store
 from bsbot.ingest.extract import extract
+from bsbot.pii.tokenizer import PiiTokenizer
 
 log = structlog.get_logger(__name__)
 
@@ -224,6 +225,7 @@ def export_all(
     combined_txt_path: Path,
     combined_md_path: Path | None = None,
     target_chunk_tokens: int = 800_000,
+    pii_tokenizer: PiiTokenizer | None = None,
 ) -> dict[str, Any]:
     """Export all active Moodle documents to markdown, master text, and ~800k token chunks."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -289,6 +291,18 @@ def export_all(
 
     for idx, doc in enumerate(documents, start=1):
         md_content, plain_content = extract_document_markdown(doc, store, blobs_dir)
+        # PII tokenization (spec 013): export is a local, explicitly user-triggered
+        # action that never leaves the machine, so real values are what's wanted
+        # here — resolve any token back to its real value. Two of the three
+        # sources `extract_document_markdown` can return from are already raw
+        # (inline `documents.text`, blob re-extraction); this is a no-op for
+        # those and only actually resolves anything for the "chunks from the
+        # database" fallback, which is tokenized. Applying it unconditionally
+        # here (rather than only in that one branch) also covers a live Matrix
+        # -message document, whose `documents.text` is itself tokenized.
+        if pii_tokenizer is not None:
+            md_content = pii_tokenizer.detokenize(md_content)
+            plain_content = pii_tokenizer.detokenize(plain_content)
         if plain_content and not plain_content.startswith("*Kein Textinhalt"):
             with_text_count += 1
 
