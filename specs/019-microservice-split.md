@@ -12,7 +12,7 @@ file directly — three separate processes touching one file, relying entirely o
 one-writer-many-readers guarantee to not corrupt anything. That is exactly the kind of shared-
 mutable-state setup that already produced one real production incident (`/api/ask` crashing with
 `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same
-thread`, fixed by making the route `async def` — see git history on `src/bsbot/web/app.py`), and
+thread`, fixed by making the route `async def` — see git history on `src/bsbot/api/app.py`), and
 nothing stopped `matrix`'s moderator-message write and `cron`'s indexing write from racing on the
 same file next.
 
@@ -50,7 +50,7 @@ the Store. `matrix` and `cron` talk to it over HTTP for everything they used to 
 ### `cron`
 - `AC-7` `Fetcher` depends on a `FetchCache` protocol, not a concrete `Store` — the same class
   runs unmodified whether backed by a local `Store` (the `bsbot index` dev tool) or
-  `bsbot.ingest.api_client.CronApiClient` (the deployed `cron`/`sync` containers).
+  `bsbot.cron.api_client.CronApiClient` (the deployed `cron`/`sync` containers).
 - `AC-8` `FetchResult` carries the fetched bytes directly (`data`) instead of the caller reading
   them back from a blob cache it might not have — the one change needed inside `Fetcher` itself
   to make `AC-7` possible.
@@ -77,7 +77,8 @@ the Store. `matrix` and `cron` talk to it over HTTP for everything they used to 
   matrix-nio-only vs. httpx-only) but splitting the build is a separate, lower-risk follow-up.
 - The package/directory reorg this split makes low-risk (`bsbot.rag`/`index`/`llm`/`pii` are now
   used exclusively by `api`; fetch/extract code exclusively by `cron`) is not done here — this
-  spec covers only the functional ownership change, not moving files to match it.
+  spec covers only the functional ownership change, not moving files to match it. Done
+  afterward in spec 020.
 - `bsbot export`/`bsbot bench` and the standalone `bsbot ask`/`chat`/`sync`/`index`/`embed` CLI
   commands are unaffected — local dev/research tools, not part of the deployed topology, still
   using direct `Store` access exactly as before.

@@ -19,7 +19,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from bsbot.rag.pipeline import Answer
+from bsbot.api.rag.pipeline import Answer
 
 log = structlog.get_logger(__name__)
 

@@ -6,7 +6,7 @@ writing this: no API key needed, German transcript fetched successfully.
 
 from __future__ import annotations
 
-from bsbot.ingest.youtube import extract_video_id, fetch_transcript
+from bsbot.cron.youtube import extract_video_id, fetch_transcript
 
 
 class TestVideoIdExtraction:

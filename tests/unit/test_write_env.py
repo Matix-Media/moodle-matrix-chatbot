@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bsbot.cli import _write_env
+from bsbot.cli._common import write_env as _write_env
 
 
 def test_writes_to_the_given_path_not_dotenv(tmp_path: Path) -> None:

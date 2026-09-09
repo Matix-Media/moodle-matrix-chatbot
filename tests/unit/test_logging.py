@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from bsbot.logging import configure_logging
+from bsbot.shared.logging import configure_logging
 
 
 def test_nio_internal_logging_is_quieted() -> None:

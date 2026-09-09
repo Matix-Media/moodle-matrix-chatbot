@@ -36,8 +36,8 @@ from nio import (
     SyncResponse,
 )
 
-from bsbot.config import MatrixConfig
 from bsbot.matrix.bot import BerufsschuleBot, BotPolicy, IngestMessageLike, PipelineLike
+from bsbot.shared.config import MatrixConfig
 
 log = structlog.get_logger(__name__)
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from bsbot.index.aliases import alias_text, load_aliases
+from bsbot.api.index.aliases import alias_text, load_aliases
 
 
 class TestLoading:

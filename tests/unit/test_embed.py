@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from bsbot.index.store import Store
-from bsbot.llm.embed import GeminiEmbedder
+from bsbot.api.index.store import Store
+from bsbot.api.llm.embed import GeminiEmbedder
 
 
 class FakeGenAI:

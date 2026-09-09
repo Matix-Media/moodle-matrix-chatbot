@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
+from bsbot.api.rag.pipeline import Answer, Citation
 from bsbot.matrix.bot import BerufsschuleBot, BotPolicy
-from bsbot.rag.pipeline import Answer, Citation
 
 ROOM = "!klasse:example.org"
 BOT_ID = "@bsbot:example.org"

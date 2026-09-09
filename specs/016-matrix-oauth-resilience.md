@@ -100,7 +100,7 @@ running unattended afterwards.
 ## Notes
 
 `bsbot matrix-login` is the CLI entry point for the flow above
-(`src/bsbot/cli.py:matrix_login`); `src/bsbot/matrix/oauth.py` implements the OAuth protocol
+(`src/bsbot/cli/matrix.py:matrix_login`); `src/bsbot/matrix/oauth.py` implements the OAuth protocol
 pieces, `src/bsbot/matrix/runner.py` implements the renewal loop and the outer restart
 supervisor (`run_bot`/`_run_with_restart`/`MatrixRunner._renew_forever`). See spec 009 for how
 the resulting token is used once the bot is running, and spec 001 for where the token-overrides

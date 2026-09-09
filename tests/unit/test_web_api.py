@@ -10,10 +10,10 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from bsbot.config import Settings
-from bsbot.rag.pipeline import Answer
-from bsbot.web.app import create_app
-from bsbot.web.rate_limit import RateLimiter
+from bsbot.api.app import create_app
+from bsbot.api.rag.pipeline import Answer
+from bsbot.api.rate_limit import RateLimiter
+from bsbot.shared.config import Settings
 
 
 @pytest.fixture
@@ -49,7 +49,7 @@ class _FakePipeline:
 @pytest.fixture
 def client(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Any:
     fake = _FakePipeline()
-    monkeypatch.setattr("bsbot.web.app.AnswerPipeline", lambda *a, **k: fake)
+    monkeypatch.setattr("bsbot.api.app.AnswerPipeline", lambda *a, **k: fake)
     app = create_app(settings)
     with TestClient(app) as test_client:
         test_client.fake_pipeline = fake  # type: ignore[attr-defined]
@@ -123,7 +123,7 @@ def test_every_route_is_async_to_keep_sqlite_on_one_thread() -> None:
     `async def` keeps the whole request on the single event-loop thread —
     checked across every router (spec 019), not just `/api/ask`, since every
     one of them touches the same Store."""
-    from bsbot.web.routes import ask, crawl, embed, fetch_cache, ingest_message, segments
+    from bsbot.api.routes import ask, crawl, embed, fetch_cache, ingest_message, segments
 
     routers = (ask, crawl, embed, fetch_cache, ingest_message, segments)
     routes = [route for mod in routers for route in mod.router.routes]

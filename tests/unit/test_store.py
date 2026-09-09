@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from bsbot.index.store import SCHEMA_VERSION, Store, StoreVersionError
-from bsbot.ingest.model import ContentItem, ContentKind, FileRef
+from bsbot.api.index.store import SCHEMA_VERSION, Store, StoreVersionError
+from bsbot.shared.model import ContentItem, ContentKind, FileRef
 
 
 def item(doc_id: str = "42:1:0", *, timemodified: int = 100, **kw) -> ContentItem:

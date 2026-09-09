@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.chunk import Segment, chunk_segments
+from bsbot.shared.chunk import Segment, chunk_segments
 
 HEADER = ["LF05IT", "Lernfeld 5", "Skript"]
 

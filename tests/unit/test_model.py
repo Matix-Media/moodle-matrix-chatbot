@@ -8,7 +8,7 @@ arrives with a mimetype but no recognisable extension.
 
 from __future__ import annotations
 
-from bsbot.ingest.model import FileRef, classify_file
+from bsbot.shared.model import FileRef, classify_file
 
 MAX_BYTES = 25 * 1024 * 1024
 
