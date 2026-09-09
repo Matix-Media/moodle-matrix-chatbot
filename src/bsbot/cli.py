@@ -68,6 +68,7 @@ def doctor() -> None:
         ("moodle (M1)", settings.require_moodle),
         ("gemini (M5)", settings.require_gemini),
         ("matrix (M7)", settings.require_matrix),
+        ("web api (spec 014)", settings.require_web),
     ):
         try:
             require()
@@ -852,6 +853,27 @@ def serve(
         asyncio.run(run())
     except KeyboardInterrupt:
         typer.echo("stopped")
+
+
+@app.command(name="serve-api")
+def serve_api(
+    port: int = typer.Option(8000, help="Port to listen on."),
+) -> None:
+    """Run the internal HTTP API for the Nuxt web chat frontend (spec 014)."""
+    settings = _settings()
+    configure_logging(settings.log_level)
+    try:
+        settings.require_web()  # fail fast on a bad config, not deep inside a request
+        settings.require_gemini()
+    except ConfigError as exc:
+        _fail(str(exc))
+        return
+
+    import uvicorn
+
+    from bsbot.web import create_app
+
+    uvicorn.run(create_app(settings), host="0.0.0.0", port=port)
 
 
 @app.command(name="matrix-login")

@@ -25,6 +25,11 @@ dependencies = [
     # zoneinfo's fallback IANA database — python:slim images have no system
     # tzdata, so ZoneInfo("Europe/Berlin") would otherwise fail at runtime.
     "tzdata>=2024.1",
+    # Internal HTTP API for the Nuxt web chat frontend (spec 014) — `bsbot
+    # serve-api`. Core functionality like the Matrix bot, not an opt-in extra
+    # like `pii` below: there is no toggle that makes bsbot.web unused.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.scripts]

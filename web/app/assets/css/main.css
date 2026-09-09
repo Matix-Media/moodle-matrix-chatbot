@@ -1,0 +1,25 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+@theme static {
+  --font-sans: 'Public Sans', sans-serif;
+
+  /* "campus" — a custom blue built for this app, not a stock Tailwind color
+     (see specs/014-web-chat.md for context). Distinct from Moodle's orange
+     branding and from Nuxt's default green, calm/trustworthy for a school
+     assistant, and works in both themes. Generated as an OKLCH ramp (same
+     technique Tailwind's own palettes use): lightness steps monotonically
+     50->950, chroma peaks mid-scale then tapers at the extremes, hue held
+     constant at 235 (a clean blue with a slight cyan lean). */
+  --color-campus-50: oklch(0.978 0.012 235);
+  --color-campus-100: oklch(0.953 0.024 235);
+  --color-campus-200: oklch(0.902 0.048 235);
+  --color-campus-300: oklch(0.825 0.082 235);
+  --color-campus-400: oklch(0.718 0.126 235);
+  --color-campus-500: oklch(0.612 0.160 235);
+  --color-campus-600: oklch(0.530 0.170 235);
+  --color-campus-700: oklch(0.460 0.152 235);
+  --color-campus-800: oklch(0.392 0.120 235);
+  --color-campus-900: oklch(0.338 0.094 235);
+  --color-campus-950: oklch(0.230 0.062 235);
+}
