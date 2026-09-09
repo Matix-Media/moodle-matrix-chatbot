@@ -153,17 +153,26 @@ whole pipeline is testable without touching the school's server.
 ## Deployment
 
 ```bash
-docker compose run --rm sync    # one-shot: crawl + index + embed
-docker compose up -d bot cron   # run the bot, and the recurring sync loop
+docker compose run --rm sync       # one-shot: crawl + index + embed
+docker compose up -d matrix cron   # run the Matrix bot, and the recurring sync loop
 ```
 
-`bot` and `cron` are separate containers on purpose — a multi-hour crawl or a large embedding
+`matrix` and `cron` are separate containers on purpose — a multi-hour crawl or a large embedding
 batch must never delay the bot answering a question in the room. They share the SQLite index
 over one volume; that's safe, since the store runs in WAL mode (one writer, concurrent readers).
 `cron` repeats sync → index → embed every `BSBOT_SYNC_INTERVAL_MINUTES` (default 180). Both
-containers use `restart: unless-stopped`, and `bot` additionally restarts its own Matrix
+containers use `restart: unless-stopped`, and `matrix` additionally restarts its own Matrix
 connection internally with backoff after a transient network failure (a laptop's lid closing, a
 VPS network blip) — see `matrix.crashed_restarting` in the logs.
+
+For the web chat (spec 014, people outside the Matrix room):
+
+```bash
+docker compose up -d api web   # internal HTTP API + the Nuxt chat frontend
+```
+
+Neither publishes a host port — `web` needs a reverse proxy / domain rule pointed at its internal
+port 3000 to actually be reachable, see `specs/014-web-chat.md`.
 
 Config reaches the container either way a platform provides it: a real `.env` file (self-hosted
 VPS), or variables injected straight into the environment (Dokploy sets `BSBOT_*` directly rather
