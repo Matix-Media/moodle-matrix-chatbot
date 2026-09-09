@@ -67,6 +67,15 @@ async def read_blob(request: Request, sha256: str) -> Response:
     return Response(content=store.read_blob(sha256), media_type="application/octet-stream")
 
 
+@router.head("/internal/blobs/{sha256}")
+async def blob_exists(request: Request, sha256: str) -> Response:
+    # A separate route, not relying on FastAPI's (absent, in this version)
+    # auto-HEAD-for-GET support — lets CronApiClient.blob_exists() check
+    # without transferring the blob body just to test for its presence.
+    store: Store = request.app.state.store
+    return Response(status_code=200 if store.blob_exists(sha256) else 404)
+
+
 @router.post("/internal/blobs", response_model=BlobResponse)
 async def put_blob(request: Request) -> BlobResponse:
     data = await request.body()
