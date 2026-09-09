@@ -1,5 +1,5 @@
 """Verifies `CronApiClient` — cron's HTTP client for `api`, replacing direct
-Store/Fetcher-with-a-Store access. See specs/015-microservice-split.md.
+Store/Fetcher-with-a-Store access. See specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

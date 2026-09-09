@@ -239,7 +239,7 @@ class Indexer:
         segments that arrived over the wire instead of freshly fetched (`api`'s
         `/internal/documents/{doc_id}/segments`, called by `cron` — which runs
         this exact fetch+extract step itself, just with no `Store` at all, see
-        `bsbot.ingest.segments.resolve_segments` and specs/015-microservice-split.md).
+        `bsbot.ingest.segments.resolve_segments` and specs/019-microservice-split.md).
         """
         outcome = await resolve_segments(
             document,

@@ -1,6 +1,6 @@
 """The recurring sync -> index -> embed cycle — the "sync cron loop" deferred
 earlier in favour of retrieval-quality work (see specs/005..007), later split
-across processes (specs/015-microservice-split.md): `cron` only crawls,
+across processes (specs/019-microservice-split.md): `cron` only crawls,
 fetches, and extracts now — `api` is the only process that touches the SQLite
 Store, doing all PII-tokenization, chunking, and embedding server-side.
 

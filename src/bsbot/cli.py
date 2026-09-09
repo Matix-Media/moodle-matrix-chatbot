@@ -409,7 +409,7 @@ def cron(
     inside `bsbot serve` — a multi-hour crawl or a large embedding batch must
     never delay the bot answering a question in the room.
 
-    Talks to `api` over HTTP for everything (specs/015-microservice-split.md)
+    Talks to `api` over HTTP for everything (specs/019-microservice-split.md)
     — never opens the SQLite Store itself, so no Gemini config or aliases
     file is needed here anymore; both live entirely in `api` now. `--aliases`
     is gone with it — see `bsbot index --aliases` for the local-dev
@@ -797,7 +797,7 @@ def serve(
 
     Talks to `api` over HTTP for everything — answering questions and
     embedding moderator messages — rather than opening the SQLite Store
-    itself; `api` is the only process that does (specs/015-microservice-split.md).
+    itself; `api` is the only process that does (specs/019-microservice-split.md).
     Pipeline tuning (decompose/step-back/crag/...) lives entirely in `api`
     now, not here — see `bsbot.web.app.create_app`.
     """

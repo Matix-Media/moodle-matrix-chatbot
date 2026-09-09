@@ -41,7 +41,7 @@ x-environment: &environment
 services:
   # Always listening in the Matrix room. Talks to `api` over HTTP for
   # everything (answering, mod-message embedding) — never opens the SQLite
-  # index itself (specs/015-microservice-split.md). Its own volume, just for
+  # index itself (specs/019-microservice-split.md). Its own volume, just for
   # the E2EE session store (matrix_store/ + rotated tokens) — that still
   # needs to survive a restart; the RAG index does not live here anymore.
   matrix:
@@ -70,7 +70,7 @@ services:
 
   # One-shot maintenance run, e.g. right after editing config/document_aliases.yaml.
   # Use with:  docker compose run --rm sync   (needs `api` already running —
-  # it does the actual storing/embedding now, see specs/015-microservice-split.md)
+  # it does the actual storing/embedding now, see specs/019-microservice-split.md)
   sync:
     build: .
     profiles: ["tools"]
@@ -81,7 +81,7 @@ services:
       - api
 
   # Internal HTTP API (spec 014). The only service that opens the SQLite
-  # index (specs/015-microservice-split.md) — `web`, `matrix`, and `cron` are
+  # index (specs/019-microservice-split.md) — `web`, `matrix`, and `cron` are
   # all HTTP clients of it. No `ports:` published — reachable only as
   # http://api:8000 from other containers on this compose network.
   api:

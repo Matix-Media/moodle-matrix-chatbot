@@ -1,5 +1,5 @@
 """Request/response shapes for `api`'s internal endpoints — cron and matrix are
-the only callers (never the public internet). See specs/015-microservice-split.md.
+the only callers (never the public internet). See specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 """HTTP API for the Nuxt chat frontend, `cron`, and `matrix` — see
-specs/014-web-chat.md and specs/015-microservice-split.md.
+specs/014-web-chat.md and specs/019-microservice-split.md.
 
 The only process that ever opens the SQLite `Store` directly. Everything else
 (`matrix`, `cron`, `web`) talks to it over HTTP — see this package's `routes/`.

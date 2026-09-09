@@ -1,6 +1,6 @@
 """HTTP client for `api`'s Q&A and mod-message-ingestion endpoints —
 `matrix` never opens the SQLite Store directly, see
-specs/015-microservice-split.md. Implements `bot.py`'s `PipelineLike` and
+specs/019-microservice-split.md. Implements `bot.py`'s `PipelineLike` and
 `IngestMessageLike` protocols.
 
 Both calls block synchronously (a plain `httpx.Client`, not async) rather than

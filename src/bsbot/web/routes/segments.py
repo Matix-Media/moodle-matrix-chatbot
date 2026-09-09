@@ -1,7 +1,7 @@
 """`cron` sends resolved segments here after fetch+extract; this is where PII-
 tokenization, chunking, augmentation, embedding-relevant metadata, and storage
 all happen — `Indexer.index_segments()`, unchanged logic, called remotely
-instead of locally. See specs/015-microservice-split.md.
+instead of locally. See specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

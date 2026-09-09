@@ -14,7 +14,7 @@ when the cheaper one above is inconclusive.
 Depends only on a small ``FetchCache`` protocol, not a concrete ``Store`` — so the
 same fetch/cache logic runs unchanged whether the cache is a local ``Store`` (the
 `bsbot index` dev tool) or an HTTP-backed one talking to the `api` service (`cron`,
-which never opens the SQLite file itself — see specs/015-microservice-split.md).
+which never opens the SQLite file itself — see specs/019-microservice-split.md).
 """
 
 from __future__ import annotations

@@ -457,7 +457,7 @@ class TestConversationTurns:
 
 class FakeIngest:
     """Stands in for `bsbot.matrix.api_client.ApiClient.ingest_message` —
-    the bot never touches Store directly (specs/015-microservice-split.md)."""
+    the bot never touches Store directly (specs/019-microservice-split.md)."""
 
     def __init__(self) -> None:
         self.indexed: list[dict[str, Any]] = []

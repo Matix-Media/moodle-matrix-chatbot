@@ -5,7 +5,7 @@ Split out of `Indexer` so it can run with only a `FetcherLike`, no `Store` — t
 is the "cron fetches and extracts" half of fetch->extract->chunk->store; the other
 half (chunk/PII/embed/store) runs wherever a `Store` lives (`Indexer.index_segments`,
 called locally by the `bsbot index` dev tool or remotely by `api`'s
-`/internal/documents/{doc_id}/segments` — see specs/015-microservice-split.md).
+`/internal/documents/{doc_id}/segments` — see specs/019-microservice-split.md).
 """
 
 from __future__ import annotations

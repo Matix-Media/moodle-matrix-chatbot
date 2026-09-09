@@ -153,7 +153,7 @@ whole pipeline is testable without touching the school's server.
 ## Deployment
 
 `api` is the only service that ever opens the SQLite index — `matrix`, `cron`, and `web` are all
-HTTP clients of it (specs/015-microservice-split.md). Start it first:
+HTTP clients of it (specs/019-microservice-split.md). Start it first:
 
 ```bash
 docker compose up -d api            # internal HTTP API: storage, PII, chunking, embedding, answering

@@ -59,7 +59,7 @@ class IngestMessageLike(Protocol):
     """Moderator-message embedding — the one non-Q&A write the bot makes.
     Satisfied by `bsbot.matrix.api_client.ApiClient` in production (an HTTP
     call to `api`'s `/internal/ingest-message`) or directly by a `Store` in
-    tests. See specs/015-microservice-split.md.
+    tests. See specs/019-microservice-split.md.
     """
 
     def ingest_message(

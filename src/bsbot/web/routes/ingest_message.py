@@ -1,6 +1,6 @@
 """The one non-Q&A write `matrix` used to make directly (`Store.
 index_matrix_message`, moderator-message embedding) — now a call over the
-wire instead. See specs/015-microservice-split.md.
+wire instead. See specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

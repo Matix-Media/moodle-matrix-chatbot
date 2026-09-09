@@ -1,7 +1,7 @@
 """Embed every chunk that doesn't yet have a vector — the body of the old
 `sync_loop.embed_once`, now running server-side against `api`'s own already-
 built `Store`/`GeminiEmbedder` instead of `cron` building its own. `cron`
-just triggers this after an index pass. See specs/015-microservice-split.md.
+just triggers this after an index pass. See specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

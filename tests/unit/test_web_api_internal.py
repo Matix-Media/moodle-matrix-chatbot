@@ -1,5 +1,5 @@
 """Verifies the `/internal/*` endpoints `cron` and `matrix` call instead of
-touching Store directly — see specs/015-microservice-split.md.
+touching Store directly — see specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

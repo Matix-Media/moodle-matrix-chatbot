@@ -1,6 +1,6 @@
 """`cron` persists a crawl here and gets back what still needs fetching —
 replaces cron's old direct `store.persist_crawl(...)` call. See
-specs/015-microservice-split.md.
+specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

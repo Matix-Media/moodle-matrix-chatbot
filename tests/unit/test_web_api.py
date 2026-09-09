@@ -112,7 +112,7 @@ def test_every_route_is_async_to_keep_sqlite_on_one_thread() -> None:
     sqlite3.ProgrammingError: "SQLite objects created in a thread can only
     be used in that same thread." Seen live in production (spec 014).
     `async def` keeps the whole request on the single event-loop thread —
-    checked across every router (spec 015), not just `/api/ask`, since every
+    checked across every router (spec 019), not just `/api/ask`, since every
     one of them touches the same Store."""
     from bsbot.web.routes import ask, crawl, embed, fetch_cache, ingest_message, segments
 

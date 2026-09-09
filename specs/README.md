@@ -55,3 +55,4 @@ Design rationale, external constraints, links.
 | [016](016-matrix-oauth-resilience.md) | Matrix OAuth device-grant login and process resilience | `test_matrix_oauth.py`, `test_matrix_runner.py`, `test_write_env.py` | active |
 | [017](017-sync-cron.md) | Scheduled sync cycle | `test_sync_loop.py` | active |
 | [018](018-corpus-export.md) | Corpus export | `test_export.py` (not yet written) | draft |
+| [019](019-microservice-split.md) | api owns the database; matrix and cron are HTTP clients | `test_web_api_internal.py`, `test_matrix_api_client.py`, `test_cron_api_client.py` | active |

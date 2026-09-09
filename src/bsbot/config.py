@@ -158,7 +158,7 @@ class MatrixSection(BaseModel):
 
 class WebSection(BaseModel):
     """The `api` service, and how every other service reaches it — see
-    specs/014-web-chat.md and specs/015-microservice-split.md. `matrix` and
+    specs/014-web-chat.md and specs/019-microservice-split.md. `matrix` and
     `cron` use this section exactly like the Nuxt `web` frontend does: `api`
     is the only process that ever opens the SQLite Store, everyone else is
     an HTTP client of it.

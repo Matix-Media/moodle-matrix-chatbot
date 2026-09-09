@@ -1,5 +1,5 @@
 """Verifies `ApiClient` — matrix's HTTP client for `api`, replacing direct
-Store access. See specs/015-microservice-split.md.
+Store access. See specs/019-microservice-split.md.
 """
 
 from __future__ import annotations

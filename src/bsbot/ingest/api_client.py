@@ -1,5 +1,5 @@
 """HTTP client for `api` used by `cron` — replaces all of cron's direct Store
-access. See specs/015-microservice-split.md.
+access. See specs/019-microservice-split.md.
 
 Implements `bsbot.ingest.fetcher.FetchCache` (so the existing, unmodified
 `Fetcher` can run with no Store at all) plus the handful of calls

@@ -1,5 +1,5 @@
 """Blob storage + fetch bookkeeping for `cron`'s Store-free `Fetcher` — see
-`bsbot.ingest.fetcher.FetchCache` and specs/015-microservice-split.md. Every
+`bsbot.ingest.fetcher.FetchCache` and specs/019-microservice-split.md. Every
 handler here is a thin, direct wrapper around one `Store` method.
 """
 
