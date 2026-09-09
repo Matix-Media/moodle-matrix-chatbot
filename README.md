@@ -152,18 +152,32 @@ whole pipeline is testable without touching the school's server.
 
 ## Deployment
 
+`api` is the only service that ever opens the SQLite index — `matrix`, `cron`, and `web` are all
+HTTP clients of it (specs/019-microservice-split.md). Start it first:
+
 ```bash
-docker compose run --rm sync    # one-shot: crawl + index + embed
-docker compose up -d bot cron   # run the bot, and the recurring sync loop
+docker compose up -d api            # internal HTTP API: storage, PII, chunking, embedding, answering
+docker compose up -d matrix cron    # the Matrix bot, and the recurring crawl/fetch loop
+docker compose run --rm sync        # one-shot: crawl + fetch/extract, api chunks+embeds+stores
 ```
 
-`bot` and `cron` are separate containers on purpose — a multi-hour crawl or a large embedding
-batch must never delay the bot answering a question in the room. They share the SQLite index
-over one volume; that's safe, since the store runs in WAL mode (one writer, concurrent readers).
-`cron` repeats sync → index → embed every `BSBOT_SYNC_INTERVAL_MINUTES` (default 180). Both
-containers use `restart: unless-stopped`, and `bot` additionally restarts its own Matrix
-connection internally with backoff after a transient network failure (a laptop's lid closing, a
-VPS network blip) — see `matrix.crashed_restarting` in the logs.
+`matrix` and `cron` are separate containers on purpose — a multi-hour crawl or a large embedding
+batch must never delay the bot answering a question in the room. Neither touches the index
+directly anymore, so there's no shared-volume concern between them; `cron` repeats
+crawl → fetch/extract → (api chunks, embeds, stores) every `BSBOT_SYNC_INTERVAL_MINUTES` (default
+180). All containers use `restart: unless-stopped`, and `matrix` additionally restarts its own
+Matrix connection internally with backoff after a transient network failure (a laptop's lid
+closing, a VPS network blip) — see `matrix.crashed_restarting` in the logs. `matrix`'s own volume
+holds only its E2EE session store now, not the RAG index.
+
+For the web chat (spec 014, people outside the Matrix room):
+
+```bash
+docker compose up -d web   # the Nuxt chat frontend — needs `api` already running
+```
+
+Neither `api` nor `web` publishes a host port — `web` needs a reverse proxy / domain rule pointed
+at its internal port 3000 to actually be reachable, see `specs/014-web-chat.md`.
 
 Config reaches the container either way a platform provides it: a real `.env` file (self-hosted
 VPS), or variables injected straight into the environment (Dokploy sets `BSBOT_*` directly rather

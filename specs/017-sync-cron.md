@@ -12,19 +12,21 @@ hand. It must run as its own process, separate from `bsbot serve` (the Matrix bo
 serve-api` (the web API) — a multi-hour crawl or a large embedding batch must never delay
 either of those from answering. Deferred earlier in favour of retrieval-quality work (specs
 005–007), it exists now that the corpus needs to stay current without a human watching a
-terminal.
+terminal. Since spec 019, `cron` only crawls, fetches, and extracts — `api` is the only process
+that opens the SQLite store, doing the actual chunking, PII-tokenization, embedding, and storage.
 
 ## Acceptance criteria
 
 ### The cycle
 - `AC-1` One cycle runs sync, then index, then embed, in that order — each phase's output is
   what the next phase reads from disk.
-- `AC-2` `sync` re-crawls every enrolled course and persists the manifest. Structure only, no
-  file downloads — cheap enough to run every cycle regardless of interval.
-- `AC-3` `index` only touches documents the manifest reports as pending; a cycle that finds
-  nothing new performs no extraction and triggers no embedding calls.
-- `AC-4` `embed` selects chunks lacking a vector directly from the store, rather than re-deriving
-  "pending" from the manifest a second way.
+- `AC-2` `sync` re-crawls every enrolled course and persists the manifest (via `api`, spec 019).
+  Structure only, no file downloads — cheap enough to run every cycle regardless of interval.
+- `AC-3` `index` only touches documents `api` reports as pending; a cycle that finds nothing new
+  performs no extraction and triggers no embedding calls.
+- `AC-4` `embed` is a single trigger call (`POST /internal/embed-pending`, spec 019) — the actual
+  "select chunks lacking a vector" query and the embedding calls themselves run inside `api`
+  against its own store, not here.
 
 ### Failure isolation
 - `AC-5` Each of the three steps is isolated: a step raising an exception is caught, logged by
@@ -47,12 +49,15 @@ terminal.
 
 - No per-course or per-document scheduling granularity — one interval governs the whole cycle.
 - No distributed or multi-worker coordination; a single running instance of the loop is assumed.
-- No change to what `sync`/`index`/`embed` themselves do — this spec covers only the loop and
-  the failure isolation around it. The underlying behaviour is specs 002/003 (sync), 005/006/015
-  (index), and 007 (embed).
+- What each phase does internally (fetch/extract dispatch, chunking, embedding) is specs
+  002/003/005/006/007/011/015/019, not here — this spec covers only the loop, the failure
+  isolation around it, and (post spec 019) which phase runs where.
 
 ## Notes
 
-`sync_once`/`index_once`/`embed_once` (`src/bsbot/sync_loop.py`) are thin wrappers around the
-same classes the one-shot `bsbot sync`/`index`/`embed` CLI commands use — nothing about *what*
-each phase does is new here, only the repetition and the isolation between phases.
+`sync_once`/`index_once`/`embed_once` (`src/bsbot/sync_loop.py`) are no longer thin wrappers
+around the same classes the one-shot `bsbot sync`/`index`/`embed` CLI commands use — since
+spec 019, they talk to `api` over HTTP (`CronApiClient`) for everything except the crawl and
+the fetch/extract step itself, which still run locally exactly as before. The one-shot CLI
+commands are unaffected by this and still use direct `Store` access, as a local dev/debugging
+convenience.

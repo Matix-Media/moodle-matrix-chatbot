@@ -402,25 +402,27 @@ def cron(
         False, help="Run a single sync -> index -> embed cycle and exit, instead of looping."
     ),
     follow_links: bool = typer.Option(True, help="Same as `bsbot sync --follow-links`."),
-    aliases_path: Path = typer.Option(
-        Path("config/document_aliases.yaml"),
-        "--aliases",
-        help="Human-maintained doc_id -> search phrase overrides. Missing is fine.",
-    ),
 ) -> None:
     """Repeatedly sync, index and embed — the unattended long-running update loop.
 
     Meant to run as its own process (its own container in docker-compose), not
     inside `bsbot serve` — a multi-hour crawl or a large embedding batch must
     never delay the bot answering a question in the room.
+
+    Talks to `api` over HTTP for everything (specs/019-microservice-split.md)
+    — never opens the SQLite Store itself, so no Gemini config or aliases
+    file is needed here anymore; both live entirely in `api` now. `--aliases`
+    is gone with it — see `bsbot index --aliases` for the local-dev
+    equivalent, which is unaffected by this split.
     """
+    from bsbot.ingest.api_client import CronApiClient
     from bsbot.sync_loop import run_cycle, run_forever
 
     settings = _settings()
     configure_logging(settings.log_level)
     try:
         moodle = settings.require_moodle()
-        gemini = settings.require_gemini()
+        web = settings.require_web()
     except ConfigError as exc:
         _fail(str(exc))
         return
@@ -428,7 +430,11 @@ def cron(
     interval = interval_minutes or settings.sync_interval_minutes
 
     async def cycle() -> None:
-        await run_cycle(settings, moodle, gemini, aliases_path, follow_links=follow_links)
+        api = CronApiClient(web.api_url, web.api_token.get_secret_value())
+        try:
+            await run_cycle(moodle, api, follow_links=follow_links)
+        finally:
+            api.close()
 
     async def run() -> None:
         if once:
@@ -786,68 +792,43 @@ def serve(
         help="Also answer plain questions, not only messages addressed to the bot. "
         "Noisier; start without it.",
     ),
-    no_decompose: bool = typer.Option(False, help="Disable query decomposition."),
-    no_step_back: bool = typer.Option(False, help="Disable step-back prompting."),
-    compress_context: bool = typer.Option(
-        False, help="Extract only relevant sentences from chunks before generating answer."
-    ),
-    no_crag: bool = typer.Option(False, help="Disable CRAG actionable fallback search links."),
-    suggest_followup: bool = typer.Option(
-        True, help="Show proactive suggested follow-up questions after each answer."
-    ),
 ) -> None:
-    """Run the Matrix bot (M7). Requires Matrix and Gemini configuration."""
+    """Run the Matrix bot (M7). Requires Matrix and Web API configuration.
+
+    Talks to `api` over HTTP for everything — answering questions and
+    embedding moderator messages — rather than opening the SQLite Store
+    itself; `api` is the only process that does (specs/019-microservice-split.md).
+    Pipeline tuning (decompose/step-back/crag/...) lives entirely in `api`
+    now, not here — see `bsbot.web.app.create_app`.
+    """
     settings = _settings()
     configure_logging(settings.log_level)
     try:
         settings.require_matrix()  # fail fast on a bad config, not deep in the retry loop
-        gemini = settings.require_gemini()
+        web = settings.require_web()
     except ConfigError as exc:
         _fail(str(exc))
         return
 
+    from bsbot.matrix.api_client import ApiClient
     from bsbot.matrix.runner import run_bot
 
     async def run() -> None:
-        with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
-            client = GeminiClient(gemini)
-            embedder = GeminiEmbedder(
-                client,
-                store=store,
-                model=gemini.embed_model,
-                dim=gemini.embed_dim,
-                batch_size=gemini.embed_batch_size,
-                rpm=gemini.embed_rpm,
-                items_per_minute=gemini.embed_items_per_minute,
-            )
-            pii_tok = build_pii_tokenizer(settings, store)
-            pipeline = AnswerPipeline(
-                HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
-                client,
-                decompose=not no_decompose,
-                step_back=not no_step_back,
-                compress_context=compress_context,
-                crag=not no_crag,
-                suggest_followup=suggest_followup,
-                moodle_base_url=settings.moodle.base_url
-                if settings.moodle.base_url
-                else "https://moodle.itech-bs14.de",
-                utility_model=gemini.utility_model,
-                pii_tokenizer=pii_tok,
-            )
+        api_client = ApiClient(web.api_url, web.api_token.get_secret_value())
+        try:
             await run_bot(
                 # Re-resolved on every restart attempt, not just once — see
                 # run_bot's docstring for why a frozen config is exactly what
                 # let a dead-on-disk refresh token get retried forever.
                 lambda: load_settings().require_matrix(),
-                pipeline,
+                api_client,
                 store_dir=settings.matrix_store_dir,
                 answer_all=answer_all,
                 persist_tokens=lambda values: _write_env(values, settings.token_overrides_file),
-                store=store,
-                embedder=embedder,
-                pii_tokenizer=pii_tok,
+                ingest=api_client,
             )
+        finally:
+            api_client.close()
 
     try:
         asyncio.run(run())

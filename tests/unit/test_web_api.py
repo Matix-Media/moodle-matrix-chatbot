@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,8 @@ from fastapi.testclient import TestClient
 
 from bsbot.config import Settings
 from bsbot.rag.pipeline import Answer
-from bsbot.web.app import _RateLimiter, create_app
+from bsbot.web.app import create_app
+from bsbot.web.rate_limit import RateLimiter
 
 
 @pytest.fixture
@@ -103,17 +105,35 @@ def test_rate_limit_exceeded_returns_429(client: Any) -> None:
     assert blocked.status_code == 429
 
 
+def test_every_route_is_async_to_keep_sqlite_on_one_thread() -> None:
+    """Regression: a plain `def` endpoint is dispatched by FastAPI to a
+    threadpool worker, which can land on a different thread than the one
+    `lifespan` opened the sqlite3 connection on —
+    sqlite3.ProgrammingError: "SQLite objects created in a thread can only
+    be used in that same thread." Seen live in production (spec 014).
+    `async def` keeps the whole request on the single event-loop thread —
+    checked across every router (spec 019), not just `/api/ask`, since every
+    one of them touches the same Store."""
+    from bsbot.web.routes import ask, crawl, embed, fetch_cache, ingest_message, segments
+
+    routers = (ask, crawl, embed, fetch_cache, ingest_message, segments)
+    routes = [route for mod in routers for route in mod.router.routes]
+    assert routes, "expected at least one route to check"
+    for route in routes:
+        assert inspect.iscoroutinefunction(route.endpoint), route.path
+
+
 class TestRateLimiterUnit:
-    """_RateLimiter in isolation, no HTTP layer involved."""
+    """RateLimiter in isolation, no HTTP layer involved."""
 
     def test_burst_limit(self) -> None:
-        limiter = _RateLimiter(max_per_minute=2, max_per_day=1000)
+        limiter = RateLimiter(max_per_minute=2, max_per_day=1000)
         assert limiter.allow()
         assert limiter.allow()
         assert not limiter.allow()
 
     def test_daily_quota_blocks_after_the_limit(self) -> None:
-        limiter = _RateLimiter(max_per_minute=1000, max_per_day=1)
+        limiter = RateLimiter(max_per_minute=1000, max_per_day=1)
         assert limiter.allow()
         assert not limiter.allow()
 
@@ -123,7 +143,7 @@ class TestRateLimiterUnit:
         day1 = datetime(2026, 1, 1, 23, 0, tzinfo=UTC)
         day2 = datetime(2026, 1, 2, 0, 30, tzinfo=UTC)
         clock = {"now": day1}
-        limiter = _RateLimiter(max_per_minute=1000, max_per_day=1, now=lambda: clock["now"])
+        limiter = RateLimiter(max_per_minute=1000, max_per_day=1, now=lambda: clock["now"])
         assert limiter.allow()
         assert not limiter.allow()
         clock["now"] = day2

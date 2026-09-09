@@ -55,6 +55,26 @@ class PipelineLike(Protocol):
     ) -> Answer: ...
 
 
+class IngestMessageLike(Protocol):
+    """Moderator-message embedding — the one non-Q&A write the bot makes.
+    Satisfied by `bsbot.matrix.api_client.ApiClient` in production (an HTTP
+    call to `api`'s `/internal/ingest-message`) or directly by a `Store` in
+    tests. See specs/019-microservice-split.md.
+    """
+
+    def ingest_message(
+        self,
+        *,
+        room_id: str,
+        event_id: str,
+        sender: str,
+        text: str,
+        timemodified: int,
+        room_name: str = ...,
+        max_history_per_room: int = ...,
+    ) -> list[int]: ...
+
+
 @dataclass
 class BotPolicy:
     room_ids: set[str]
@@ -80,17 +100,13 @@ class BerufsschuleBot:
         pipeline: PipelineLike,
         policy: BotPolicy,
         *,
-        store: Any | None = None,
-        embedder: Any | None = None,
-        pii_tokenizer: Any | None = None,
+        ingest: IngestMessageLike | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
         self._pipeline = pipeline
         self._policy = policy
-        self._store = store
-        self._embedder = embedder
-        self._pii_tokenizer = pii_tokenizer
+        self._ingest = ingest
         self._now = now or (lambda: datetime.now(UTC))
         self._own_events: set[str] = set()
         self._turn_history: dict[str, tuple[str, str]] = {}
@@ -147,7 +163,7 @@ class BerufsschuleBot:
         # Ingest and embed moderator messages as channel-scoped knowledge
         if (
             self._policy.embed_mod_messages
-            and self._store is not None
+            and self._ingest is not None
             and self._is_moderator(room, sender)
             and not self._is_addressed_to_bot(body, event)
         ):
@@ -158,7 +174,7 @@ class BerufsschuleBot:
                 getattr(room, "display_name", "") or getattr(room, "name", "") or room.room_id
             )
             try:
-                self._store.index_matrix_message(
+                self._ingest.ingest_message(
                     room_id=room.room_id,
                     event_id=event_id,
                     sender=sender,
@@ -166,8 +182,6 @@ class BerufsschuleBot:
                     timemodified=timemodified,
                     room_name=room_name,
                     max_history_per_room=self._policy.max_matrix_history,
-                    embedder=self._embedder,
-                    pii_tokenizer=self._pii_tokenizer,
                 )
                 log.info(
                     "matrix.mod_message_embedded",
