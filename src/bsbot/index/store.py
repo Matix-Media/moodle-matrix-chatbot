@@ -515,6 +515,12 @@ class Store:
     def blob_path(self, sha256: str) -> Path:
         return self.blobs_dir / sha256[:2] / sha256
 
+    def blob_exists(self, sha256: str) -> bool:
+        return self.blob_path(sha256).exists()
+
+    def read_blob(self, sha256: str) -> bytes:
+        return self.blob_path(sha256).read_bytes()
+
     def blob_count(self) -> int:
         return int(self.connection.execute("SELECT count(*) FROM blobs").fetchone()[0])
 

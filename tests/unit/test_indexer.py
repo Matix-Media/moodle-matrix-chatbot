@@ -41,8 +41,9 @@ class FakeFetcher:
         self.requests.append(url)
         if url not in self._blobs:
             return FetchResult(url, FetchOutcome.FAILED, error="HTTP 404")
-        digest = self._store.put_blob(self._blobs[url])
-        return FetchResult(url, FetchOutcome.DOWNLOADED, sha256=digest)
+        data = self._blobs[url]
+        digest = self._store.put_blob(data)
+        return FetchResult(url, FetchOutcome.DOWNLOADED, sha256=digest, data=data)
 
 
 @pytest.fixture
