@@ -39,44 +39,50 @@ x-environment: &environment
   - BSBOT_WEB__API_TOKEN
 
 services:
-  # Always listening in the Matrix room. Never runs Moodle sync/index/embed
-  # itself — a multi-hour crawl or a large embedding batch must not delay it
-  # answering a question.
+  # Always listening in the Matrix room. Talks to `api` over HTTP for
+  # everything (answering, mod-message embedding) — never opens the SQLite
+  # index itself (specs/015-microservice-split.md). Its own volume, just for
+  # the E2EE session store (matrix_store/ + rotated tokens) — that still
+  # needs to survive a restart; the RAG index does not live here anymore.
   matrix:
     build: .
     restart: unless-stopped
     env_file: *env-file
     environment: *environment
     volumes:
-      - bsbot-data:/data
+      - matrix-session:/data
     command: ["serve"]
+    depends_on:
+      - api
 
-  # The recurring sync -> index -> embed loop (BSBOT_SYNC_INTERVAL_MINUTES
-  # between cycles, default 180). Its own container so a crawl never blocks the
-  # bot. Shares the SQLite index with `matrix` over the same volume — safe,
-  # since the store runs in WAL mode (one writer + concurrent readers).
+  # The recurring crawl -> fetch/extract -> (api chunks+embeds+stores) loop
+  # (BSBOT_SYNC_INTERVAL_MINUTES between cycles, default 180). Its own
+  # container so a crawl never blocks the bot. No volume at all — cron never
+  # opens the SQLite index either; it only ever calls `api` over HTTP.
   cron:
     build: .
     restart: unless-stopped
     env_file: *env-file
     environment: *environment
-    volumes:
-      - bsbot-data:/data
     command: ["cron"]
+    depends_on:
+      - api
 
   # One-shot maintenance run, e.g. right after editing config/document_aliases.yaml.
-  # Use with:  docker compose run --rm sync
+  # Use with:  docker compose run --rm sync   (needs `api` already running —
+  # it does the actual storing/embedding now, see specs/015-microservice-split.md)
   sync:
     build: .
     profiles: ["tools"]
     env_file: *env-file
     environment: *environment
-    volumes:
-      - bsbot-data:/data
     command: ["cron", "--once"]
+    depends_on:
+      - api
 
-  # Internal HTTP API (spec 014) the `web` chat frontend calls. Same image and
-  # index as `matrix`/`cron`. No `ports:` published — reachable only as
+  # Internal HTTP API (spec 014). The only service that opens the SQLite
+  # index (specs/015-microservice-split.md) — `web`, `matrix`, and `cron` are
+  # all HTTP clients of it. No `ports:` published — reachable only as
   # http://api:8000 from other containers on this compose network.
   api:
     build: .
@@ -104,3 +110,4 @@ services:
 
 volumes:
   bsbot-data:
+  matrix-session:
