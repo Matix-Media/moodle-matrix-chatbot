@@ -5,13 +5,6 @@ interface ChatRequestBody {
   history?: Array<[string, string]>
 }
 
-interface AskResponse {
-  text: string
-  citations: Array<{ index: number, header_text: string, url: string | null, page: number | null }>
-  grounded: boolean
-  suggested_questions: string[]
-}
-
 // Constant-time comparison, guarding the length mismatch node's own
 // timingSafeEqual throws on instead of returning false for — see
 // bsbot's hmac.compare_digest usage on the Python side for the same idea.
