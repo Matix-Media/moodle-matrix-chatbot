@@ -17,9 +17,9 @@ import markdownify
 import structlog
 import tiktoken
 
-from bsbot.index.store import Store
-from bsbot.ingest.extract import extract
-from bsbot.pii.tokenizer import PiiTokenizer
+from bsbot.api.index.store import Store
+from bsbot.api.pii.tokenizer import PiiTokenizer
+from bsbot.cron.extract import extract
 
 log = structlog.get_logger(__name__)
 

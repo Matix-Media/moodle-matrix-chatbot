@@ -55,7 +55,7 @@ that opens the SQLite store, doing the actual chunking, PII-tokenization, embedd
 
 ## Notes
 
-`sync_once`/`index_once`/`embed_once` (`src/bsbot/sync_loop.py`) are no longer thin wrappers
+`sync_once`/`index_once`/`embed_once` (`src/bsbot/cron/sync_loop.py`) are no longer thin wrappers
 around the same classes the one-shot `bsbot sync`/`index`/`embed` CLI commands use — since
 spec 019, they talk to `api` over HTTP (`CronApiClient`) for everything except the crawl and
 the fetch/extract step itself, which still run locally exactly as before. The one-shot CLI

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import httpx
 
-from bsbot.rag.pipeline import Answer
+from bsbot.api.rag.pipeline import Answer
 
 
 class ApiClient:

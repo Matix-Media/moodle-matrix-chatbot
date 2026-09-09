@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from bsbot.config import ConfigError, Settings
+from bsbot.shared.config import ConfigError, Settings
 
 
 class TestEnvLoading:

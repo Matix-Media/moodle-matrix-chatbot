@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from bsbot.api.index.search import SearchHit
 from bsbot.eval.golden import GoldenQuestion, GoldenSetError, load_golden_set
 from bsbot.eval.metrics import (
     answerable_correct,
@@ -14,7 +15,6 @@ from bsbot.eval.metrics import (
     retrieval_hit,
 )
 from bsbot.eval.runner import PRESETS, run_benchmark
-from bsbot.index.search import SearchHit
 
 
 def hit(chunk_id: int, doc_id: str, text: str = "Inhalt.", **kw) -> SearchHit:

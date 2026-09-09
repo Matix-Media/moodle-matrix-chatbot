@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from bsbot.moodle.params import encode_params
+from bsbot.cron.moodle.params import encode_params
 
 
 def test_scalars_pass_through() -> None:

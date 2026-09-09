@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bsbot.ingest.taskcards import (
+from bsbot.cron.taskcards import (
     board_id_from_url,
     is_taskcards_url,
     render_board_text,
@@ -154,7 +154,7 @@ class TestFetchBoardSequence:
         import httpx
         import respx
 
-        from bsbot.ingest.taskcards import fetch_board
+        from bsbot.cron.taskcards import fetch_board
 
         host = "example.taskcards.app"
         board_id = "abc-123"
@@ -187,7 +187,7 @@ class TestFetchBoardSequence:
         import httpx
         import respx
 
-        from bsbot.ingest.taskcards import fetch_board
+        from bsbot.cron.taskcards import fetch_board
 
         host = "example.taskcards.app"
         with respx.mock:
@@ -213,7 +213,7 @@ class TestFetchBoardSequence:
         import httpx
         import respx
 
-        from bsbot.ingest.taskcards import fetch_board
+        from bsbot.cron.taskcards import fetch_board
 
         host = "example.taskcards.app"
         with respx.mock:

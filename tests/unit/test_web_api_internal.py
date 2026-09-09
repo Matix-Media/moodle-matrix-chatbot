@@ -10,9 +10,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from bsbot.config import Settings
-from bsbot.ingest.model import ContentItem, ContentKind
-from bsbot.web.app import create_app
+from bsbot.api.app import create_app
+from bsbot.shared.config import Settings
+from bsbot.shared.model import ContentItem, ContentKind
 
 HEADERS = {"Authorization": "Bearer s3cret"}
 
@@ -52,7 +52,7 @@ class _FakeEmbedder:
 
 @pytest.fixture
 def client(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Any:
-    monkeypatch.setattr("bsbot.web.app.GeminiEmbedder", lambda *a, **k: _FakeEmbedder())
+    monkeypatch.setattr("bsbot.api.app.GeminiEmbedder", lambda *a, **k: _FakeEmbedder())
     app = create_app(settings)
     with TestClient(app) as test_client:
         yield test_client

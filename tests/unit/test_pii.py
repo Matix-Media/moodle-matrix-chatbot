@@ -7,21 +7,21 @@ from typing import Any
 
 import pytest
 
-from bsbot.config import Settings
-from bsbot.export import export_all
-from bsbot.index.search import HybridSearcher, SearchHit
-from bsbot.index.store import Store
-from bsbot.ingest.fetcher import FetchResult
-from bsbot.ingest.indexer import Indexer
-from bsbot.ingest.model import ContentItem, ContentKind
-from bsbot.pii import build_pii_tokenizer
-from bsbot.pii.tokenizer import (
+from bsbot.api.index.search import HybridSearcher, SearchHit
+from bsbot.api.index.store import Store
+from bsbot.api.indexer import Indexer
+from bsbot.api.pii import build_pii_tokenizer
+from bsbot.api.pii.tokenizer import (
     PiiTokenizer,
     make_token,
     normalize_email,
     normalize_person,
 )
-from bsbot.rag.pipeline import AnswerPipeline
+from bsbot.api.rag.pipeline import AnswerPipeline
+from bsbot.cron.fetcher import FetchResult
+from bsbot.export import export_all
+from bsbot.shared.config import Settings
+from bsbot.shared.model import ContentItem, ContentKind
 
 # --------------------------------------------------------------------------- #
 # Fakes

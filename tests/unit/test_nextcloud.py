@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.nextcloud import ShareUnsupported, is_nextcloud_share, share_download_url
+from bsbot.cron.nextcloud import ShareUnsupported, is_nextcloud_share, share_download_url
 
 
 class TestRecognition:

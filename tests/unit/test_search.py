@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from bsbot.index.search import HybridSearcher, fts5_escape, reciprocal_rank_fusion
-from bsbot.index.store import Store
-from bsbot.ingest.model import ContentItem, ContentKind
+from bsbot.api.index.search import HybridSearcher, fts5_escape, reciprocal_rank_fusion
+from bsbot.api.index.store import Store
+from bsbot.shared.model import ContentItem, ContentKind
 
 
 def doc(doc_id: str, **kw) -> ContentItem:

@@ -232,8 +232,8 @@ class TestRunBotReloadsConfigOnRestart:
     async def test_config_factory_is_called_on_every_restart_attempt(
         self, monkeypatch, tmp_path
     ) -> None:
-        from bsbot.config import MatrixConfig
         from bsbot.matrix.runner import MatrixRunner, run_bot
+        from bsbot.shared.config import MatrixConfig
 
         attempts = 0
 
@@ -295,9 +295,9 @@ class TestRefreshTokenRotation:
         from pydantic import SecretStr
 
         import bsbot.matrix.oauth as oauth
-        from bsbot.config import MatrixConfig
         from bsbot.matrix.oauth import TokenSet
         from bsbot.matrix.runner import MatrixRunner
+        from bsbot.shared.config import MatrixConfig
 
         config = MatrixConfig(
             homeserver="https://matrix.example",

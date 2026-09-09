@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from bsbot.ingest.crawler import CourseCrawler, diff_crawls
-from bsbot.ingest.model import ContentItem, ContentKind
+from bsbot.cron.crawler import CourseCrawler, diff_crawls
+from bsbot.shared.model import ContentItem, ContentKind
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "moodle"
 COURSE = {"id": 42, "fullname": "Lernfeld 05 IT", "shortname": "LF05IT", "timemodified": 1700000000}

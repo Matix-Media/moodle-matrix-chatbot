@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import structlog.testing
 
-from bsbot.sync_loop import _run_steps, run_forever
+from bsbot.cron.sync_loop import _run_steps, run_forever
 
 
 class TestStepIsolation:

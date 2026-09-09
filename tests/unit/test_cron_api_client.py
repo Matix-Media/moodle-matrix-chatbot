@@ -7,8 +7,8 @@ from __future__ import annotations
 import httpx
 import respx
 
-from bsbot.ingest.api_client import CronApiClient
-from bsbot.ingest.model import ContentItem, ContentKind
+from bsbot.cron.api_client import CronApiClient
+from bsbot.shared.model import ContentItem, ContentKind
 
 BASE_URL = "http://api:8000"
 

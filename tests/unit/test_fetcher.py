@@ -11,8 +11,8 @@ import httpx
 import pytest
 import respx
 
-from bsbot.index.store import Store
-from bsbot.ingest.fetcher import DEFAULT_TTL_S, Fetcher, FetchOutcome
+from bsbot.api.index.store import Store
+from bsbot.cron.fetcher import DEFAULT_TTL_S, Fetcher, FetchOutcome
 
 URL = "https://moodle.example.de/webservice/pluginfile.php/1/mod_resource/content/1/skript.pdf"
 TOKEN = "tok-123"

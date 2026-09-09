@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 import structlog.testing
 
-from bsbot.index.search import SearchHit
-from bsbot.rag.pipeline import MAX_EXPANDED_CHUNK_CHARS, REFUSAL_MARKER, AnswerPipeline
+from bsbot.api.index.search import SearchHit
+from bsbot.api.rag.pipeline import MAX_EXPANDED_CHUNK_CHARS, REFUSAL_MARKER, AnswerPipeline
 
 _BERLIN = ZoneInfo("Europe/Berlin")
 

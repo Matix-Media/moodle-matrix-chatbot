@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 from pydantic import SecretStr
 
-from bsbot.config import GeminiConfig
-from bsbot.llm.gemini import GeminiClient
+from bsbot.api.llm.gemini import GeminiClient
+from bsbot.shared.config import GeminiConfig
 
 
 def make_client() -> tuple[GeminiClient, MagicMock]:

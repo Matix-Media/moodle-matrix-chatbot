@@ -11,15 +11,15 @@ import pytest
 import respx
 from pydantic import SecretStr
 
-from bsbot.config import MoodleConfig
-from bsbot.moodle.client import MoodleClient
-from bsbot.moodle.errors import (
+from bsbot.cron.moodle.client import MoodleClient
+from bsbot.cron.moodle.errors import (
     MoodleAPIError,
     MoodleAuthError,
     MoodleFunctionUnavailable,
     MoodleTransportError,
     MoodleWebServicesDisabled,
 )
+from bsbot.shared.config import MoodleConfig
 
 BASE = "https://moodle.example.de"
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "moodle"

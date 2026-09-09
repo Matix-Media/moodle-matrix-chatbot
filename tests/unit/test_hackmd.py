@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.hackmd import HackmdUnsupported, hackmd_markdown_url, is_hackmd_note
+from bsbot.cron.hackmd import HackmdUnsupported, hackmd_markdown_url, is_hackmd_note
 
 
 class TestRecognition:

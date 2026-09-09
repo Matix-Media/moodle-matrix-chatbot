@@ -5,7 +5,7 @@ cache key, only what gets sent to the API.
 
 from __future__ import annotations
 
-from bsbot.llm.gemini import CachingOcr
+from bsbot.api.llm.gemini import CachingOcr
 
 
 class FakeGeminiClient:

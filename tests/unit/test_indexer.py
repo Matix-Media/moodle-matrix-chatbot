@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from bsbot.index.store import Store
-from bsbot.ingest.fetcher import FetchOutcome, FetchResult
-from bsbot.ingest.indexer import Indexer
-from bsbot.ingest.model import ContentItem, ContentKind, FileRef
+from bsbot.api.index.store import Store
+from bsbot.api.indexer import Indexer
+from bsbot.cron.fetcher import FetchOutcome, FetchResult
+from bsbot.shared.model import ContentItem, ContentKind, FileRef
 
 
 def doc(doc_id: str, kind: ContentKind, **kw) -> ContentItem:

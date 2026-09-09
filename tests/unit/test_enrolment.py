@@ -11,7 +11,7 @@ from typing import Any
 
 import structlog.testing
 
-from bsbot.moodle.enrolment import (
+from bsbot.cron.moodle.enrolment import (
     extract_linked_course_id,
     extract_linked_module_cmid,
     resolve_module_course,
@@ -249,7 +249,7 @@ class TestAwaitEnrolment:
     """
 
     async def test_retries_until_the_course_appears(self) -> None:
-        from bsbot.moodle.enrolment import await_enrolled_course
+        from bsbot.cron.moodle.enrolment import await_enrolled_course
 
         calls = 0
 
@@ -274,7 +274,7 @@ class TestAwaitEnrolment:
         assert len(slept) == 2
 
     async def test_gives_up_after_the_attempt_budget(self) -> None:
-        from bsbot.moodle.enrolment import await_enrolled_course
+        from bsbot.cron.moodle.enrolment import await_enrolled_course
 
         class NeverMoodle:
             async def call(self, wsfunction: str, **params: Any) -> Any:
@@ -291,7 +291,7 @@ class TestAwaitEnrolment:
         assert course is None
 
     async def test_first_attempt_success_needs_no_sleep(self) -> None:
-        from bsbot.moodle.enrolment import await_enrolled_course
+        from bsbot.cron.moodle.enrolment import await_enrolled_course
 
         class ImmediateMoodle:
             async def call(self, wsfunction: str, **params: Any) -> Any:

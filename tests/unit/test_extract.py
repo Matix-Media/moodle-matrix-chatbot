@@ -10,7 +10,7 @@ import io
 
 import pytest
 
-from bsbot.ingest.extract import ExtractionError, extract, extractor_for
+from bsbot.cron.extract import ExtractionError, extract, extractor_for
 
 
 def make_pdf(pages: list[str]) -> bytes:

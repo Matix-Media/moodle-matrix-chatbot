@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.google_docs import GoogleDocsUnsupported, google_export_url
+from bsbot.cron.google_docs import GoogleDocsUnsupported, google_export_url
 
 
 class TestDocument:

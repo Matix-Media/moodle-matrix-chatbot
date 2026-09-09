@@ -1,0 +1,742 @@
+"""Local dev/research tools that still use direct `Store`/Moodle access, not
+`api` over HTTP: `doctor`, `whoami`, `sync`, `index`, `embed`, `search`, `ask`,
+`chat`, `bench`, `export`. None of these run in the deployed topology — see
+specs/019-microservice-split.md's non-goals."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import typer
+
+from bsbot.api.index.search import HybridSearcher
+from bsbot.api.index.store import Store
+from bsbot.api.indexer import Indexer
+from bsbot.api.llm.embed import GeminiEmbedder
+from bsbot.api.llm.gemini import CachingOcr, GeminiClient
+from bsbot.api.pii import build_pii_tokenizer
+from bsbot.api.rag.pipeline import AnswerPipeline
+from bsbot.cli._common import fail, settings
+from bsbot.cron.crawler import CourseCrawler
+from bsbot.cron.fetcher import Fetcher
+from bsbot.cron.moodle.client import MoodleClient
+from bsbot.cron.moodle.errors import MoodleError
+from bsbot.eval.golden import GoldenSetError, load_golden_set
+from bsbot.eval.runner import PRESETS, run_benchmark
+from bsbot.shared.config import ConfigError
+from bsbot.shared.logging import configure_logging
+from bsbot.shared.model import ContentKind
+
+
+def doctor() -> None:
+    """Report which subsystems are configured, without contacting anything."""
+    cfg = settings()
+    typer.echo(f"data dir: {cfg.data_dir}")
+    for name, require in (
+        ("moodle (M1)", cfg.require_moodle),
+        ("gemini (M5)", cfg.require_gemini),
+        ("matrix (M7)", cfg.require_matrix),
+        ("web api (spec 014)", cfg.require_web),
+    ):
+        try:
+            require()
+        except ConfigError:
+            typer.secho(f"  [ ] {name}: not configured", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(f"  [x] {name}: configured", fg=typer.colors.GREEN)
+
+    if cfg.pii.enabled:
+        try:
+            from bsbot.api.pii.spacy_model import load_spacy_model
+
+            load_spacy_model(cfg.pii.spacy_model)
+        except RuntimeError as exc:
+            typer.secho(f"  [ ] pii tokenization: {exc}", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(
+                f"  [x] pii tokenization: {cfg.pii.spacy_model} loaded", fg=typer.colors.GREEN
+            )
+
+
+def whoami() -> None:
+    """Log in to Moodle and print who we are and what the site exposes (M1 smoke test)."""
+    cfg = settings()
+    configure_logging(cfg.log_level)
+    try:
+        moodle = cfg.require_moodle()
+    except ConfigError as exc:
+        fail(str(exc))
+        return
+
+    async def run() -> None:
+        async with MoodleClient(moodle) as client:
+            info = await client.site_info()
+            typer.secho(f"site     : {info.sitename}", fg=typer.colors.GREEN)
+            typer.echo(f"release  : Moodle {info.release}")
+            typer.echo(f"user     : {info.username} (id {info.userid})")
+            typer.echo(f"language : {info.lang}")
+            if info.optimistic:
+                typer.secho(
+                    "functions: not reported by this site; running in optimistic mode",
+                    fg=typer.colors.YELLOW,
+                )
+            else:
+                typer.echo(f"functions: {len(info.functions)} exposed")
+                interesting = [
+                    "core_enrol_get_users_courses",
+                    "core_course_get_contents",
+                    "core_course_get_updates_since",
+                    "mod_forum_get_forums_by_courses",
+                    "mod_page_get_pages_by_courses",
+                    "mod_resource_get_resources_by_courses",
+                    "mod_assign_get_assignments",
+                ]
+                for name in interesting:
+                    mark = "x" if info.has(name) else " "
+                    colour = typer.colors.GREEN if info.has(name) else typer.colors.YELLOW
+                    typer.secho(f"  [{mark}] {name}", fg=colour)
+
+    try:
+        asyncio.run(run())
+    except MoodleError as exc:
+        fail(f"{type(exc).__name__}: {exc}")
+
+
+def sync(
+    follow_links: bool = typer.Option(
+        True,
+        help="Follow same-Moodle-host course links found in enrolled courses, and "
+        "self-enrol when no enrolment key is required. Never touches courses that "
+        "need a key or staff-managed enrolment; every attempt is logged.",
+    ),
+) -> None:
+    """Crawl every enrolled course and persist the manifest (M2).
+
+    Structure only — no files are downloaded, so this is cheap enough to run often.
+    """
+    from urllib.parse import urlsplit
+
+    cfg = settings()
+    configure_logging(cfg.log_level)
+    try:
+        moodle = cfg.require_moodle()
+    except ConfigError as exc:
+        fail(str(exc))
+        return
+
+    async def run() -> None:
+        async with MoodleClient(moodle) as client:
+            result = await CourseCrawler(
+                client,
+                moodle_host=urlsplit(moodle.base_url).netloc,
+                follow_linked_courses=follow_links,
+            ).crawl()
+
+        with Store(cfg.index_db, embed_dim=cfg.gemini.embed_dim) as store:
+            before = {d.doc_id: d.timemodified for d in store.active_documents()}
+            store.persist_crawl(result.items)
+            after = {d.doc_id: d.timemodified for d in store.active_documents()}
+
+            added = after.keys() - before.keys()
+            removed = before.keys() - after.keys()
+            changed = {k for k in before.keys() & after.keys() if before[k] != after[k]}
+            pending = store.documents_needing_extraction(extract_version=1)
+
+        by_kind: dict[str, int] = {}
+        for item in result.items:
+            by_kind[str(item.kind)] = by_kind.get(str(item.kind), 0) + 1
+
+        typer.secho(
+            f"courses: {result.courses_ok} ok, {result.courses_failed} failed",
+            fg=typer.colors.GREEN if not result.courses_failed else typer.colors.YELLOW,
+        )
+        typer.echo(f"items  : {len(result.items)}  ({by_kind})")
+        typer.echo(
+            f"changes: +{len(added)} added, ~{len(changed)} changed, -{len(removed)} removed"
+        )
+        typer.echo(f"pending extraction: {len(pending)}")
+        inline = sum(len(i.text or "") for i in result.items if i.kind is ContentKind.INLINE)
+        typer.echo(f"inline text already available: {inline:,} chars")
+        typer.echo(f"index: {cfg.index_db}")
+
+    try:
+        asyncio.run(run())
+    except MoodleError as exc:
+        fail(f"{type(exc).__name__}: {exc}")
+
+
+def index(
+    limit: int = typer.Option(0, help="Only process this many pending documents (0 = all)."),
+    ocr: bool = typer.Option(
+        False,
+        help="Transcribe scanned PDF pages with Gemini. Costs API quota; needed for the "
+        "scanned exam papers, which contain no extractable text at all.",
+    ),
+    retry_empty: bool = typer.Option(
+        False,
+        help="Re-process documents that previously yielded no text. Combine with --ocr "
+        "to pick up scanned PDFs without re-extracting the whole corpus.",
+    ),
+    reset_all: bool = typer.Option(
+        False,
+        "--reset-all",
+        help="Re-process every document, not just pending ones. Needed once after "
+        "enabling BSBOT_PII__ENABLED on a deployment with an existing index, so the "
+        "whole corpus gets retokenized — see specs/013-pii-tokenization.md.",
+    ),
+    aliases_path: Path = typer.Option(
+        Path("config/document_aliases.yaml"),
+        "--aliases",
+        help="Human-maintained doc_id -> search phrase overrides. Missing is fine.",
+    ),
+    realias: bool = typer.Option(
+        False,
+        help="Re-process only the documents named in --aliases, after editing that file. "
+        "Cheap: does not touch the rest of the corpus.",
+    ),
+    hype: bool = typer.Option(
+        False,
+        help="Generate hypothetical student questions for each chunk (HyPE).",
+    ),
+    summarize: bool = typer.Option(
+        False,
+        help="Generate hierarchical document summaries for multi-chunk documents.",
+    ),
+    semantic: bool = typer.Option(
+        False,
+        help="Use semantic sentence-embedding chunking instead of fixed-size chunking.",
+    ),
+    contextualize: bool = typer.Option(
+        False,
+        help="Prepend a short LLM-written situating sentence to each chunk before "
+        "indexing (Anthropic's contextual retrieval). One LLM call per chunk.",
+    ),
+) -> None:
+    """Fetch, extract and chunk everything the manifest reports as pending (M3+M4)."""
+    from urllib.parse import urlsplit
+
+    from bsbot.api.index.aliases import load_aliases
+
+    aliases = load_aliases(aliases_path)
+
+    cfg = settings()
+    configure_logging(cfg.log_level)
+    try:
+        moodle = cfg.require_moodle()
+    except ConfigError as exc:
+        fail(str(exc))
+        return
+
+    async def run() -> None:
+        async with MoodleClient(moodle) as client:
+            token = await client.login()
+
+        with Store(cfg.index_db, embed_dim=cfg.gemini.embed_dim) as store:
+            if reset_all:
+                reset = store.reset_extraction_for_all_documents()
+                typer.echo(f"resetting {reset} document(s) for full re-extraction")
+
+            if retry_empty:
+                reset = store.reset_extraction_for_empty_documents()
+                typer.echo(f"retrying {reset} document(s) that previously yielded no text")
+
+            if realias:
+                if not aliases:
+                    typer.secho(
+                        f"--realias given but no aliases found at {aliases_path}",
+                        fg=typer.colors.YELLOW,
+                    )
+                else:
+                    reset = store.reset_extraction_for_doc_ids(list(aliases.keys()))
+                    typer.echo(f"re-processing {reset} aliased document(s)")
+
+            pii_tok = build_pii_tokenizer(cfg, store)
+
+            ocr_hook = None
+            gemini_client = None
+            embedder_fn = None
+            if ocr or hype or summarize or semantic or contextualize:
+                try:
+                    gemini_cfg = cfg.require_gemini()
+                    gemini_client = GeminiClient(gemini_cfg)
+                    if ocr:
+                        ocr_hook = CachingOcr(gemini_client, store)
+                    if semantic:
+                        gem_embedder = GeminiEmbedder(
+                            gemini_client,
+                            store=store,
+                            model=gemini_cfg.embed_model,
+                            dim=gemini_cfg.embed_dim,
+                            batch_size=gemini_cfg.embed_batch_size,
+                            rpm=gemini_cfg.embed_rpm,
+                            items_per_minute=gemini_cfg.embed_items_per_minute,
+                        )
+
+                        def embedder_fn(texts: list[str]) -> list[list[float]]:
+                            res = gem_embedder.embed_documents(texts, skip_failures=True)
+                            return [v for v in res if v is not None]
+                except ConfigError as exc:
+                    if ocr or hype or summarize or contextualize:
+                        fail(str(exc))
+                        return
+
+            async with Fetcher(
+                store,
+                moodle_token=token,
+                moodle_host=urlsplit(moodle.base_url).netloc,
+                max_concurrency=moodle.max_concurrency,
+            ) as fetcher:
+                stats = await Indexer(
+                    store,
+                    fetcher,
+                    ocr=ocr_hook,
+                    llm=gemini_client,
+                    utility_model=cfg.gemini.utility_model if gemini_client else None,
+                    aliases=aliases,
+                    moodle_host=urlsplit(moodle.base_url).netloc,
+                    semantic=semantic,
+                    embedder=embedder_fn,
+                    hype=hype,
+                    summarize=summarize,
+                    contextualize=contextualize,
+                    pii_tokenizer=pii_tok,
+                ).index_pending(limit=limit or None)
+            total_chunks = store.connection.execute("select count(*) from chunks").fetchone()[0]
+
+        typer.secho(
+            f"indexed {stats.indexed} documents into {stats.chunks} chunks",
+            fg=typer.colors.GREEN,
+        )
+        typer.echo(f"skipped: {stats.skipped}   failed: {stats.failed}")
+        typer.echo(f"chunks in index: {total_chunks}")
+
+    try:
+        asyncio.run(run())
+    except MoodleError as exc:
+        fail(f"{type(exc).__name__}: {exc}")
+
+
+def embed(
+    batch: int = typer.Option(0, help="Override batch size (0 = configured default)."),
+) -> None:
+    """Embed every chunk that does not yet have a vector (M5)."""
+    cfg = settings()
+    configure_logging(cfg.log_level)
+    try:
+        gemini = cfg.require_gemini()
+    except ConfigError as exc:
+        fail(str(exc))
+        return
+
+    with Store(cfg.index_db, embed_dim=gemini.embed_dim) as store:
+        rows = store.connection.execute(
+            "SELECT c.chunk_id, c.text FROM chunks c "
+            "LEFT JOIN chunks_vec v ON v.chunk_id = c.chunk_id "
+            "WHERE v.chunk_id IS NULL ORDER BY c.chunk_id"
+        ).fetchall()
+        if not rows:
+            typer.secho("all chunks already embedded", fg=typer.colors.GREEN)
+            return
+
+        embedder = GeminiEmbedder(
+            GeminiClient(gemini),
+            store=store,
+            model=gemini.embed_model,
+            dim=gemini.embed_dim,
+            batch_size=batch or gemini.embed_batch_size,
+            rpm=gemini.embed_rpm,
+            items_per_minute=gemini.embed_items_per_minute,
+        )
+        typer.echo(f"embedding {len(rows)} chunks...")
+        vectors = embedder.embed_documents([r["text"] for r in rows], skip_failures=True)
+        done = 0
+        for row, vector in zip(rows, vectors, strict=True):
+            if vector is not None:
+                store.set_embedding(row["chunk_id"], vector)
+                done += 1
+        typer.secho(f"embedded {done}/{len(rows)} chunks", fg=typer.colors.GREEN)
+
+
+def search(
+    query: str = typer.Argument(..., help="A question, in German."),
+    limit: int = typer.Option(8, help="How many chunks to show."),
+    keyword_only: bool = typer.Option(False, help="Disable the vector retriever."),
+) -> None:
+    """Run hybrid retrieval and show the matching chunks (M5)."""
+    cfg = settings()
+    configure_logging("WARNING")
+
+    with Store(cfg.index_db, embed_dim=cfg.gemini.embed_dim) as store:
+        embedder = None
+        if not keyword_only:
+            try:
+                gemini = cfg.require_gemini()
+                embedder = GeminiEmbedder(
+                    GeminiClient(gemini),
+                    store=store,
+                    model=gemini.embed_model,
+                    dim=gemini.embed_dim,
+                    batch_size=gemini.embed_batch_size,
+                    rpm=gemini.embed_rpm,
+                )
+            except ConfigError:
+                typer.secho("no Gemini key: keyword-only search", fg=typer.colors.YELLOW)
+
+        pii_tok = build_pii_tokenizer(cfg, store)
+        hits = HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok).search(
+            query, limit=limit
+        )
+
+    if not hits:
+        typer.secho("no matches", fg=typer.colors.YELLOW)
+        return
+    for rank, hit in enumerate(hits, start=1):
+        sources = "+".join(hit.sources)
+        typer.secho(
+            f"{rank}. [{hit.score:.4f} {sources}] {hit.header_text[:88]}",
+            fg=typer.colors.CYAN,
+        )
+        body = hit.text.split("\n\n", 1)[-1].replace("\n", " ")
+        page = f" (S. {hit.page})" if hit.page else ""
+        typer.echo(f"   {body[:190]}{page}")
+
+
+def ask(
+    question: str = typer.Argument(..., help="A question about the Berufsschule, in German."),
+    no_expand: bool = typer.Option(False, help="Disable query expansion."),
+    no_rerank: bool = typer.Option(False, help="Disable LLM reranking."),
+    no_followup: bool = typer.Option(False, help="Disable the second-hop follow-up search."),
+    no_decompose: bool = typer.Option(False, help="Disable query decomposition (sub-queries)."),
+    no_step_back: bool = typer.Option(False, help="Disable step-back query generation."),
+    compress_context: bool = typer.Option(
+        False, help="Extract only relevant sentences from chunks before generating answer."
+    ),
+    no_crag: bool = typer.Option(False, help="Disable CRAG actionable fallback search links."),
+    dated_rerank: bool = typer.Option(
+        False, help="Give the reranker today's date and each candidate's own date."
+    ),
+    crag_filter: bool = typer.Option(
+        False, help="Drop candidates the model scores as off-topic before reranking/context."
+    ),
+    suggest_followup: bool = typer.Option(
+        False, help="Generate proactive suggested follow-up questions."
+    ),
+) -> None:
+    """Answer a question from the indexed Moodle content, with citations (M6)."""
+    cfg = settings()
+    configure_logging("WARNING")
+    try:
+        gemini = cfg.require_gemini()
+    except ConfigError as exc:
+        fail(str(exc))
+        return
+
+    with Store(cfg.index_db, embed_dim=gemini.embed_dim) as store:
+        client = GeminiClient(gemini)
+        embedder = GeminiEmbedder(
+            client,
+            store=store,
+            model=gemini.embed_model,
+            dim=gemini.embed_dim,
+            batch_size=gemini.embed_batch_size,
+            rpm=gemini.embed_rpm,
+            items_per_minute=gemini.embed_items_per_minute,
+        )
+        pii_tok = build_pii_tokenizer(cfg, store)
+        pipeline = AnswerPipeline(
+            HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
+            client,
+            expand=not no_expand,
+            rerank=not no_rerank,
+            followup=not no_followup,
+            decompose=not no_decompose,
+            step_back=not no_step_back,
+            compress_context=compress_context,
+            crag=not no_crag,
+            dated_rerank=dated_rerank,
+            crag_filter=crag_filter,
+            suggest_followup=suggest_followup,
+            moodle_base_url=cfg.moodle.base_url
+            if cfg.moodle.base_url
+            else "https://moodle.itech-bs14.de",
+            utility_model=gemini.utility_model,
+            pii_tokenizer=pii_tok,
+        )
+        answer = pipeline.answer(question)
+
+    colour = typer.colors.GREEN if answer.grounded else typer.colors.YELLOW
+    typer.secho(f"\n{answer.text}\n", fg=colour)
+    if answer.citations:
+        typer.secho("Quellen:", bold=True)
+        for citation in answer.citations:
+            page = f", S. {citation.page}" if citation.page else ""
+            typer.echo(f"  [{citation.index}] {citation.header_text}{page}")
+            if citation.url:
+                typer.echo(f"      {citation.url}")
+    if answer.suggested_questions:
+        typer.secho("\n💡 Mögliche Folgefragen:", bold=True)
+        for sq in answer.suggested_questions:
+            typer.echo(f"  • {sq}")
+    if answer.used_queries and len(answer.used_queries) > 1:
+        typer.secho(f"\n(Suchanfragen: {' | '.join(answer.used_queries)})", dim=True)
+
+
+def bench(
+    golden: Path = typer.Option(
+        ...,
+        "--golden",
+        help="Golden question set (YAML) — see config/golden_questions.example.yaml.",
+    ),
+    methods: str = typer.Option(
+        "all",
+        help=f"Comma-separated preset names to run, or 'all'. Available: {', '.join(PRESETS)}.",
+    ),
+    judge: bool = typer.Option(
+        False,
+        help="Also score each grounded answer 1-5 with an LLM judge. Costs one extra "
+        "LLM call per answered question, so off by default.",
+    ),
+    limit: int = typer.Option(0, help="Only run the first N golden questions (0 = all)."),
+    as_of: str = typer.Option(
+        None,
+        "--as-of",
+        help="Pin 'today' to this date (YYYY-MM-DD) instead of the real clock, so a "
+        "date-relative question ('heute', 'am Montag') resolves the same way on every "
+        "run. Without this, a golden entry whose expected_keywords depend on which "
+        "day it names (e.g. a Blockplan's per-day arrival time) can pass today and "
+        "fail next week for no pipeline reason at all — see specs/012-benchmarks.md.",
+    ),
+    output: Path = typer.Option(
+        None, "--output", help="Also write the full report (per-question detail) as JSON here."
+    ),
+) -> None:
+    """Run the golden question set through each RAG technique preset and compare (spec 012).
+
+    Retrieval-time techniques (expand, rerank, decompose, step_back, compress, crag) are
+    compared directly by this command. HyPE and semantic chunking are index-time — build
+    two indexes with `bsbot index --hype`/`--semantic` and run this command against each
+    (`BSBOT_DATA_DIR` or a copied index.db), then diff the two --output reports.
+    """
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    clock = None
+    if as_of:
+        try:
+            fixed_date = date.fromisoformat(as_of)
+        except ValueError:
+            fail(f"--as-of must be YYYY-MM-DD, got {as_of!r}")
+            return
+        fixed = datetime(
+            fixed_date.year,
+            fixed_date.month,
+            fixed_date.day,
+            12,
+            0,
+            tzinfo=ZoneInfo("Europe/Berlin"),
+        )
+        clock = lambda: fixed  # noqa: E731
+
+    cfg = settings()
+    configure_logging("WARNING")
+    try:
+        gemini = cfg.require_gemini()
+    except ConfigError as exc:
+        fail(str(exc))
+        return
+
+    try:
+        golden_set = load_golden_set(golden)
+    except GoldenSetError as exc:
+        fail(str(exc))
+        return
+    if not golden_set:
+        fail(f"{golden}: no questions found")
+        return
+    if limit:
+        golden_set = golden_set[:limit]
+
+    if methods == "all":
+        selected = PRESETS
+    else:
+        names = [m.strip() for m in methods.split(",") if m.strip()]
+        unknown = [n for n in names if n not in PRESETS]
+        if unknown:
+            fail(f"unknown preset(s) {unknown}; available: {', '.join(PRESETS)}")
+            return
+        selected = {n: PRESETS[n] for n in names}
+
+    with Store(cfg.index_db, embed_dim=gemini.embed_dim) as store:
+        client = GeminiClient(gemini)
+        embedder = GeminiEmbedder(
+            client,
+            store=store,
+            model=gemini.embed_model,
+            dim=gemini.embed_dim,
+            batch_size=gemini.embed_batch_size,
+            rpm=gemini.embed_rpm,
+            items_per_minute=gemini.embed_items_per_minute,
+        )
+        pii_tok = build_pii_tokenizer(cfg, store)
+        searcher = HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok)
+
+        as_of_note = f" (as of {as_of})" if as_of else ""
+        typer.echo(
+            f"running {len(golden_set)} question(s) x {len(selected)} preset(s){as_of_note}..."
+        )
+        pipeline_kwargs: dict[str, object] = {
+            "moodle_base_url": cfg.moodle.base_url
+            if cfg.moodle.base_url
+            else "https://moodle.itech-bs14.de",
+            "utility_model": gemini.utility_model,
+            "pii_tokenizer": pii_tok,
+        }
+        if clock is not None:
+            pipeline_kwargs["clock"] = clock
+        report = run_benchmark(
+            golden_set,
+            searcher,
+            client,
+            presets=selected,
+            judge=judge,
+            pipeline_kwargs=pipeline_kwargs,
+        )
+
+    typer.echo()
+    typer.echo(report.to_table())
+
+    for pr in report.presets:
+        for r in pr.results:
+            if r.error:
+                typer.secho(
+                    f"  [{pr.preset}] {r.question_id} failed: {r.error}", fg=typer.colors.RED
+                )
+
+    if output:
+        output.write_text(report.to_json())
+        typer.echo(f"\nfull report written to {output}")
+
+
+def chat(
+    suggest_followup: bool = typer.Option(
+        True, help="Show proactive suggested follow-up questions after each answer."
+    ),
+) -> None:
+    """Start an interactive multi-turn terminal chat with conversation memory."""
+    cfg = settings()
+    configure_logging("WARNING")
+    try:
+        gemini = cfg.require_gemini()
+    except ConfigError as exc:
+        fail(str(exc))
+        return
+
+    with Store(cfg.index_db, embed_dim=gemini.embed_dim) as store:
+        client = GeminiClient(gemini)
+        embedder = GeminiEmbedder(
+            client,
+            store=store,
+            model=gemini.embed_model,
+            dim=gemini.embed_dim,
+            batch_size=gemini.embed_batch_size,
+            rpm=gemini.embed_rpm,
+            items_per_minute=gemini.embed_items_per_minute,
+        )
+        pii_tok = build_pii_tokenizer(cfg, store)
+        pipeline = AnswerPipeline(
+            HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
+            client,
+            decompose=True,
+            step_back=True,
+            crag=True,
+            suggest_followup=suggest_followup,
+            moodle_base_url=cfg.moodle.base_url
+            if cfg.moodle.base_url
+            else "https://moodle.itech-bs14.de",
+            utility_model=gemini.utility_model,
+            pii_tokenizer=pii_tok,
+        )
+
+        typer.secho("bsbot Multi-Turn Chat (Tippe 'exit' oder Strg+C zum Beenden)\n", bold=True)
+        history: list[tuple[str, str]] = []
+
+        while True:
+            try:
+                question = typer.prompt("Du").strip()
+            except (KeyboardInterrupt, EOFError):
+                typer.echo("\nAuf Wiedersehen!")
+                break
+
+            if not question:
+                continue
+            if question.lower() in ("exit", "quit", "q"):
+                typer.echo("Auf Wiedersehen!")
+                break
+
+            answer = pipeline.answer(question, history=history)
+            if answer.grounded:
+                history.append((question, answer.text))
+
+            colour = typer.colors.GREEN if answer.grounded else typer.colors.YELLOW
+            typer.secho(f"\n{answer.text}\n", fg=colour)
+            if answer.citations:
+                typer.secho("Quellen:", bold=True)
+                for citation in answer.citations:
+                    page = f", S. {citation.page}" if citation.page else ""
+                    typer.echo(f"  [{citation.index}] {citation.header_text}{page}")
+                    if citation.url:
+                        typer.echo(f"      {citation.url}")
+            if answer.suggested_questions:
+                typer.secho("\n💡 Mögliche Folgefragen:", bold=True)
+                for sq in answer.suggested_questions:
+                    typer.echo(f"  • {sq}")
+            typer.echo()
+
+
+def export(
+    output_dir: Path = typer.Option(
+        Path("moodle_export"),
+        "--output-dir",
+        "-o",
+        help="Directory to save all individual markdown files.",
+    ),
+    combined_file: Path = typer.Option(
+        Path("all_content_combined.txt"),
+        "--combined-file",
+        "-c",
+        help="Path to save the master combined text file.",
+    ),
+    combined_md: Path = typer.Option(
+        Path("all_content_combined.md"),
+        "--combined-md",
+        help="Path to save the master combined markdown file.",
+    ),
+) -> None:
+    """Export all Moodle courses and documents as Markdown files and a combined text file."""
+    from bsbot.export import export_all
+
+    cfg = settings()
+    configure_logging(cfg.log_level)
+
+    with Store(cfg.index_db, embed_dim=cfg.gemini.embed_dim) as store:
+        pii_tok = build_pii_tokenizer(cfg, store)
+        stats = export_all(
+            store,
+            output_dir=output_dir,
+            combined_txt_path=combined_file,
+            combined_md_path=combined_md,
+            pii_tokenizer=pii_tok,
+        )
+
+    typer.secho(
+        f"Exported {stats['exported_files']} documents "
+        f"({stats['with_text']} with extracted text) into {stats['output_dir']}",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(
+        f"Combined text file: {stats['combined_txt_path']} "
+        f"({stats['combined_txt_size_bytes']:,} bytes)"
+    )
+    if stats.get("combined_md_path"):
+        typer.echo(f"Combined markdown file: {stats['combined_md_path']}")
