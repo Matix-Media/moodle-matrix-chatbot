@@ -402,25 +402,27 @@ def cron(
         False, help="Run a single sync -> index -> embed cycle and exit, instead of looping."
     ),
     follow_links: bool = typer.Option(True, help="Same as `bsbot sync --follow-links`."),
-    aliases_path: Path = typer.Option(
-        Path("config/document_aliases.yaml"),
-        "--aliases",
-        help="Human-maintained doc_id -> search phrase overrides. Missing is fine.",
-    ),
 ) -> None:
     """Repeatedly sync, index and embed — the unattended long-running update loop.
 
     Meant to run as its own process (its own container in docker-compose), not
     inside `bsbot serve` — a multi-hour crawl or a large embedding batch must
     never delay the bot answering a question in the room.
+
+    Talks to `api` over HTTP for everything (specs/015-microservice-split.md)
+    — never opens the SQLite Store itself, so no Gemini config or aliases
+    file is needed here anymore; both live entirely in `api` now. `--aliases`
+    is gone with it — see `bsbot index --aliases` for the local-dev
+    equivalent, which is unaffected by this split.
     """
+    from bsbot.ingest.api_client import CronApiClient
     from bsbot.sync_loop import run_cycle, run_forever
 
     settings = _settings()
     configure_logging(settings.log_level)
     try:
         moodle = settings.require_moodle()
-        gemini = settings.require_gemini()
+        web = settings.require_web()
     except ConfigError as exc:
         _fail(str(exc))
         return
@@ -428,7 +430,11 @@ def cron(
     interval = interval_minutes or settings.sync_interval_minutes
 
     async def cycle() -> None:
-        await run_cycle(settings, moodle, gemini, aliases_path, follow_links=follow_links)
+        api = CronApiClient(web.api_url, web.api_token.get_secret_value())
+        try:
+            await run_cycle(moodle, api, follow_links=follow_links)
+        finally:
+            api.close()
 
     async def run() -> None:
         if once:

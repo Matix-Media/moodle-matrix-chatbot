@@ -1,5 +1,8 @@
 """The recurring sync -> index -> embed cycle — the "sync cron loop" deferred
-earlier in favour of retrieval-quality work (see specs/005..007).
+earlier in favour of retrieval-quality work (see specs/005..007), later split
+across processes (specs/015-microservice-split.md): `cron` only crawls,
+fetches, and extracts now — `api` is the only process that touches the SQLite
+Store, doing all PII-tokenization, chunking, and embedding server-side.
 
 Runs unattended, in a container, with nobody watching a terminal — so results
 go through structlog (matching the rest of the app), and a failure in one step
@@ -12,70 +15,77 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import structlog
 
-from bsbot.config import GeminiConfig, MoodleConfig, Settings
-from bsbot.index.aliases import load_aliases
-from bsbot.index.store import Store
+from bsbot.config import MoodleConfig
+from bsbot.ingest.api_client import CronApiClient
 from bsbot.ingest.crawler import CourseCrawler
 from bsbot.ingest.fetcher import Fetcher
-from bsbot.ingest.indexer import Indexer
-from bsbot.llm.embed import GeminiEmbedder
-from bsbot.llm.gemini import GeminiClient
+from bsbot.ingest.indexer import IndexStats
+from bsbot.ingest.segments import resolve_segments
 from bsbot.moodle.client import MoodleClient
-from bsbot.pii import build_pii_tokenizer
 
 log = structlog.get_logger(__name__)
 
 
-async def sync_once(settings: Settings, moodle: MoodleConfig, *, follow_links: bool = True) -> None:
-    """Crawl every enrolled course and persist the manifest (mirrors ``bsbot sync``).
-
-    Structure only, no files downloaded — cheap enough to run every cycle.
-    """
+async def sync_once(moodle: MoodleConfig, api: CronApiClient, *, follow_links: bool = True) -> None:
+    """Crawl every enrolled course and persist the manifest via `api` (mirrors
+    the old ``bsbot sync``). Structure only, no files downloaded — cheap
+    enough to run every cycle."""
     async with MoodleClient(moodle) as client:
         result = await CourseCrawler(
             client,
             moodle_host=urlsplit(moodle.base_url).netloc,
             follow_linked_courses=follow_links,
         ).crawl()
-    with Store(settings.index_db, embed_dim=settings.gemini.embed_dim) as store:
-        store.persist_crawl(result.items)
+    persisted, _pending = api.crawl_result(result.items)
     log.info(
         "cron.sync",
-        items=len(result.items),
+        items=persisted,
         courses_ok=result.courses_ok,
         courses_failed=result.courses_failed,
     )
 
 
-async def index_once(settings: Settings, moodle: MoodleConfig, aliases_path: Path) -> None:
-    """Fetch, extract and chunk everything pending (mirrors ``bsbot index``).
+async def index_once(moodle: MoodleConfig, api: CronApiClient) -> None:
+    """Fetch and extract everything `api` reports pending, handing resolved
+    segments to it for chunking/PII/embedding/storage (mirrors the old
+    ``bsbot index``, now split across two processes).
 
-    Only documents the manifest reports as pending are touched — the unchanged-
-    content skip in ``Indexer._index_one`` means a cycle that finds nothing new
-    costs no embedding calls at all, which is what makes running this often safe.
+    Every pending document is submitted even when fetch/extract failed or was
+    skipped locally (segments=None then) — `api`'s own alias-chunk handling
+    (`Indexer.index_segments`) still needs the chance to run, exactly like the
+    single-process version always proceeded past a failed fetch to check for
+    an alias.
     """
-    aliases = load_aliases(aliases_path)
     async with MoodleClient(moodle) as client:
         token = await client.login()
-    with Store(settings.index_db, embed_dim=settings.gemini.embed_dim) as store:
-        async with Fetcher(
-            store,
-            moodle_token=token,
-            moodle_host=urlsplit(moodle.base_url).netloc,
-            max_concurrency=moodle.max_concurrency,
-        ) as fetcher:
-            stats = await Indexer(
-                store,
-                fetcher,
-                aliases=aliases,
-                moodle_host=urlsplit(moodle.base_url).netloc,
-                pii_tokenizer=build_pii_tokenizer(settings, store),
-            ).index_pending()
+    moodle_host = urlsplit(moodle.base_url).netloc
+
+    stats = IndexStats()
+    async with Fetcher(
+        api,
+        moodle_token=token,
+        moodle_host=moodle_host,
+        max_concurrency=moodle.max_concurrency,
+    ) as fetcher:
+        for document in api.pending_documents():
+            try:
+                outcome = await resolve_segments(document, fetcher, moodle_host=moodle_host)
+                result = api.index_segments(document.doc_id, outcome.segments, outcome.blob_sha256)
+                stats.indexed += result.get("indexed", 0)
+                stats.chunks += result.get("chunks", 0)
+                stats.skipped += result.get("skipped", 0)
+                stats.failed += result.get("failed", 0)
+            except Exception as exc:  # never let one document abort the batch
+                stats.failed += 1
+                log.warning(
+                    "cron.index_one_failed",
+                    doc_id=document.doc_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
     log.info(
         "cron.index",
         indexed=stats.indexed,
@@ -85,34 +95,12 @@ async def index_once(settings: Settings, moodle: MoodleConfig, aliases_path: Pat
     )
 
 
-async def embed_once(settings: Settings, gemini: GeminiConfig) -> None:
-    """Embed every chunk that does not yet have a vector (mirrors ``bsbot embed``)."""
-    with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
-        rows = store.connection.execute(
-            "SELECT c.chunk_id, c.text FROM chunks c "
-            "LEFT JOIN chunks_vec v ON v.chunk_id = c.chunk_id "
-            "WHERE v.chunk_id IS NULL ORDER BY c.chunk_id"
-        ).fetchall()
-        if not rows:
-            log.info("cron.embed", embedded=0, total=0)
-            return
-
-        embedder = GeminiEmbedder(
-            GeminiClient(gemini),
-            store=store,
-            model=gemini.embed_model,
-            dim=gemini.embed_dim,
-            batch_size=gemini.embed_batch_size,
-            rpm=gemini.embed_rpm,
-            items_per_minute=gemini.embed_items_per_minute,
-        )
-        vectors = embedder.embed_documents([r["text"] for r in rows], skip_failures=True)
-        done = 0
-        for row, vector in zip(rows, vectors, strict=True):
-            if vector is not None:
-                store.set_embedding(row["chunk_id"], vector)
-                done += 1
-    log.info("cron.embed", embedded=done, total=len(rows))
+async def embed_once(api: CronApiClient) -> None:
+    """Trigger `api` to embed every chunk that doesn't yet have a vector
+    (mirrors the old ``bsbot embed`` — the actual embedding now runs
+    server-side, see `bsbot.web.routes.embed`)."""
+    result = api.embed_pending()
+    log.info("cron.embed", embedded=result.get("embedded", 0), total=result.get("total", 0))
 
 
 async def _run_steps(steps: Sequence[tuple[str, Callable[[], Awaitable[None]]]]) -> None:
@@ -124,20 +112,13 @@ async def _run_steps(steps: Sequence[tuple[str, Callable[[], Awaitable[None]]]])
             log.warning("cron.step_failed", step=name, error=f"{type(exc).__name__}: {exc}")
 
 
-async def run_cycle(
-    settings: Settings,
-    moodle: MoodleConfig,
-    gemini: GeminiConfig,
-    aliases_path: Path,
-    *,
-    follow_links: bool = True,
-) -> None:
+async def run_cycle(moodle: MoodleConfig, api: CronApiClient, *, follow_links: bool = True) -> None:
     """One sync -> index -> embed pass."""
     await _run_steps(
         [
-            ("sync", lambda: sync_once(settings, moodle, follow_links=follow_links)),
-            ("index", lambda: index_once(settings, moodle, aliases_path)),
-            ("embed", lambda: embed_once(settings, gemini)),
+            ("sync", lambda: sync_once(moodle, api, follow_links=follow_links)),
+            ("index", lambda: index_once(moodle, api)),
+            ("embed", lambda: embed_once(api)),
         ]
     )
 
