@@ -1,27 +1,56 @@
-"""HTTP API for the Nuxt chat frontend — see specs/014-web-chat.md.
+"""HTTP API for the Nuxt chat frontend, `cron`, and `matrix` — see
+specs/014-web-chat.md and specs/015-microservice-split.md.
 
-A thin wrapper around the same `AnswerPipeline` the Matrix bot and `bsbot ask`
-already use. Holds no session state: every follow-up's context comes entirely
-from the `history` the caller resends (AC-5).
+The only process that ever opens the SQLite `Store` directly. Everything else
+(`matrix`, `cron`, `web`) talks to it over HTTP — see this package's `routes/`.
+
+Every route in this app must be `async def`, never a plain `def`: FastAPI
+dispatches sync routes to a threadpool worker, which can land on a different
+thread than the one `lifespan` opened the sqlite3 connection on —
+"SQLite objects created in a thread can only be used in that same thread",
+seen live in production before `/api/ask` was fixed. `pipeline.answer()` and
+friends stay blocking calls inside these `async def` routes — acceptable here,
+the same tradeoff the Matrix bot already made.
 """
 
 from __future__ import annotations
 
-import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import FastAPI
 
 from bsbot.config import Settings
+from bsbot.index.aliases import load_aliases
 from bsbot.index.search import HybridSearcher
 from bsbot.index.store import Store
+from bsbot.ingest.fetcher import FetchResult
+from bsbot.ingest.indexer import Indexer
 from bsbot.llm.embed import GeminiEmbedder
 from bsbot.llm.gemini import GeminiClient
 from bsbot.pii import build_pii_tokenizer
-from bsbot.rag.pipeline import Answer, AnswerPipeline
+from bsbot.rag.pipeline import AnswerPipeline
 from bsbot.web.rate_limit import RateLimiter
-from bsbot.web.schemas import AskRequest
+from bsbot.web.routes import ask, crawl, embed, fetch_cache, ingest_message, segments
+
+DEFAULT_ALIASES_PATH = Path("config/document_aliases.yaml")
+
+
+class _UnusedFetcher:
+    """`Indexer.index_segments()` (what `api` calls) never fetches anything —
+    only `index_pending()`/`_index_one()` (what `cron` calls instead, locally,
+    via its own Store-free `Fetcher`) do. This stub exists only to satisfy
+    `Indexer.__init__`'s required `fetcher` parameter.
+    """
+
+    async def fetch(self, url: str, *, moodle_timemodified: int | None = None) -> FetchResult:
+        raise NotImplementedError("api's Indexer never fetches; it only calls index_segments()")
+
+
+def _moodle_host(settings: Settings) -> str | None:
+    return urlsplit(settings.moodle.base_url).netloc if settings.moodle.base_url else None
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -43,6 +72,16 @@ def create_app(settings: Settings) -> FastAPI:
                 items_per_minute=gemini.embed_items_per_minute,
             )
             pii_tok = build_pii_tokenizer(settings, store)
+            app.state.store = store
+            app.state.embedder = embedder
+            app.state.pii_tokenizer = pii_tok
+            app.state.indexer = Indexer(
+                store,
+                _UnusedFetcher(),
+                aliases=load_aliases(DEFAULT_ALIASES_PATH),
+                moodle_host=_moodle_host(settings),
+                pii_tokenizer=pii_tok,
+            )
             app.state.pipeline = AnswerPipeline(
                 HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
                 client,
@@ -60,31 +99,17 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.state.limiter = limiter
+    app.state.api_token = web.api_token.get_secret_value()
 
-    def _verify_token(authorization: str | None = Header(default=None)) -> None:
-        token = ""
-        if authorization and authorization.startswith("Bearer "):
-            token = authorization[len("Bearer ") :]
-        if not hmac.compare_digest(token, web.api_token.get_secret_value()):
-            raise HTTPException(status_code=401, detail="invalid or missing token")
-
-    @app.get("/healthz")
-    def healthz() -> dict[str, str]:
-        return {"status": "ok"}
-
-    @app.post("/api/ask", response_model=Answer, dependencies=[Depends(_verify_token)])
-    async def ask(request: AskRequest) -> Answer:
-        # `async def`, not `def` — a plain `def` route is dispatched by
-        # FastAPI to a threadpool worker, which can (and, live, did) land on
-        # a different thread than the one `lifespan` opened the sqlite3
-        # connection on: "SQLite objects created in a thread can only be
-        # used in that same thread." `async def` keeps this on the single
-        # event-loop thread instead, matching where `Store` was opened.
-        # `pipeline.answer()` itself stays a blocking call — acceptable
-        # here, same tradeoff the Matrix bot already makes.
-        if not limiter.allow():
-            raise HTTPException(status_code=429, detail="rate limit exceeded")
-        pipeline: AnswerPipeline = app.state.pipeline
-        return pipeline.answer(request.question, history=request.history)
+    routers = (
+        ask.router,
+        crawl.router,
+        fetch_cache.router,
+        segments.router,
+        embed.router,
+        ingest_message.router,
+    )
+    for router in routers:
+        app.include_router(router)
 
     return app
