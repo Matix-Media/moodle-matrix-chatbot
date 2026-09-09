@@ -1,7 +1,8 @@
 # 009 — Matrix bot
 
 - **Status:** active
-- **Tests:** `tests/unit/test_matrix_bot.py`
+- **Tests:** `tests/unit/test_matrix_bot.py`, `tests/unit/test_matrix_auth.py`,
+  `tests/unit/test_matrix_runner.py`
 
 ## Goal
 
@@ -98,3 +99,12 @@ predictable, and incapable of replaying history or spamming.
 - No conversational memory across messages; each question stands alone.
 - No moderation or admin commands.
 - No automated cross-signing / SSSS self-verification of the bot's own device (see AC-19).
+- How the bot *obtains* a token in the first place (the OAuth device-grant login flow run by
+  `bsbot matrix-login`), the outer process-level restart supervisor, and continuous
+  background token renewal are spec 016, not here.
+
+## Notes
+
+See `specs/016-matrix-oauth-resilience.md` for the OAuth device grant, the restart-with-backoff
+supervisor, and proactive token renewal — this spec covers only how the running bot behaves and
+reacts once it already has a working session.

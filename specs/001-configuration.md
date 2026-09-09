@@ -1,7 +1,7 @@
 # 001 — Configuration and secrets
 
 - **Status:** active
-- **Tests:** `tests/unit/test_config.py`
+- **Tests:** `tests/unit/test_config.py`, `tests/unit/test_cli.py`
 
 ## Goal
 
@@ -29,6 +29,12 @@ ever contains `.env.example`.
   `matrix_store/`) are exposed as properties rather than reassembled by callers.
 - `AC-9` Requesting a subsystem's settings when its required fields are absent raises a clear
   `ConfigError` naming the missing environment variables and the milestone that needs them.
+- `AC-10` A configuration value that fails validation (e.g. a malformed URL) is reported by
+  every CLI command as a plain, per-field message naming the `BSBOT_`-prefixed environment
+  variable — never a pydantic traceback, which buries the one line the user actually needs.
+- `AC-11` `bsbot doctor` reports, without contacting any external service, which optional
+  subsystems (Moodle, Gemini, Matrix, the web API, PII tokenization) are configured and which
+  are not — the diagnostic command reached for first when something is broken.
 
 ## Non-goals
 

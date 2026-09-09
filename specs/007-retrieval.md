@@ -1,7 +1,7 @@
 # 007 — Embeddings and hybrid retrieval
 
 - **Status:** active
-- **Tests:** `tests/unit/test_embed.py`, `tests/unit/test_search.py`
+- **Tests:** `tests/unit/test_embed.py`, `tests/unit/test_search.py`, `tests/unit/test_aliases.py`
 
 ## Goal
 

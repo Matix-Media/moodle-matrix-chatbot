@@ -45,7 +45,13 @@ Design rationale, external constraints, links.
 | [006](006-extraction-chunking.md) | Extraction and chunking | `test_extract.py`, `test_chunk.py` | active |
 | [007](007-retrieval.md) | Embeddings and hybrid retrieval | `test_embed.py`, `test_search.py` | active |
 | [008](008-answering.md) | Grounded answering | `test_rag.py` | active |
-| [009](009-matrix-bot.md) | Matrix bot | `test_matrix_bot.py` | active |
+| [009](009-matrix-bot.md) | Matrix bot | `test_matrix_bot.py`, `test_matrix_auth.py`, `test_matrix_runner.py` | active |
+| [010](010-linked-course-discovery.md) | Linked-course discovery and self-enrolment | `test_enrolment.py`, `test_crawler.py` | active |
+| [011](011-external-adapters.md) | External content adapters | `test_hackmd.py`, `test_google_docs.py`, `test_youtube.py`, `test_taskcards.py` | active |
 | [012](012-benchmarks.md) | RAG method benchmarks | `test_bench.py` | active |
 | [013](013-pii-tokenization.md) | PII tokenization | `test_pii.py` | draft |
 | [014](014-web-chat.md) | Web chat API | `test_web_api.py` | active |
+| [015](015-index-augmentation.md) | Index-time retrieval augmentation | `test_indexer.py`, `test_chunk.py` | active |
+| [016](016-matrix-oauth-resilience.md) | Matrix OAuth device-grant login and process resilience | `test_matrix_oauth.py`, `test_matrix_runner.py`, `test_write_env.py` | active |
+| [017](017-sync-cron.md) | Scheduled sync cycle | `test_sync_loop.py` | active |
+| [018](018-corpus-export.md) | Corpus export | `test_export.py` (not yet written) | draft |

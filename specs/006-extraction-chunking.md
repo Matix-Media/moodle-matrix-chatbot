@@ -1,7 +1,7 @@
 # 006 — Text extraction and chunking
 
 - **Status:** active
-- **Tests:** `tests/unit/test_extract.py`, `tests/unit/test_chunk.py`
+- **Tests:** `tests/unit/test_extract.py`, `tests/unit/test_chunk.py`, `tests/unit/test_gemini_client.py`
 
 ## Goal
 
@@ -73,15 +73,24 @@ Verified against the live corpus (333 file-kind documents): 16 files had no extr
   assuming PNG — a real gap caught during implementation: the original OCR interface hardcoded
   `mime_type="image/png"`, harmless while the only caller was the always-PNG PDF-scan path,
   but would have silently mis-declared WEBP bytes the moment a second image format was added.
+- `AC-27` Beyond verbatim transcription, a cached image or diagram can instead be run through a
+  semantic **description** pass (`CachingOcr(mode="describe")` / `GeminiClient.describe_image`)
+  — a short structured explanation of what the image depicts (an architecture, a flow, a table)
+  rather than a literal transcript, for images whose value to a searcher is diagrammatic rather
+  than textual. It is cached separately from the verbatim-transcription cache, under its own
+  tag, keyed on image bytes only — the same bytes never pay for either pass twice.
+- `AC-28` Automatic function calling — which none of bsbot's Gemini calls ever need, since
+  `tools=` is never passed — is explicitly disabled on every call (`generate`, `transcribe_image`,
+  `describe_image` alike) rather than left at the SDK default, which otherwise prints a console
+  advisory on every single request and adds pointless bookkeeping.
 
 ## Index-time augmentation (2026-09-02)
 
 `bsbot index` grew several optional per-chunk/per-document augmentation passes over time
-(`--hype`, `--summarize`, `--semantic`) without this spec being updated for them — a gap this
-addendum only partially closes: those three remain undocumented (`src/bsbot/ingest/indexer.py`,
-tested in `tests/unit/test_indexer.py`), and are named here only so the gap itself is visible.
-The one addition made alongside `specs/012-benchmarks.md`'s comparison of RAG techniques is
-documented below.
+(`--hype`, `--summarize`, `--semantic`) without this spec being updated for them. Of those,
+only the one below was documented here at the time; **`--hype`, `--summarize` and
+`--semantic` are now specified in full in `specs/015-index-augmentation.md`**, which closes the
+gap this addendum originally only flagged.
 
 - `AC-25` **Contextual retrieval** (`--contextualize`, Anthropic's published technique):
   prepends a short LLM-written sentence to a chunk's own indexed text, situating it within its
