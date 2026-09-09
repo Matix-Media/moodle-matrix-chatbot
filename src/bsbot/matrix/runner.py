@@ -37,7 +37,7 @@ from nio import (
 )
 
 from bsbot.config import MatrixConfig
-from bsbot.matrix.bot import BerufsschuleBot, BotPolicy, PipelineLike
+from bsbot.matrix.bot import BerufsschuleBot, BotPolicy, IngestMessageLike, PipelineLike
 
 log = structlog.get_logger(__name__)
 
@@ -116,9 +116,7 @@ class MatrixRunner:
         answer_all: bool = False,
         trust_room_devices: bool = True,
         persist_tokens: Callable[[dict[str, str]], None] | None = None,
-        store: Any | None = None,
-        embedder: Any | None = None,
-        pii_tokenizer: Any | None = None,
+        ingest: IngestMessageLike | None = None,
     ) -> None:
         self._config = config
         self._pipeline = pipeline
@@ -126,9 +124,7 @@ class MatrixRunner:
         self._answer_all = answer_all
         self._trust = trust_room_devices
         self._persist_tokens = persist_tokens
-        self._store = store
-        self._embedder = embedder
-        self._pii_tokenizer = pii_tokenizer
+        self._ingest = ingest
         self._token_lifetime = 0
         # Mutable, unlike self._config: MAS rotates the refresh token on every
         # use, and this is what every subsequent refresh within this process's
@@ -181,9 +177,7 @@ class MatrixRunner:
                 client,
                 self._pipeline,
                 policy,
-                store=self._store,
-                embedder=self._embedder,
-                pii_tokenizer=self._pii_tokenizer,
+                ingest=self._ingest,
             )
 
             client.add_event_callback(self._on_message, RoomMessageText)
@@ -481,9 +475,7 @@ async def run_bot(
     answer_all: bool = False,
     persist_tokens: Callable[[dict[str, str]], None] | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    store: Any | None = None,
-    embedder: Any | None = None,
-    pii_tokenizer: Any | None = None,
+    ingest: IngestMessageLike | None = None,
 ) -> None:
     """Run the bot, restarting with backoff on any failure (see _run_with_restart).
 
@@ -505,9 +497,7 @@ async def run_bot(
             store_dir=store_dir,
             answer_all=answer_all,
             persist_tokens=persist_tokens,
-            store=store,
-            embedder=embedder,
-            pii_tokenizer=pii_tokenizer,
+            ingest=ingest,
         )
         await runner.run()
 

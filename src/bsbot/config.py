@@ -157,12 +157,19 @@ class MatrixSection(BaseModel):
 
 
 class WebSection(BaseModel):
-    """Internal HTTP API for the Nuxt chat frontend — see specs/014-web-chat.md."""
+    """The `api` service, and how every other service reaches it — see
+    specs/014-web-chat.md and specs/015-microservice-split.md. `matrix` and
+    `cron` use this section exactly like the Nuxt `web` frontend does: `api`
+    is the only process that ever opens the SQLite Store, everyone else is
+    an HTTP client of it.
+    """
 
-    #: Shared secret between the `api` and `web` Docker services. Not the public
-    #: chat token end users type in (that one lives in the `web` container's own
-    #: config, outside this Python process entirely).
+    #: Shared secret between `api` and every internal caller (`web`, `matrix`,
+    #: `cron`). Not the public chat token end users type in (that one lives in
+    #: the `web` container's own config, outside this Python process entirely).
     api_token: SecretStr | None = None
+    #: Where `matrix`/`cron` reach `api` — the compose service name by default.
+    api_url: str = "http://api:8000"
 
 
 # --------------------------------------------------------------------------- #
@@ -232,6 +239,7 @@ class WebConfig(BaseModel):
     model_config = {"frozen": True}
 
     api_token: SecretStr
+    api_url: str
 
 
 # --------------------------------------------------------------------------- #
@@ -405,7 +413,7 @@ class Settings(BaseSettings):
         if not self.web.api_token:
             missing = [_env_name("web", "api_token")]
             raise ConfigError(_missing_message("Web API", "spec 014", missing))
-        return WebConfig(api_token=self.web.api_token)
+        return WebConfig(api_token=self.web.api_token, api_url=self.web.api_url)
 
 
 def _missing_message(subsystem: str, milestone: str, missing: list[str]) -> str:
