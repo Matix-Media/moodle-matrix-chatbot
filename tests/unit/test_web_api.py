@@ -105,15 +105,22 @@ def test_rate_limit_exceeded_returns_429(client: Any) -> None:
     assert blocked.status_code == 429
 
 
-def test_ask_endpoint_is_async_to_keep_sqlite_on_one_thread(client: Any) -> None:
+def test_every_route_is_async_to_keep_sqlite_on_one_thread() -> None:
     """Regression: a plain `def` endpoint is dispatched by FastAPI to a
     threadpool worker, which can land on a different thread than the one
     `lifespan` opened the sqlite3 connection on —
     sqlite3.ProgrammingError: "SQLite objects created in a thread can only
     be used in that same thread." Seen live in production (spec 014).
-    `async def` keeps the whole request on the single event-loop thread."""
-    ask_route = next(r for r in client.app.routes if getattr(r, "path", None) == "/api/ask")
-    assert inspect.iscoroutinefunction(ask_route.endpoint)
+    `async def` keeps the whole request on the single event-loop thread —
+    checked across every router (spec 015), not just `/api/ask`, since every
+    one of them touches the same Store."""
+    from bsbot.web.routes import ask, crawl, embed, fetch_cache, ingest_message, segments
+
+    routers = (ask, crawl, embed, fetch_cache, ingest_message, segments)
+    routes = [route for mod in routers for route in mod.router.routes]
+    assert routes, "expected at least one route to check"
+    for route in routes:
+        assert inspect.iscoroutinefunction(route.endpoint), route.path
 
 
 class TestRateLimiterUnit:
