@@ -15,7 +15,7 @@ COPY src/ ./src/
 # BSBOT_PII__ENABLED is a runtime toggle (see config.py), and this image is
 # rebuilt fresh on every deploy, so there is no separate "build with PII
 # support" step to remember: flip the env var, no rebuild needed.
-RUN pip install --no-cache-dir ".[pii,api]" \
+RUN pip install --no-cache-dir ".[pii]" \
  && python -m spacy download de_core_news_md
 
 # Runs as a non-root user; /data is the only writable path it needs.
