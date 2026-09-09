@@ -15,6 +15,17 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  // Renders "[1]"/"[1, 2]" citation markers (rewritten into cite:// links by
+  // citationsToLinks(), see app/utils/citationLinks.ts) as icon badges instead
+  // of plain <a> tags — see app/components/ChatCitationLink.global.vue.
+  mdc: {
+    components: {
+      map: {
+        a: 'ChatCitationLink'
+      }
+    }
+  },
+
   // Server-only — never exposed to the client bundle (bsbot-matrix-chatbot
   // spec 014). Read via useRuntimeConfig() inside server/api routes only.
   runtimeConfig: {
