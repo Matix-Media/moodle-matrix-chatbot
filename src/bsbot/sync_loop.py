@@ -74,6 +74,15 @@ async def index_once(moodle: MoodleConfig, api: CronApiClient) -> None:
         for document in api.pending_documents():
             try:
                 outcome = await resolve_segments(document, fetcher, moodle_host=moodle_host)
+                # Counted locally too, not just from api's response: a failed/
+                # skipped fetch still gets submitted below (segments=None) so
+                # api's alias-chunk handling gets a chance to run, but with no
+                # alias present that call touches none of api's own counters
+                # — leaving the failure invisible in this summary otherwise.
+                if outcome.skipped:
+                    stats.skipped += 1
+                elif outcome.failed:
+                    stats.failed += 1
                 result = api.index_segments(document.doc_id, outcome.segments, outcome.blob_sha256)
                 stats.indexed += result.get("indexed", 0)
                 stats.chunks += result.get("chunks", 0)
