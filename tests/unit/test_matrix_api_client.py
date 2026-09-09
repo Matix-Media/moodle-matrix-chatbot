@@ -21,13 +21,19 @@ def test_answer_calls_api_ask_with_bearer_token_and_returns_an_answer() -> None:
     )
     client = ApiClient(BASE_URL, "s3cret")
 
-    answer = client.answer("Wann ist die Prüfung?", history=[("a", "b")], room_id="!r:example.org")
+    answer = client.answer(
+        "Wann ist die Prüfung?",
+        history=[("a", "b")],
+        room_id="!r:example.org",
+        event_id="$e1",
+    )
 
     assert answer.text == "Die Prüfung ist am Montag."
     assert answer.grounded is True
     request = route.calls.last.request
     assert request.headers["Authorization"] == "Bearer s3cret"
-    assert request.read()  # body was sent
+    assert b'"room_id":"!r:example.org"' in request.read()
+    assert b'"event_id":"$e1"' in request.content
 
 
 @respx.mock

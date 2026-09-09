@@ -32,10 +32,16 @@ class ApiClient:
         *,
         history: list[tuple[str, str]] | None = None,
         room_id: str | None = None,
+        event_id: str | None = None,
     ) -> Answer:
         response = self._http.post(
             "/api/ask",
-            json={"question": question, "history": history},
+            json={
+                "question": question,
+                "history": history,
+                "room_id": room_id,
+                "event_id": event_id,
+            },
             headers=self._headers,
         )
         response.raise_for_status()
