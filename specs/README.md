@@ -48,3 +48,4 @@ Design rationale, external constraints, links.
 | [009](009-matrix-bot.md) | Matrix bot | `test_matrix_bot.py` | active |
 | [012](012-benchmarks.md) | RAG method benchmarks | `test_bench.py` | active |
 | [013](013-pii-tokenization.md) | PII tokenization | `test_pii.py` | draft |
+| [014](014-web-chat.md) | Web chat API | `test_web_api.py` | active |

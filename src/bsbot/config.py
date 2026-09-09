@@ -156,6 +156,15 @@ class MatrixSection(BaseModel):
         return _normalise_base_url(value)
 
 
+class WebSection(BaseModel):
+    """Internal HTTP API for the Nuxt chat frontend — see specs/014-web-chat.md."""
+
+    #: Shared secret between the `api` and `web` Docker services. Not the public
+    #: chat token end users type in (that one lives in the `web` container's own
+    #: config, outside this Python process entirely).
+    api_token: SecretStr | None = None
+
+
 # --------------------------------------------------------------------------- #
 # Resolved (validated, non-optional) config
 # --------------------------------------------------------------------------- #
@@ -217,6 +226,14 @@ class MatrixConfig(BaseModel):
     rate_limit_bypass_users: list[str]
 
 
+class WebConfig(BaseModel):
+    """Web API settings, guaranteed usable."""
+
+    model_config = {"frozen": True}
+
+    api_token: SecretStr
+
+
 # --------------------------------------------------------------------------- #
 # Root
 # --------------------------------------------------------------------------- #
@@ -266,6 +283,7 @@ class Settings(BaseSettings):
     gemini: GeminiSection = Field(default_factory=GeminiSection)
     matrix: MatrixSection = Field(default_factory=MatrixSection)
     pii: PiiSection = Field(default_factory=PiiSection)
+    web: WebSection = Field(default_factory=WebSection)
 
     data_dir: Path = Path("./data")
     log_level: str = "INFO"
@@ -382,6 +400,12 @@ class Settings(BaseSettings):
             rate_limit_per_day=self.matrix.rate_limit_per_day,
             rate_limit_bypass_users=bypass_users,
         )
+
+    def require_web(self) -> WebConfig:
+        if not self.web.api_token:
+            missing = [_env_name("web", "api_token")]
+            raise ConfigError(_missing_message("Web API", "spec 014", missing))
+        return WebConfig(api_token=self.web.api_token)
 
 
 def _missing_message(subsystem: str, milestone: str, missing: list[str]) -> str:
