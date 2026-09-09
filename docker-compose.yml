@@ -42,7 +42,7 @@ services:
   # Always listening in the Matrix room. Never runs Moodle sync/index/embed
   # itself — a multi-hour crawl or a large embedding batch must not delay it
   # answering a question.
-  bot:
+  matrix:
     build: .
     restart: unless-stopped
     env_file: *env-file
@@ -53,8 +53,8 @@ services:
 
   # The recurring sync -> index -> embed loop (BSBOT_SYNC_INTERVAL_MINUTES
   # between cycles, default 180). Its own container so a crawl never blocks the
-  # bot. Shares the SQLite index with `bot` over the same volume — safe, since
-  # the store runs in WAL mode (one writer + concurrent readers).
+  # bot. Shares the SQLite index with `matrix` over the same volume — safe,
+  # since the store runs in WAL mode (one writer + concurrent readers).
   cron:
     build: .
     restart: unless-stopped
@@ -76,7 +76,7 @@ services:
     command: ["cron", "--once"]
 
   # Internal HTTP API (spec 014) the `web` chat frontend calls. Same image and
-  # index as `bot`/`cron`. No `ports:` published — reachable only as
+  # index as `matrix`/`cron`. No `ports:` published — reachable only as
   # http://api:8000 from other containers on this compose network.
   api:
     build: .
