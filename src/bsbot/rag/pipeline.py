@@ -191,9 +191,11 @@ class AnswerPipeline:
         *,
         history: list[tuple[str, str]] | None = None,
         room_id: str | None = None,
+        event_id: str | None = None,
     ) -> Answer:
         question = (question or "").strip()
-        log.info("rag.question", question=question, room_id=room_id)
+        origin = f"matrix:{room_id}:{event_id}" if room_id is not None else "webchat"
+        log.info("rag.question", question=question, origin=origin)
 
         # PII tokenization (spec 013): a name/email in the student's own question
         # must never reach the LLM either — everything from here on (condense,

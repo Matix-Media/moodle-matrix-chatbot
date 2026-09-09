@@ -25,4 +25,6 @@ async def ask(request: Request, body: AskRequest) -> Answer:
     if not request.app.state.limiter.allow():
         raise HTTPException(status_code=429, detail="rate limit exceeded")
     pipeline: AnswerPipeline = request.app.state.pipeline
-    return pipeline.answer(body.question, history=body.history)
+    return pipeline.answer(
+        body.question, history=body.history, room_id=body.room_id, event_id=body.event_id
+    )

@@ -8,3 +8,5 @@ from pydantic import BaseModel
 class AskRequest(BaseModel):
     question: str
     history: list[tuple[str, str]] | None = None
+    room_id: str | None = None
+    event_id: str | None = None
