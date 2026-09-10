@@ -139,123 +139,128 @@ function onSwitchSession(id: string) {
         <UColorModeButton />
       </header>
 
-      <UContainer class="flex-1 min-h-0 flex flex-col w-full max-w-3xl py-4 gap-2">
-        <div
-          v-if="!activeSession || activeSession.messages.length === 0"
-          class="flex-1 flex flex-col items-center justify-center gap-4 text-center px-4"
-        >
-          <UIcon
-            name="i-lucide-message-circle"
-            class="size-10 text-muted"
-          />
-          <div>
-            <p class="font-medium text-highlighted">
-              Womit kann ich helfen?
-            </p>
-            <p class="text-sm text-muted mt-1">
-              Stell eine Frage zu deinem Moodle-Kurs.
-            </p>
-          </div>
-          <div class="flex flex-wrap justify-center gap-2">
-            <UButton
-              v-for="q in EXAMPLE_QUESTIONS"
-              :key="q"
-              variant="outline"
-              color="neutral"
-              size="sm"
-              @click="ask(q)"
+      <div class="flex-1 min-h-0 flex flex-col">
+        <div class="flex-1 min-h-0 overflow-y-auto">
+          <UContainer class="w-full max-w-3xl h-full flex flex-col py-4">
+            <div
+              v-if="!activeSession || activeSession.messages.length === 0"
+              class="flex-1 flex flex-col items-center justify-center gap-4 text-center px-4"
             >
-              {{ q }}
-            </UButton>
-          </div>
+              <UIcon
+                name="i-lucide-message-circle"
+                class="size-10 text-muted"
+              />
+              <div>
+                <p class="font-medium text-highlighted">
+                  Womit kann ich helfen?
+                </p>
+                <p class="text-sm text-muted mt-1">
+                  Stell eine Frage zu deinem Moodle-Kurs.
+                </p>
+              </div>
+              <div class="flex flex-wrap justify-center gap-2">
+                <UButton
+                  v-for="q in EXAMPLE_QUESTIONS"
+                  :key="q"
+                  variant="outline"
+                  color="neutral"
+                  size="sm"
+                  @click="ask(q)"
+                >
+                  {{ q }}
+                </UButton>
+              </div>
+            </div>
+
+            <UChatMessages
+              v-else
+              :messages="activeSession.messages"
+              :status="status"
+              should-auto-scroll
+              :user="{ side: 'right', variant: 'solid', avatar: { icon: 'i-lucide-user' }, ui: { leading: 'order-last' } }"
+              :assistant="{ side: 'left', variant: 'soft', avatar: { icon: 'i-lucide-graduation-cap' } }"
+            >
+              <template #content="{ message }">
+                <template
+                  v-for="(part, i) in message.parts"
+                  :key="i"
+                >
+                  <div
+                    v-if="message.role === 'assistant'"
+                    class="chat-markdown"
+                  >
+                    <MDC :value="part.text" />
+                  </div>
+                  <p
+                    v-else
+                    class="whitespace-pre-wrap"
+                  >
+                    {{ part.text }}
+                  </p>
+                </template>
+
+                <div
+                  v-if="message.citations?.length"
+                  class="mt-2 flex flex-wrap gap-1.5"
+                >
+                  <UButton
+                    v-for="citation in message.citations"
+                    :key="citation.index"
+                    :to="citation.url ?? undefined"
+                    :disabled="!citation.url"
+                    target="_blank"
+                    variant="soft"
+                    color="neutral"
+                    size="xs"
+                    icon="i-lucide-external-link"
+                  >
+                    {{ citation.header_text }}
+                  </UButton>
+                </div>
+
+                <div
+                  v-if="isLatest(message) && message.suggestedQuestions?.length"
+                  class="mt-3 flex flex-wrap gap-1.5"
+                >
+                  <UButton
+                    v-for="q in message.suggestedQuestions"
+                    :key="q"
+                    variant="outline"
+                    color="primary"
+                    size="xs"
+                    @click="ask(q)"
+                  >
+                    {{ q }}
+                  </UButton>
+                </div>
+              </template>
+            </UChatMessages>
+          </UContainer>
         </div>
 
-        <UChatMessages
-          v-else
-          :messages="activeSession.messages"
-          :status="status"
-          should-auto-scroll
-          class="flex-1 min-h-0 overflow-y-auto"
-          :user="{ side: 'right', variant: 'solid', avatar: { icon: 'i-lucide-user' }, ui: { leading: 'order-last' } }"
-          :assistant="{ side: 'left', variant: 'soft', avatar: { icon: 'i-lucide-graduation-cap' } }"
-        >
-          <template #content="{ message }">
-            <template
-              v-for="(part, i) in message.parts"
-              :key="i"
-            >
-              <div
-                v-if="message.role === 'assistant'"
-                class="chat-markdown"
-              >
-                <MDC :value="part.text" />
-              </div>
-              <p
-                v-else
-                class="whitespace-pre-wrap"
-              >
-                {{ part.text }}
-              </p>
+        <UContainer class="w-full max-w-3xl shrink-0 flex flex-col gap-2 pb-4">
+          <UChatShimmer
+            v-if="status === 'submitted'"
+            text="Antwort wird generiert…"
+            class="px-1"
+          />
+
+          <UChatPrompt
+            v-model="input"
+            placeholder="Stell eine Frage zu deinem Kurs…"
+            variant="subtle"
+            :disabled="status === 'submitted'"
+            @submit="onSubmit"
+          >
+            <template #footer>
+              <UChatPromptSubmit
+                :status="status"
+                class="ms-auto"
+              />
             </template>
-
-            <div
-              v-if="message.citations?.length"
-              class="mt-2 flex flex-wrap gap-1.5"
-            >
-              <UButton
-                v-for="citation in message.citations"
-                :key="citation.index"
-                :to="citation.url ?? undefined"
-                :disabled="!citation.url"
-                target="_blank"
-                variant="soft"
-                color="neutral"
-                size="xs"
-                icon="i-lucide-external-link"
-              >
-                {{ citation.header_text }}
-              </UButton>
-            </div>
-
-            <div
-              v-if="isLatest(message) && message.suggestedQuestions?.length"
-              class="mt-3 flex flex-wrap gap-1.5"
-            >
-              <UButton
-                v-for="q in message.suggestedQuestions"
-                :key="q"
-                variant="outline"
-                color="primary"
-                size="xs"
-                @click="ask(q)"
-              >
-                {{ q }}
-              </UButton>
-            </div>
-          </template>
-        </UChatMessages>
-
-        <UChatShimmer
-          v-if="status === 'submitted'"
-          text="Antwort wird generiert…"
-          class="px-1"
-        />
-
-        <UChatPrompt
-          v-model="input"
-          placeholder="Stell eine Frage zu deinem Kurs…"
-          variant="subtle"
-          :disabled="status === 'submitted'"
-          @submit="onSubmit"
-        >
-          <template #footer>
-            <UChatPromptSubmit
-              :status="status"
-              class="ms-auto"
-            />
-          </template>
-        </UChatPrompt>
-      </UContainer>
+          </UChatPrompt>
+        </UContainer>
+      </div>
     </div>
 
     <UModal
