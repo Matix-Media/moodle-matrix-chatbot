@@ -376,7 +376,7 @@ class AnswerPipeline:
                 temperature=0.3,
             )
             lines = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
-            return [line for line in lines if line and line.endswith("?")][:3]
+            return [self._detok(line) for line in lines if line and line.endswith("?")][:3]
         except Exception as exc:
             log.info("rag.suggest_followup_failed", error=str(exc))
             return []

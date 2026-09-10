@@ -66,16 +66,6 @@ Falls die Frage bereits eigenständig ist, gib sie unverändert aus.
 Gib NUR die eine umformulierte Suchanfrage aus, ohne Anführungszeichen und ohne Erklärung.
 """
 
-SUGGEST_FOLLOWUP_TEMPLATE = """\
-Frage der Schülerin / des Schülers: {question}
-Antwort: {answer}
-
-Formuliere 2 bis 3 kurze, sinnvolle Folgefragen, die eine Schülerin oder ein Schüler
-als Nächstes dazu stellen könnte.
-
-Gib nur die Fragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
-"""
-
 #: Shared across every query-rewriting prompt that may receive a PII-tokenized
 #: question (spec 013 AC-15): a ⟦PII...⟧ placeholder is not a word to
 #: paraphrase around, it *is* the search target (a redacted name/email), and a
@@ -87,6 +77,22 @@ steht dieser anonymisiert für einen echten Namen oder eine E-Mail-Adresse, die 
 der er sinnvoll vorkäme. Erfinde niemals einen Namen dafür und lass den Platzhalter nicht einfach
 weg, auch wenn du nicht weißt, wer oder was er bedeutet.\
 """
+
+SUGGEST_FOLLOWUP_TEMPLATE = (
+    """\
+Frage der Schülerin / des Schülers: {question}
+Antwort: {answer}
+
+Formuliere 2 bis 3 kurze, sinnvolle Folgefragen, die eine Schülerin oder ein Schüler
+als Nächstes dazu stellen könnte.
+
+"""
+    + _PRESERVE_PII_INSTRUCTION
+    + """
+
+Gib nur die Fragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
+"""
+)
 
 EXPAND_TEMPLATE = (
     """\

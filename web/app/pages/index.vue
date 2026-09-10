@@ -228,6 +228,7 @@ function onSwitchSession(id: string) {
                     variant="outline"
                     color="primary"
                     size="xs"
+                    class="justify-start text-left"
                     @click="ask(q)"
                   >
                     {{ q }}
