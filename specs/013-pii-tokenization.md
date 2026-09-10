@@ -77,7 +77,9 @@ one-time reindex.
   question text, not the tokenized one.
 - `AC-20` The follow-up-question suggestion call receives tokenized text, never the already
   -detokenized final answer — this call sends text to Gemini after the main answer is generated,
-  so it must not regress into re-leaking resolved PII.
+  so it must not regress into re-leaking resolved PII. Because its input is tokenized, its
+  output comes back in token space too, and `Answer.suggested_questions` is detokenized before
+  it reaches the student — `_finalise` has already run by this point and never sees them.
 
 ### Export
 - `AC-21` Exporting a document whose markdown is sourced from inline text or from a re-extracted
@@ -93,6 +95,22 @@ one-time reindex.
   deletion of chunks, vectors, or cache rows — a forced re-extraction pass alone produces a
   fully tokenized index, because changed content hashes make the existing "skip unchanged
   content" and cache-invalidation logic behave correctly on their own.
+
+### Egress boundary
+
+The criteria above were written around "tokenize at ingest, so the index and everything
+downstream of it is already safe". Auditing the live code found two problems with that
+framing. It never actually protected the on-disk index — `pii_tokens` stores every entity's
+plaintext `original` in the same SQLite file, so the decoder ring ships with the lockbox. And
+it silently degraded name retrieval, because a hashed name defeats the FTS5 diacritic folding
+(`unicode61 remove_diacritics 2`) and prefix matching this German corpus depends on: `Müller`
+and `Muller` hash differently, and BM25 term overlap across documents disappears entirely. The
+boundary that actually matters is egress to Gemini, so that is where the guarantee belongs.
+
+- `AC-25` A call that sends text to Gemini from outside the answer pipeline is tokenized by its
+  own caller. Specifically the benchmark judge: its golden question, expected keywords and
+  answer text all reach Gemini after the pipeline's protection has ended, since `Answer.text`
+  has already been detokenized by `_finalise` at that point.
 
 ## Non-goals
 

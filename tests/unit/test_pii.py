@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 
 from bsbot.config import Settings
+from bsbot.eval.golden import GoldenQuestion
+from bsbot.eval.runner import PRESETS, run_benchmark
 from bsbot.export import export_all
 from bsbot.index.search import HybridSearcher, SearchHit
 from bsbot.index.store import Store
@@ -473,6 +475,73 @@ class TestPipeline:
         followup_prompt = next(p for kind, p in llm.prompts if kind == "suggest_followup")
         assert "mueller@schule.de" not in followup_prompt
         assert email_token in followup_prompt
+
+    def test_suggested_questions_are_detokenized_before_reaching_the_student(self) -> None:
+        """AC-20: the call is fed tokens, so it answers in tokens — and `_finalise`
+        has already run by then, so nothing else would ever resolve them."""
+        store_ = FakePiiStore()
+        email_token = make_token("EMAIL", normalize_email("mueller@schule.de"))
+        store_.upsert_pii_token(
+            email_token, "EMAIL", normalize_email("mueller@schule.de"), "mueller@schule.de"
+        )
+        tok = PiiTokenizer(store_, nlp=FakeNlp([]))
+        llm = FakeLLM(
+            responses={
+                "answer": f"Die E-Mail ist {email_token}. [1]",
+                "suggest_followup": f"Wie erreiche ich {email_token}?",
+            }
+        )
+        h = hit(1, f"Kontakt: {email_token}")
+        pipeline = AnswerPipeline(
+            FakeSearcher([h]),
+            llm,
+            expand=False,
+            rerank=False,
+            suggest_followup=True,
+            pii_tokenizer=tok,
+        )
+
+        answer = pipeline.answer("Wie ist die E-Mail?")
+
+        assert answer.suggested_questions == ["Wie erreiche ich mueller@schule.de?"]
+
+
+# --------------------------------------------------------------------------- #
+# Egress boundary
+# --------------------------------------------------------------------------- #
+
+
+class TestBenchmarkJudge:
+    def test_judge_call_tokenizes_question_keywords_and_answer(self) -> None:
+        """AC-25: the judge runs outside the pipeline, so the pipeline's own
+        protection has already ended — `Answer.text` is detokenized by then and
+        the golden question was never tokenized at all."""
+        store_ = FakePiiStore()
+        person_token = make_token("PERSON", normalize_person("Herr Mueller"))
+        store_.upsert_pii_token(
+            person_token, "PERSON", normalize_person("Herr Mueller"), "Herr Mueller"
+        )
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        llm = FakeLLM(responses={"answer": f"{person_token} hilft weiter. [1]", "judge": "4 - gut"})
+        golden = [
+            GoldenQuestion(
+                id="q1", question="Wer ist Herr Mueller?", expected_keywords=["Herr Mueller"]
+            )
+        ]
+
+        report = run_benchmark(
+            golden,
+            FakeSearcher([hit(1, f"Kontakt zu {person_token}")]),
+            llm,
+            presets={"baseline": PRESETS["baseline"]},
+            judge=True,
+            pipeline_kwargs={"pii_tokenizer": tok},
+        )
+
+        judge_prompt = next(p for kind, p in llm.prompts if kind == "judge")
+        assert "Herr Mueller" not in judge_prompt
+        assert person_token in judge_prompt
+        assert report.presets[0].results[0].judge_score == 4.0
 
 
 # --------------------------------------------------------------------------- #
