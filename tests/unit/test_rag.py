@@ -66,6 +66,16 @@ class FakeLLM:
         return self._responses.get(kind, "Die Prüfung ist am 15.03.2026. [1]")
 
 
+class FakePiiTokenizer:
+    """Maps one fixed name to one fixed token, mirroring PiiTokenizer's shape."""
+
+    def tokenize(self, text: str) -> str:
+        return text.replace("Herr Müller", "⟦PIIPERSONabc123⟧")
+
+    def detokenize(self, text: str) -> str:
+        return text.replace("⟦PIIPERSONabc123⟧", "Herr Müller")
+
+
 def make(hits: list[SearchHit], **kw) -> tuple[AnswerPipeline, FakeSearcher, FakeLLM]:
     searcher = FakeSearcher(hits)
     llm = kw.pop("llm", None) or FakeLLM()
@@ -885,3 +895,33 @@ class TestSuggestedFollowupQuestions:
         answer = pipeline.answer("Unbekannte Frage?")
         assert not answer.grounded
         assert answer.suggested_questions == []
+
+    def test_suggested_questions_are_detokenized(self) -> None:
+        """A ⟦PII...⟧ placeholder the model echoes back into a suggested
+        follow-up question must be resolved to the real name/email before it
+        reaches the student, same as the main answer text."""
+        llm = FakeLLM(
+            {
+                "suggest_followup": "Wie erreiche ich ⟦PIIPERSONabc123⟧?",
+            }
+        )
+        pipeline, _, _ = make(
+            [hit(1, "Klausurinfo.")],
+            llm=llm,
+            suggest_followup=True,
+            pii_tokenizer=FakePiiTokenizer(),
+        )
+        answer = pipeline.answer("Wann ist die Klausur mit Herr Müller?")
+        assert answer.suggested_questions == ["Wie erreiche ich Herr Müller?"]
+
+    def test_suggest_followup_prompt_instructs_to_preserve_pii_placeholder(self) -> None:
+        llm = FakeLLM()
+        pipeline, _, _ = make(
+            [hit(1, "Klausurinfo.")],
+            llm=llm,
+            suggest_followup=True,
+            pii_tokenizer=FakePiiTokenizer(),
+        )
+        pipeline.answer("Frage zu Herr Müller?")
+        prompt = next(p for kind, p in llm.prompts if kind == "suggest_followup")
+        assert "⟦PII" in prompt
