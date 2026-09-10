@@ -16,6 +16,7 @@ from bsbot.ingest.indexer import Indexer
 from bsbot.ingest.model import ContentItem, ContentKind
 from bsbot.pii import build_pii_tokenizer
 from bsbot.pii.tokenizer import (
+    PATH_SEP,
     PiiTokenizer,
     make_token,
     normalize_email,
@@ -234,6 +235,74 @@ class TestTokenFormat:
         tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp([]))
         assert tok.tokenize("Die Prüfung ist am 15.03.2026.") == "Die Prüfung ist am 15.03.2026."
         assert tok.tokenize("") == ""
+
+
+class TestTokenizePath:
+    """`tokenize_path` (breadcrumb segments tokenized together, not in isolation).
+
+    Regression coverage for false-positive PERSON detections on ordinary
+    course/section/module names — a lone breadcrumb segment ("Lernfeld 10", a
+    team name) is a short, context-free fragment that spaCy's NER judges much
+    less reliably than the same text read together with its neighbors.
+    """
+
+    def test_empty_path_returns_empty_list(self) -> None:
+        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp([]))
+        assert tok.tokenize_path([]) == []
+
+    def test_segments_without_pii_pass_through_unchanged(self) -> None:
+        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp([]))
+        assert tok.tokenize_path(["LF05", "Sec", "Mod"]) == ["LF05", "Sec", "Mod"]
+
+    def test_a_name_spanning_one_segment_is_tokenized_in_place(self) -> None:
+        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp(["Herr Mueller"]))
+        result = tok.tokenize_path(["LF05", "Sec", "Kontakt Herr Mueller"])
+        assert result[0] == "LF05"
+        assert result[1] == "Sec"
+        assert "Herr Mueller" not in result[2]
+        assert "⟦PIIPERSON" in result[2]
+
+    def test_isolated_fragment_false_positive_is_avoided_with_sibling_context(self) -> None:
+        """A fake NER that only (wrongly) flags a bare fragment when it is the
+        *entire* input — standing in for spaCy's real tendency to misjudge a
+        short, context-free noun phrase read on its own. Tokenizing the whole
+        breadcrumb in one pass gives the segment real neighbors and avoids the
+        false positive that per-segment tokenization would produce."""
+
+        class FlagsOnlyWhenAlone:
+            def __init__(self, flagged: str) -> None:
+                self._flagged = flagged
+
+            def __call__(self, text: str) -> _Doc:
+                if text.strip() == self._flagged:
+                    return _Doc([_Ent(text, 0, len(text))])
+                return _Doc([])
+
+        nlp = FlagsOnlyWhenAlone("Lernfeldverantwortliche")
+        tok_isolated = PiiTokenizer(FakePiiStore(), nlp=nlp)
+        assert "⟦PIIPERSON" in tok_isolated.tokenize("Lernfeldverantwortliche")
+
+        tok_path = PiiTokenizer(FakePiiStore(), nlp=nlp)
+        result = tok_path.tokenize_path(["Lernfeld 10", "Lernfeldverantwortliche", "Mod"])
+        assert result == ["Lernfeld 10", "Lernfeldverantwortliche", "Mod"]
+
+    def test_falls_back_per_segment_when_the_split_misaligns(self) -> None:
+        """A detected span that swallows the join separator must not corrupt
+        the result list — the count of returned segments must always match
+        the count of input segments."""
+
+        class SpansTheSeparator:
+            def __call__(self, text: str) -> _Doc:
+                sep = PATH_SEP
+                if sep in text:
+                    start = text.index(sep)
+                    end = min(start + len(sep) + 3, len(text))
+                    return _Doc([_Ent(text[start:end], start, end)])
+                return _Doc([])
+
+        tok = PiiTokenizer(FakePiiStore(), nlp=SpansTheSeparator())
+        result = tok.tokenize_path(["AAA", "BBB", "CCC"])
+        assert len(result) == 3
 
 
 # --------------------------------------------------------------------------- #
