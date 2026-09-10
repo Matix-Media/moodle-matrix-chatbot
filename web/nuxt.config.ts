@@ -15,6 +15,16 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  // Renders "[1]"/"[1, 2]" citation markers (rewritten into cite:// links by
+  // citationsToLinks(), see app/utils/citationLinks.ts) as icon badges instead
+  // of plain <a> tags — see app/components/ChatCitationLink.global.vue.
+  mdc: {
+    components: {
+      map: {
+        a: 'ChatCitationLink'
+      }
+    }
+  },
   // @nuxt/icon only pre-bundles @nuxt/ui's own default icons (menu,
   // chevron-*, check, x, ...) unless told to scan the app for the rest.
   // Without this, icons we reference ourselves (e.g. i-lucide-graduation-cap,

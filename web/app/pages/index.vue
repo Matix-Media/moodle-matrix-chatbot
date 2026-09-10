@@ -188,7 +188,7 @@ function onSwitchSession(id: string) {
                 v-if="message.role === 'assistant'"
                 class="chat-markdown"
               >
-                <MDC :value="part.text" />
+                <MDC :value="citationsToLinks(part.text, message.citations ?? [])" />
               </div>
               <p
                 v-else
@@ -211,9 +211,9 @@ function onSwitchSession(id: string) {
                 variant="soft"
                 color="neutral"
                 size="xs"
-                icon="i-lucide-external-link"
+                :icon="citationSource(citation.url).icon"
               >
-                {{ citation.header_text }}
+                [{{ citation.index }}] {{ citation.header_text }}
               </UButton>
             </div>
 
