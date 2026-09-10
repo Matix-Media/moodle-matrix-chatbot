@@ -12,12 +12,17 @@ Matrix chat messages routinely contain teacher/student names and email addresses
 for generation.
 
 This feature replaces person names and email addresses with stable, deterministic tokens before
-any text reaches an embedding call, an LLM prompt, or the on-disk search index — while keeping
-the system able to answer a question like "what's the teacher's email?" with the real value.
-The real value is substituted back in locally, after the Gemini call returns, using a reversible
-mapping that never leaves the machine. This is tokenization, not blind redaction: retrieval
-still works because the same real-world entity always produces the same token, both when it was
-indexed and when a student's question mentions it.
+any text reaches an embedding call or an LLM prompt — while keeping the system able to answer a
+question like "what's the teacher's email?" with the real value. The real value is substituted
+back in locally, after the Gemini call returns, using a reversible mapping that never leaves the
+machine. This is tokenization, not blind redaction.
+
+**Threat model: the cloud provider, and only the cloud provider.** The local SQLite index is
+inside the trust boundary. It has to be — `pii_tokens` stores every entity's plaintext
+`original` in that same file, so tokenizing the rest of it protects nothing while the decoder
+ring sits next to it. Anyone who can read `index.db` can already resolve every token. The
+boundary that means something is egress, so that is where the guarantee is enforced (AC-25
+onward), and the index stores raw text so retrieval can do its job (AC-13).
 
 Off by default behind a config flag; enabling it on an existing deployment requires one
 one-time reindex.
@@ -139,6 +144,15 @@ boundary that actually matters is egress to Gemini, so that is where the guarant
   row rather than embed it, and `_hydrate` tokenizes on the fly instead of returning raw text.
   `row["text_tokenized"] or row["text"]` is exactly the "trust the caller" mistake this boundary
   exists to remove.
+- `AC-36` A `SearchHit` always carries the tokenized view. It is consumed directly by reranking,
+  CRAG scoring, the follow-up hop and the answer prompt, none of which pass through any later
+  tokenization step, so the raw columns never leave SQL.
+- `AC-37` Retrieval sends each half of the hybrid the form it needs: the tokenized query is
+  embedded (the vectors it is compared against were built from tokenized chunk text, so both
+  sides must agree), while BM25 — which runs entirely locally against the raw `chunks_fts` — is
+  given the detokenized query. The name in that lexical query is restored from the token map
+  rather than reproduced by the model, so a rewrite that mangles every surrounding word still
+  searches for a correctly spelled name.
 - `AC-38` `tokenize()` runs the same gazetteer as a second pass after NER, so a name already
   known from anywhere in the corpus is caught even where the model misses it. The German NER
   model is trained on capitalized prose — which Moodle documents are — while a student's
@@ -146,15 +160,6 @@ boundary that actually matters is egress to Gemini, so that is where the guarant
   on exactly the side that carries a live leak. Detection therefore improves as the corpus is
   indexed; the token itself stays a pure function of `(entity_type, normalized_text)`, so AC-2
   is unaffected, as is idempotency (AC-6).
-- `AC-37` Retrieval sends each half of the hybrid the form it needs: the tokenized query is
-  embedded (the vectors it is compared against were built from tokenized chunk text, so both
-  sides must agree), while BM25 — which runs entirely locally against the raw `chunks_fts` — is
-  given the detokenized query. The name in that lexical query is restored from the token map
-  rather than reproduced by the model, so a rewrite that mangles every surrounding word still
-  searches for a correctly spelled name.
-- `AC-36` A `SearchHit` always carries the tokenized view. It is consumed directly by reranking,
-  CRAG scoring, the follow-up hop and the answer prompt, none of which pass through any later
-  tokenization step, so the raw columns never leave SQL.
 
 ### Prompt-facing aliases
 
