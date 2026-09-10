@@ -912,6 +912,15 @@ class Store:
             for r in self.connection.execute("SELECT token, original FROM pii_tokens")
         }
 
+    def pii_normalized(self, entity_type: str) -> list[str]:
+        """Every normalized value of one entity type — the egress gazetteer's source."""
+        return [
+            r[0]
+            for r in self.connection.execute(
+                "SELECT normalized FROM pii_tokens WHERE entity_type=?", (entity_type,)
+            )
+        ]
+
     # ------------------------------------------------------------------ #
 
     @staticmethod

@@ -12,13 +12,16 @@ from bsbot.eval.golden import GoldenQuestion
 from bsbot.eval.runner import PRESETS, run_benchmark
 from bsbot.export import export_all
 from bsbot.index.search import HybridSearcher, SearchHit
-from bsbot.index.store import Store
+from bsbot.index.store import Store, content_sha256
 from bsbot.ingest.fetcher import FetchResult
 from bsbot.ingest.indexer import Indexer
 from bsbot.ingest.model import ContentItem, ContentKind
+from bsbot.llm.embed import TASK_DOCUMENT, GeminiEmbedder
 from bsbot.pii import build_pii_tokenizer
+from bsbot.pii.guard import GuardedLLM
 from bsbot.pii.tokenizer import (
     PiiTokenizer,
+    fold,
     make_token,
     normalize_email,
     normalize_person,
@@ -80,17 +83,22 @@ class FakePiiStore:
 
     def __init__(self) -> None:
         self._map: dict[str, str] = {}
+        self._normalized: dict[str, tuple[str, str]] = {}
 
     def upsert_pii_token(
         self, token: str, entity_type: str, normalized: str, original: str
     ) -> None:
         self._map.setdefault(token, original)
+        self._normalized[token] = (entity_type, normalized)
 
     def pii_original(self, token: str) -> str | None:
         return self._map.get(token)
 
     def all_pii_tokens(self) -> dict[str, str]:
         return dict(self._map)
+
+    def pii_normalized(self, entity_type: str) -> list[str]:
+        return [n for kind, n in self._normalized.values() if kind == entity_type]
 
 
 def hit(chunk_id: int, text: str, **kw: Any) -> SearchHit:
@@ -132,6 +140,17 @@ class FakeLLM:
     ) -> str:
         self.prompts.append((purpose, prompt))
         return self._responses.get(purpose, "OK. [1]")
+
+
+class _FakeEmbedAPI:
+    """Records the texts an embed call actually put on the wire."""
+
+    def __init__(self) -> None:
+        self.batches: list[list[str]] = []
+
+    def embed(self, *, texts: list[str], task_type: str, dim: int) -> list[list[float]]:
+        self.batches.append(list(texts))
+        return [[1.0, 0.0] for _ in texts]
 
 
 class SpyLLM:
@@ -509,6 +528,101 @@ class TestPipeline:
 # --------------------------------------------------------------------------- #
 # Egress boundary
 # --------------------------------------------------------------------------- #
+
+
+class TestEgressGuard:
+    @staticmethod
+    def _seeded(*names: str) -> tuple[PiiTokenizer, FakePiiStore]:
+        """A tokenizer whose store already knows ``names``, but whose NER tags nothing."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp([]))
+        for name in names:
+            normalized = normalize_person(name)
+            store_.upsert_pii_token(make_token("PERSON", normalized), "PERSON", normalized, name)
+        return tok, store_
+
+    def test_fold_is_length_preserving(self) -> None:
+        """AC-28: offsets in folded space must index the original text."""
+        for text in ["Müller", "Straße", "Max Müller", "ÄÖÜ", "José"]:
+            assert len(fold(text)) == len(text)
+
+    def test_scrub_catches_a_name_ner_missed(self) -> None:
+        """AC-26, AC-28: a terse lowercase question is exactly where the German NER
+        model — trained on capitalized prose — fails, and that failure would send a
+        real name to Gemini."""
+        tok, _ = self._seeded("Max Müller")
+
+        scrubbed, caught = tok.scrub("wer ist eigentlich max muller?")
+
+        assert caught == 1
+        assert "muller" not in scrubbed
+        assert make_token("PERSON", normalize_person("Max Müller")) in scrubbed
+
+    def test_scrub_catches_an_untokenized_email(self) -> None:
+        """AC-26"""
+        tok, _ = self._seeded()
+
+        scrubbed, caught = tok.scrub("schreib an mueller@schule.de")
+
+        assert caught == 1
+        assert "mueller@schule.de" not in scrubbed
+
+    def test_scrub_leaves_single_word_names_alone(self) -> None:
+        """AC-27: `klein` is a known surname *and* an everyday German word, and this
+        pass runs over whole prompts including instruction templates."""
+        tok, _ = self._seeded("Klein")
+
+        scrubbed, caught = tok.scrub("Das ist ein kleines Problem, klein aber fein.")
+
+        assert caught == 0
+        assert scrubbed == "Das ist ein kleines Problem, klein aber fein."
+
+    def test_scrub_leaves_clean_text_untouched(self) -> None:
+        """AC-26: the guard must be inert when everything upstream did its job."""
+        tok, _ = self._seeded("Max Müller")
+        prompt = "Beantworte die Frage nur aus dem Kontext. [QUELLE 1] Die Prüfung ist am 15.03."
+
+        scrubbed, caught = tok.scrub(prompt)
+
+        assert caught == 0
+        assert scrubbed == prompt
+
+    def test_embedder_scrubs_before_the_cache_key_and_the_log(self, store: Store) -> None:
+        """AC-29: a guard sitting at the `EmbedAPI` boundary would still leave a
+        cache keyed on the raw text and a request log echoing it."""
+        normalized = normalize_person("Max Müller")
+        store.upsert_pii_token(make_token("PERSON", normalized), "PERSON", normalized, "Max Müller")
+        api = _FakeEmbedAPI()
+        embedder = GeminiEmbedder(
+            api,
+            store=store,
+            model="m",
+            dim=2,
+            rpm=0,
+            pii_tokenizer=PiiTokenizer(store, nlp=FakeNlp([])),
+        )
+
+        embedder.embed_documents(["kontakt: max muller"])
+
+        sent = api.batches[0][0]
+        assert "muller" not in sent
+        assert make_token("PERSON", normalized) in sent
+        assert store.cached_embedding(content_sha256(sent), "m", 2, TASK_DOCUMENT) is not None
+
+    def test_guarded_llm_scrubs_the_prompt_before_it_reaches_the_model(self) -> None:
+        """AC-26: the whole point is that a caller which forgot to tokenize is
+        caught by the boundary rather than trusted."""
+        tok, _ = self._seeded("Max Müller")
+        inner = FakeLLM(responses={"answer": "OK."})
+
+        result = GuardedLLM(inner, tok).generate(
+            "Wer ist Max Müller?", system="Du bist ein Assistent.", purpose="answer"
+        )
+
+        assert result == "OK."
+        sent = inner.prompts[0][1]
+        assert "Max Müller" not in sent
+        assert make_token("PERSON", normalize_person("Max Müller")) in sent
 
 
 class TestBenchmarkJudge:

@@ -27,6 +27,7 @@ from bsbot.logging import configure_logging
 from bsbot.moodle.client import MoodleClient
 from bsbot.moodle.errors import MoodleError
 from bsbot.pii import build_pii_tokenizer
+from bsbot.pii.guard import GuardedLLM
 from bsbot.rag.pipeline import AnswerPipeline
 
 app = typer.Typer(
@@ -305,6 +306,7 @@ def index(
                             batch_size=gemini_cfg.embed_batch_size,
                             rpm=gemini_cfg.embed_rpm,
                             items_per_minute=gemini_cfg.embed_items_per_minute,
+                            pii_tokenizer=pii_tok,
                         )
 
                         def embedder_fn(texts: list[str]) -> list[list[float]]:
@@ -325,7 +327,11 @@ def index(
                     store,
                     fetcher,
                     ocr=ocr_hook,
-                    llm=gemini_client,
+                    llm=(
+                        GuardedLLM(gemini_client, pii_tok)
+                        if gemini_client is not None and pii_tok is not None
+                        else gemini_client
+                    ),
                     utility_model=settings.gemini.utility_model if gemini_client else None,
                     aliases=aliases,
                     moodle_host=urlsplit(moodle.base_url).netloc,
@@ -382,6 +388,7 @@ def embed(
             batch_size=batch or gemini.embed_batch_size,
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
+            pii_tokenizer=build_pii_tokenizer(settings, store),
         )
         typer.echo(f"embedding {len(rows)} chunks...")
         vectors = embedder.embed_documents([r["text"] for r in rows], skip_failures=True)
@@ -456,6 +463,7 @@ def search(
     configure_logging("WARNING")
 
     with Store(settings.index_db, embed_dim=settings.gemini.embed_dim) as store:
+        pii_tok = build_pii_tokenizer(settings, store)
         embedder = None
         if not keyword_only:
             try:
@@ -467,11 +475,11 @@ def search(
                     dim=gemini.embed_dim,
                     batch_size=gemini.embed_batch_size,
                     rpm=gemini.embed_rpm,
+                    pii_tokenizer=pii_tok,
                 )
             except ConfigError:
                 typer.secho("no Gemini key: keyword-only search", fg=typer.colors.YELLOW)
 
-        pii_tok = build_pii_tokenizer(settings, store)
         hits = HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok).search(
             query, limit=limit
         )
@@ -522,7 +530,11 @@ def ask(
         return
 
     with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
+        pii_tok = build_pii_tokenizer(settings, store)
         client = GeminiClient(gemini)
+        # Every prompt and every embedded text passes the egress guard, so a
+        # call site that forgets to tokenize is caught instead of trusted.
+        llm = GuardedLLM(client, pii_tok) if pii_tok is not None else client
         embedder = GeminiEmbedder(
             client,
             store=store,
@@ -531,11 +543,11 @@ def ask(
             batch_size=gemini.embed_batch_size,
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
+            pii_tokenizer=pii_tok,
         )
-        pii_tok = build_pii_tokenizer(settings, store)
         pipeline = AnswerPipeline(
             HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
-            client,
+            llm,
             expand=not no_expand,
             rerank=not no_rerank,
             followup=not no_followup,
@@ -658,7 +670,11 @@ def bench(
         selected = {n: PRESETS[n] for n in names}
 
     with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
+        pii_tok = build_pii_tokenizer(settings, store)
         client = GeminiClient(gemini)
+        # Every prompt and every embedded text passes the egress guard, so a
+        # call site that forgets to tokenize is caught instead of trusted.
+        llm = GuardedLLM(client, pii_tok) if pii_tok is not None else client
         embedder = GeminiEmbedder(
             client,
             store=store,
@@ -667,8 +683,8 @@ def bench(
             batch_size=gemini.embed_batch_size,
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
+            pii_tokenizer=pii_tok,
         )
-        pii_tok = build_pii_tokenizer(settings, store)
         searcher = HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok)
 
         as_of_note = f" (as of {as_of})" if as_of else ""
@@ -687,7 +703,7 @@ def bench(
         report = run_benchmark(
             golden_set,
             searcher,
-            client,
+            llm,
             presets=selected,
             judge=judge,
             pipeline_kwargs=pipeline_kwargs,
@@ -724,7 +740,11 @@ def chat(
         return
 
     with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
+        pii_tok = build_pii_tokenizer(settings, store)
         client = GeminiClient(gemini)
+        # Every prompt and every embedded text passes the egress guard, so a
+        # call site that forgets to tokenize is caught instead of trusted.
+        llm = GuardedLLM(client, pii_tok) if pii_tok is not None else client
         embedder = GeminiEmbedder(
             client,
             store=store,
@@ -733,11 +753,11 @@ def chat(
             batch_size=gemini.embed_batch_size,
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
+            pii_tokenizer=pii_tok,
         )
-        pii_tok = build_pii_tokenizer(settings, store)
         pipeline = AnswerPipeline(
             HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
-            client,
+            llm,
             decompose=True,
             step_back=True,
             crag=True,

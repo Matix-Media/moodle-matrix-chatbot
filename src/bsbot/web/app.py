@@ -31,6 +31,7 @@ from bsbot.ingest.indexer import Indexer
 from bsbot.llm.embed import GeminiEmbedder
 from bsbot.llm.gemini import GeminiClient
 from bsbot.pii import build_pii_tokenizer
+from bsbot.pii.guard import GuardedLLM
 from bsbot.rag.pipeline import AnswerPipeline
 from bsbot.web.rate_limit import RateLimiter
 from bsbot.web.routes import ask, crawl, embed, fetch_cache, ingest_message, segments
@@ -61,7 +62,11 @@ def create_app(settings: Settings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
+            pii_tok = build_pii_tokenizer(settings, store)
             client = GeminiClient(gemini)
+            # Every prompt and every embedded text passes the egress guard, so a
+            # call site that forgets to tokenize is caught instead of trusted.
+            llm = GuardedLLM(client, pii_tok) if pii_tok is not None else client
             embedder = GeminiEmbedder(
                 client,
                 store=store,
@@ -70,8 +75,8 @@ def create_app(settings: Settings) -> FastAPI:
                 batch_size=gemini.embed_batch_size,
                 rpm=gemini.embed_rpm,
                 items_per_minute=gemini.embed_items_per_minute,
+                pii_tokenizer=pii_tok,
             )
-            pii_tok = build_pii_tokenizer(settings, store)
             app.state.store = store
             app.state.embedder = embedder
             app.state.pii_tokenizer = pii_tok
@@ -84,7 +89,7 @@ def create_app(settings: Settings) -> FastAPI:
             )
             app.state.pipeline = AnswerPipeline(
                 HybridSearcher(store, embedder=embedder, pii_tokenizer=pii_tok),
-                client,
+                llm,
                 decompose=True,
                 step_back=True,
                 crag=True,

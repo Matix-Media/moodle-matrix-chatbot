@@ -111,6 +111,20 @@ boundary that actually matters is egress to Gemini, so that is where the guarant
   own caller. Specifically the benchmark judge: its golden question, expected keywords and
   answer text all reach Gemini after the pipeline's protection has ended, since `Answer.text`
   has already been detokenized by `_finalise` at that point.
+- `AC-26` Tokenization by callers is backed by a guard at the egress boundary itself: every
+  prompt reaching the LLM and every text reaching the embedding API is scrubbed against a
+  gazetteer of already-known entities plus the email regex, and a non-zero catch is logged. The
+  guard is a net, not a replacement — it can only find entities the system has already seen, so
+  it never removes the caller's obligation to tokenize.
+- `AC-27` The gazetteer contains only multi-word person names. A bare surname is frequently an
+  ordinary German word (`Klein`, `Berg`, `Neu`) and the guard runs over whole formatted prompts,
+  so single-token entries would corrupt unrelated text; `max müller` as a phrase carries no such
+  risk.
+- `AC-28` The gazetteer matches case- and diacritic-insensitively, so a question typed
+  `wer ist max muller` is caught against a stored `Max Müller`.
+- `AC-29` For the embedding path the scrub happens before the content hash and before the
+  request log line, not merely before the API call — the cache must key off exactly what is
+  sent (see Notes), and the `embed.request` log echoes the same strings.
 
 ## Non-goals
 
