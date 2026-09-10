@@ -73,7 +73,12 @@ _STRIP_CHARS = " -–—•\t\r\n0123456789.)"
 
 class SearcherLike(Protocol):
     def search(
-        self, query: str, *, limit: int = 12, room_id: str | None = None
+        self,
+        query: str,
+        *,
+        limit: int = 12,
+        room_id: str | None = None,
+        target_date: date | None = None,
     ) -> list[SearchHit]: ...
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]: ...
 
@@ -233,7 +238,25 @@ class AnswerPipeline:
             if step_back and step_back not in queries:
                 queries.append(step_back)
 
-        hits = self._retrieve(search_question, queries, room_id=room_id)
+        # Resolve a relative date reference ("nächste Woche Montag") against the
+        # school's real clock *before* retrieval, not only afterwards in `_boost`.
+        # Every query variant above is a semantic paraphrase — none of them ever
+        # contains the literal date a Blockplan chunk is written against, so BM25
+        # (which finds a date "lexical needle" exactly, see search.py) never got a
+        # query that could match it. Appending the resolved date itself as its own
+        # query term is what actually gives retrieval a chance, on top of `_boost`
+        # reordering and `_date_search`'s SQL-level match in the searcher.
+        target_date = (
+            _detect_target_date(search_question, self._clock().date()) if search_question else None
+        )
+        if target_date is not None:
+            date_terms = (f"{target_date:%d.%m.%Y}", f"{target_date:%Y-%m-%d}")
+            for term in date_terms:
+                if term not in queries:
+                    queries.append(term)
+            log.info("rag.date_detected", target_date=target_date.isoformat(), terms=date_terms)
+
+        hits = self._retrieve(search_question, queries, room_id=room_id, target_date=target_date)
         log.info(
             "rag.retrieved",
             queries=queries,
@@ -269,7 +292,9 @@ class AnswerPipeline:
                 followup_query = self._followup_query(search_question, hits[: self._max_context])
                 if followup_query:
                     queries = [*queries, followup_query]
-                    retried = self._retrieve(search_question, queries, room_id=room_id)
+                    retried = self._retrieve(
+                        search_question, queries, room_id=room_id, target_date=target_date
+                    )
                     log.info("rag.followup", query=followup_query, hits=len(retried))
                     if retried:
                         hits, confident = self._reranked(search_question, retried)
@@ -473,28 +498,52 @@ class AnswerPipeline:
         variants = [v for v in variants if v and v.lower() != question.lower()][: self._expansions]
         return _keeping_pii_entities(question, variants)
 
+    def _search_one(
+        self, query: str, *, room_id: str | None, target_date: date | None
+    ) -> list[SearchHit]:
+        """Call the searcher, degrading kwarg by kwarg on ``TypeError`` so a
+        ``SearcherLike`` that predates ``target_date`` (or ``room_id``) — a test
+        double, an older adapter — still works unmodified, the same way the
+        ``room_id`` fallback always has.
+        """
+        kwargs: dict[str, object] = {"limit": self._per_query_limit}
+        if room_id is not None:
+            kwargs["room_id"] = room_id
+        if target_date is not None:
+            kwargs["target_date"] = target_date
+        while True:
+            try:
+                return self._searcher.search(query, **kwargs)  # type: ignore[arg-type]
+            except TypeError:
+                if "target_date" in kwargs:
+                    del kwargs["target_date"]
+                elif "room_id" in kwargs:
+                    del kwargs["room_id"]
+                else:
+                    raise
+
     def _retrieve(
-        self, question: str, queries: list[str], *, room_id: str | None = None
+        self,
+        question: str,
+        queries: list[str],
+        *,
+        room_id: str | None = None,
+        target_date: date | None = None,
     ) -> list[SearchHit]:
         """Retrieve per query, fuse, boost, and diversify.
 
         Each query variant is fetched at ``per_query_limit`` — wider than the final
         candidate count (AC-16) — so a document that ranks just outside the cutoff
         for every individual query still has a chance to surface once boosting and
-        diversification run over the combined pool.
+        diversification run over the combined pool. ``target_date``, if given, is
+        also passed to the searcher itself (see ``HybridSearcher._date_search``) so
+        a chunk naming that date can enter the pool independent of how any query
+        variant's keyword/vector match happened to rank it.
         """
         ranked_lists: list[list[str]] = []
         by_id: dict[str, SearchHit] = {}
         for query in queries:
-            if room_id is not None:
-                try:
-                    hits = self._searcher.search(
-                        query, limit=self._per_query_limit, room_id=room_id
-                    )
-                except TypeError:
-                    hits = self._searcher.search(query, limit=self._per_query_limit)
-            else:
-                hits = self._searcher.search(query, limit=self._per_query_limit)
+            hits = self._search_one(query, room_id=room_id, target_date=target_date)
             ranked_lists.append([str(h.chunk_id) for h in hits])
             for h in hits:
                 by_id.setdefault(str(h.chunk_id), h)
@@ -507,7 +556,7 @@ class AnswerPipeline:
                 found.score = score
                 scored.append(found)
 
-        boosted = _boost(question, scored, today=self._clock().date())
+        boosted = _boost(question, scored, today=self._clock().date(), target_date=target_date)
         diversified = _diversify(boosted, max_per_document=self._max_per_document)
         return diversified[: self._candidates]
 
@@ -741,7 +790,9 @@ def _detect_target_date(question: str, today: date) -> date | None:
     return None
 
 
-def _boost(question: str, hits: list[SearchHit], *, today: date) -> list[SearchHit]:
+def _boost(
+    question: str, hits: list[SearchHit], *, today: date, target_date: date | None = None
+) -> list[SearchHit]:
     """Rank candidates matching an explicit signal in the question first (AC-18
     for Lernfeld; the date case is the same idea applied to schedule documents).
 
@@ -750,10 +801,15 @@ def _boost(question: str, hits: list[SearchHit], *, today: date) -> list[SearchH
     says "2026-08-24" — a generic retriever has no way to know either one matters
     more than topical similarity, so whichever the question actually names is
     honoured over whatever BM25/embedding scores happened to produce.
+
+    ``target_date`` is normally passed in already resolved by the caller (single
+    source of truth with the queries/searcher-filter use of the same date); it is
+    only re-detected here when a caller (e.g. a direct test) doesn't have it yet.
     """
     lernfeld = _detect_named_lernfeld(question)
     lernfeld_needles = _lernfeld_needles(lernfeld) if lernfeld else ()
-    target_date = _detect_target_date(question, today)
+    if target_date is None:
+        target_date = _detect_target_date(question, today)
     date_needles = (f"{target_date:%Y-%m-%d}", f"{target_date:%d.%m.%Y}") if target_date else ()
 
     def sort_key(hit: SearchHit) -> tuple[bool, bool, float]:
