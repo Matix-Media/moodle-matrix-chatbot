@@ -122,9 +122,18 @@ class FakeSearcher:
     def __init__(self, hits: list[SearchHit]) -> None:
         self._hits = hits
         self.queries: list[str] = []
+        self.lexical_queries: list[str] = []
 
-    def search(self, query: str, *, limit: int = 8, room_id: str | None = None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 8,
+        room_id: str | None = None,
+        lexical_query: str | None = None,
+    ) -> list[SearchHit]:
         self.queries.append(query)
+        self.lexical_queries.append(lexical_query if lexical_query is not None else query)
         return self._hits[:limit]
 
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]:
@@ -651,6 +660,39 @@ class TestEgressGuard:
         sent = inner.prompts[0][1]
         assert "Max Müller" not in sent
         assert make_token("PERSON", normalize_person("Max Müller")) in sent
+
+
+class TestQueryPathSplit:
+    def test_bm25_gets_real_words_while_the_vector_half_gets_tokens(self) -> None:
+        """AC-37: the two halves of hybrid retrieval need opposite forms — BM25
+        runs locally against raw text, the vectors were built from tokenized text."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(
+            searcher, FakeLLM(), expand=False, rerank=False, pii_tokenizer=tok
+        )
+
+        pipeline.answer("Wann hat Herr Mueller Sprechstunde?")
+
+        assert "Herr Mueller" not in searcher.queries[0]
+        assert "⟦PIIPERSON" in searcher.queries[0]
+        assert "Herr Mueller" in searcher.lexical_queries[0]
+
+    def test_a_name_survives_a_rewrite_that_mangles_everything_around_it(self) -> None:
+        """AC-37: the name in the lexical query comes from our own token map, not
+        from the model reproducing it — which is the whole reason aliasing and the
+        raw index compose."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        # The expansion keeps the alias but rewrites all the surrounding words.
+        llm = FakeLLM(responses={"expand": "Sprechzeiten von ⟦PERSON_A⟧ im Sekretariat"})
+        pipeline = AnswerPipeline(searcher, llm, expand=True, rerank=False, pii_tokenizer=tok)
+
+        pipeline.answer("Wann hat Herr Mueller Sprechstunde?")
+
+        assert any("Sprechzeiten" in q and "Herr Mueller" in q for q in searcher.lexical_queries)
 
 
 class TestUnmigratedChunks:

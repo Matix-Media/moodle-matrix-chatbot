@@ -42,7 +42,9 @@ class FakeSearcher:
         self._neighbors_by_chunk_id = neighbors_by_chunk_id or {}
         self.queries: list[str] = []
 
-    def search(self, query: str, *, limit: int = 8) -> list[SearchHit]:
+    def search(
+        self, query: str, *, limit: int = 8, lexical_query: str | None = None
+    ) -> list[SearchHit]:
         self.queries.append(query)
         return self._hits[:limit]
 

@@ -202,8 +202,15 @@ class _RecordingSearcher:
         self._inner = inner
         self.recorded: list[SearchHit] = []
 
-    def search(self, query: str, *, limit: int = 12, room_id: str | None = None) -> list[SearchHit]:
-        hits = self._inner.search(query, limit=limit, room_id=room_id)
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 12,
+        room_id: str | None = None,
+        lexical_query: str | None = None,
+    ) -> list[SearchHit]:
+        hits = self._inner.search(query, limit=limit, room_id=room_id, lexical_query=lexical_query)
         self.recorded.extend(hits)
         return hits
 

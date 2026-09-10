@@ -74,8 +74,15 @@ _STRIP_CHARS = " -–—•\t\r\n0123456789.)"
 
 
 class SearcherLike(Protocol):
+    #: ``lexical_query`` carries the raw (detokenized) form for the local BM25
+    #: half, while ``query`` stays the Gemini-facing form the vector half needs.
     def search(
-        self, query: str, *, limit: int = 12, room_id: str | None = None
+        self,
+        query: str,
+        *,
+        limit: int = 12,
+        room_id: str | None = None,
+        lexical_query: str | None = None,
     ) -> list[SearchHit]: ...
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]: ...
 
@@ -525,15 +532,25 @@ class AnswerPipeline:
         ranked_lists: list[list[str]] = []
         by_id: dict[str, SearchHit] = {}
         for query in queries:
+            # BM25 runs locally against raw text, so it gets the real words back.
+            # Note the name is restored from our own token map, not reproduced by
+            # the model — a rewrite that mangled everything around it still yields
+            # a correctly spelled name here.
+            lexical = self._detok(query)
             if room_id is not None:
                 try:
                     hits = self._searcher.search(
-                        query, limit=self._per_query_limit, room_id=room_id
+                        query,
+                        limit=self._per_query_limit,
+                        room_id=room_id,
+                        lexical_query=lexical,
                     )
                 except TypeError:
                     hits = self._searcher.search(query, limit=self._per_query_limit)
             else:
-                hits = self._searcher.search(query, limit=self._per_query_limit)
+                hits = self._searcher.search(
+                    query, limit=self._per_query_limit, lexical_query=lexical
+                )
             ranked_lists.append([str(h.chunk_id) for h in hits])
             for h in hits:
                 by_id.setdefault(str(h.chunk_id), h)

@@ -139,6 +139,12 @@ boundary that actually matters is egress to Gemini, so that is where the guarant
   row rather than embed it, and `_hydrate` tokenizes on the fly instead of returning raw text.
   `row["text_tokenized"] or row["text"]` is exactly the "trust the caller" mistake this boundary
   exists to remove.
+- `AC-37` Retrieval sends each half of the hybrid the form it needs: the tokenized query is
+  embedded (the vectors it is compared against were built from tokenized chunk text, so both
+  sides must agree), while BM25 — which runs entirely locally against the raw `chunks_fts` — is
+  given the detokenized query. The name in that lexical query is restored from the token map
+  rather than reproduced by the model, so a rewrite that mangles every surrounding word still
+  searches for a correctly spelled name.
 - `AC-36` A `SearchHit` always carries the tokenized view. It is consumed directly by reranking,
   CRAG scoring, the follow-up hop and the answer prompt, none of which pass through any later
   tokenization step, so the raw columns never leave SQL.

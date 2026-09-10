@@ -113,8 +113,27 @@ class HybridSearcher:
         self._depth = candidate_depth
         self._pii_tokenizer = pii_tokenizer
 
-    def search(self, query: str, *, limit: int = 8, room_id: str | None = None) -> list[SearchHit]:
-        keyword_ids = self._keyword_search(query, room_id=room_id)
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 8,
+        room_id: str | None = None,
+        lexical_query: str | None = None,
+    ) -> list[SearchHit]:
+        """Retrieve with the two halves given the form each one needs.
+
+        ``query`` is the Gemini-facing form: it is what gets embedded, and the
+        vectors it is compared against were built from tokenized chunk text, so
+        both sides must be in token space to agree.
+
+        ``lexical_query`` is the raw form, and BM25 runs entirely locally against
+        the raw `chunks_fts` — so it wants real words. That is what restores
+        FTS5's diacritic folding, `fts5_escape`'s prefix matching, and term
+        overlap across documents for names (spec 013 AC-37). Defaults to
+        ``query`` when there is nothing to tokenize.
+        """
+        keyword_ids = self._keyword_search(lexical_query or query, room_id=room_id)
         vector_ids = self._vector_search(query, room_id=room_id)
 
         ranked = reciprocal_rank_fusion([keyword_ids, vector_ids])
