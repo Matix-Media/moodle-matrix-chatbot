@@ -102,6 +102,8 @@ one-time reindex.
   system.
 - Coreference resolution across different surface forms of the same person (see AC-5).
 - spaCy NER recall is not guaranteed — this is a probabilistic filter, not an absolute guarantee.
+  The converse also holds and is not fully solved either: precision on short, context-free
+  fragments is inherently limited (see `PiiTokenizer.tokenize_path` in Notes below).
 
 ## Notes
 
@@ -112,5 +114,15 @@ one-time reindex.
   citation syntax and are not expected to occur in Moodle content.
 - Name detection uses a local, offline spaCy German NER model (`de_core_news_md` by default);
   email detection uses a regex. Both run entirely on the machine — no additional network calls.
+- A breadcrumb (`header_path`, and `course_name`/`module_name`/`title` at query time) is
+  tokenized via `PiiTokenizer.tokenize_path`, which joins the segments and runs NER once over the
+  whole breadcrumb rather than once per segment. Confirmed against the real `de_core_news_md`
+  model: a lone breadcrumb segment ("Bili-Team", "Klassenteam", even the plain word
+  "Stundenplan") is frequently misclassified as `PER` when judged with no surrounding context —
+  German capitalizes every noun, so the capitalization cue the model otherwise leans on carries no
+  signal on a bare fragment. Reading the segment together with its siblings removes these false
+  positives in every case checked, without losing real detections (a genuine name in a breadcrumb,
+  e.g. "Frau Schmidt", is still caught). This is a mitigation, not a guarantee — precision on an
+  isolated single-word segment can still be imperfect.
 - Tokenization must happen before `content_sha256()` is computed for embedding/OCR cache keys,
   so those caches key off exactly what is actually sent to Gemini.

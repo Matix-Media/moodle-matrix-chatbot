@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import date
 from typing import Any
 
 import structlog
@@ -201,8 +202,24 @@ class _RecordingSearcher:
         self._inner = inner
         self.recorded: list[SearchHit] = []
 
-    def search(self, query: str, *, limit: int = 12, room_id: str | None = None) -> list[SearchHit]:
-        hits = self._inner.search(query, limit=limit, room_id=room_id)
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 12,
+        room_id: str | None = None,
+        target_date: date | None = None,
+    ) -> list[SearchHit]:
+        # Degrade kwarg by kwarg on TypeError, same as AnswerPipeline._search_one:
+        # a golden-set run's own SearcherLike double may predate `target_date` (or
+        # `room_id`) without that being a reason to fail every question.
+        try:
+            hits = self._inner.search(query, limit=limit, room_id=room_id, target_date=target_date)
+        except TypeError:
+            try:
+                hits = self._inner.search(query, limit=limit, room_id=room_id)
+            except TypeError:
+                hits = self._inner.search(query, limit=limit)
         self.recorded.extend(hits)
         return hits
 
