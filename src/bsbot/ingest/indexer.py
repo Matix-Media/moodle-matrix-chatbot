@@ -298,7 +298,10 @@ class Indexer:
                 segments = [
                     replace(seg, text=self._pii_tokenizer.tokenize(seg.text)) for seg in segments
                 ]
-            header_path = [self._pii_tokenizer.tokenize(p) for p in document.header_path]
+            # Tokenized together, not segment-by-segment: a lone breadcrumb
+            # segment is too short and context-free for spaCy's NER to judge
+            # reliably (see `PiiTokenizer.tokenize_path`).
+            header_path = self._pii_tokenizer.tokenize_path(document.header_path)
             title = self._pii_tokenizer.tokenize(document.title)
 
         chunks = (

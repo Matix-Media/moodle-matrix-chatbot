@@ -267,9 +267,13 @@ class HybridSearcher:
         # untokenized on every query, independent of anything done at ingest time.
         if self._pii_tokenizer is not None:
             for hit in hits:
-                hit.course_name = self._pii_tokenizer.tokenize(hit.course_name)
-                hit.module_name = self._pii_tokenizer.tokenize(hit.module_name)
-                hit.title = self._pii_tokenizer.tokenize(hit.title)
+                # Tokenized together, not field-by-field: each field alone is a
+                # short, context-free fragment that spaCy's NER judges poorly
+                # (see `PiiTokenizer.tokenize_path`) — course_name/module_name/
+                # title form the same breadcrumb shape as `header_path` above.
+                hit.course_name, hit.module_name, hit.title = self._pii_tokenizer.tokenize_path(
+                    [hit.course_name, hit.module_name, hit.title]
+                )
         return hits
 
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]:
