@@ -28,9 +28,11 @@ export function citationsToLinks(text: string, citations: Citation[]): string {
   return text.replace(CITATION_GROUP_RE, (match, group: string) => {
     const numbers = group.match(/\d+/g)
     if (!numbers) return match
-    const matched = numbers
-      .map(n => byIndex.get(Number(n)))
-      .filter((c): c is Citation => c !== undefined)
+    const matched = dedupeCitations(
+      numbers
+        .map(n => byIndex.get(Number(n)))
+        .filter((c): c is Citation => c !== undefined)
+    )
     return matched.length ? citationGroupLink(matched) : match
   })
 }

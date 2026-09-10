@@ -199,6 +199,11 @@ class CourseCrawler:
             items.extend(self._walk_module(course_id, course_name, section_name, module))
         return items
 
+    def _course_module_url(self, course_id: int, module_id: int) -> str | None:
+        if not self._moodle_host:
+            return None
+        return f"https://{self._moodle_host}/course/view.php?id={course_id}#module-{module_id}"
+
     def _walk_module(
         self, course_id: int, course_name: str, section_name: str, module: dict[str, Any]
     ) -> list[ContentItem]:
@@ -212,7 +217,12 @@ class CourseCrawler:
             "module_id": module_id,
             "module_name": module_name,
             "modname": modname,
-            "module_url": module.get("url"),
+            # A label (and, in principle, any module type Moodle omits "url" for)
+            # has no view.php page of its own — it only exists as content on the
+            # course page itself — so fall back to a deep link there instead of
+            # leaving citations for it unclickable. `#module-<id>` is the anchor
+            # Moodle's course renderer puts on every activity/resource node.
+            "module_url": module.get("url") or self._course_module_url(course_id, module_id),
         }
         path = [course_name, section_name, module_name]
         mtime = self._module_mtime(module)

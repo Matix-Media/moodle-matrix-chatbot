@@ -63,10 +63,15 @@ const label = computed(() =>
 
     <template #content>
       <div class="citation-card">
-        <div
+        <component
+          :is="entry.u ? 'a' : 'div'"
           v-for="(entry, i) in group"
           :key="i"
+          :href="entry.u ?? undefined"
+          :target="entry.u ? '_blank' : undefined"
+          :rel="entry.u ? 'noopener noreferrer' : undefined"
           class="citation-card__entry"
+          :class="{ 'citation-card__entry--link': entry.u }"
         >
           <div class="citation-card__header">
             <UIcon
@@ -84,7 +89,7 @@ const label = computed(() =>
           >
             {{ entry.u }}
           </p>
-        </div>
+        </component>
       </div>
     </template>
   </UPopover>
@@ -121,10 +126,17 @@ const label = computed(() =>
   font-size: 0.8rem;
 }
 .citation-card__entry {
+  display: block;
   padding: 0.35rem 0.75rem;
+  color: inherit;
+  text-decoration: none;
 }
 .citation-card__entry + .citation-card__entry {
   border-top: 1px solid var(--ui-border);
+}
+.citation-card__entry--link:hover {
+  background-color: var(--ui-bg-elevated);
+  cursor: pointer;
 }
 .citation-card__header {
   display: flex;

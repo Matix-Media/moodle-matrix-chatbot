@@ -22,3 +22,27 @@ export function citationSource(url: string | null): CitationSource {
   }
   return MOODLE_SOURCE
 }
+
+/**
+ * Collapse citations that resolve to the same underlying document. The
+ * retrieval pipeline can surface more than one chunk of the same page as
+ * separate hits (see `AnswerPipeline._finalise` / `max_per_document` in
+ * src/bsbot/rag/pipeline.py), so the model can legitimately cite two
+ * different indices that both point at one source — without this, that
+ * source renders twice (once per index) in the sources list and in the
+ * inline hover card.
+ *
+ * Keyed by url when present (the reliable identity for a document); falls
+ * back to title for the rare linkless citation, since two null-url
+ * citations sharing a title are still the same source as far as the UI can
+ * tell.
+ */
+export function dedupeCitations(citations: Citation[]): Citation[] {
+  const seen = new Set<string>()
+  return citations.filter((c) => {
+    const key = c.url ?? `title:${c.title}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
