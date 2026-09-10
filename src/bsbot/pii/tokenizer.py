@@ -143,7 +143,14 @@ class PiiTokenizer:
         if not text:
             return text
         text = EMAIL_RE.sub(self._replace_email, text)
-        return self._tokenize_persons(text)
+        text = self._tokenize_persons(text)
+        # A second pass over what NER left behind, against names already known
+        # (AC-38). The German model is trained on capitalized prose, which is what
+        # Moodle PDFs are — but a student's question is lowercase, terse chat
+        # ("wer ist max müller"), and that is precisely where it fails. Once a name
+        # has been seen anywhere in the corpus, this catches it everywhere.
+        scrubbed, _ = self.scrub(text)
+        return scrubbed
 
     def _replace_email(self, match: re.Match[str]) -> str:
         original = match.group(0)

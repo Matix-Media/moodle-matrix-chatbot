@@ -595,6 +595,17 @@ class TestEgressGuard:
         assert "muller" not in scrubbed
         assert make_token("PERSON", normalize_person("Max Müller")) in scrubbed
 
+    def test_tokenize_catches_a_known_name_ner_missed(self) -> None:
+        """AC-38: `FakeNlp([])` tags nothing, standing in for the German model on
+        lowercase chat text. The name is still caught, because the corpus already
+        taught the system about it."""
+        tok, _ = self._seeded("Max Müller")
+
+        result = tok.tokenize("wer ist eigentlich max muller?")
+
+        assert "muller" not in result
+        assert make_token("PERSON", normalize_person("Max Müller")) in result
+
     def test_scrub_catches_an_untokenized_email(self) -> None:
         """AC-26"""
         tok, _ = self._seeded()

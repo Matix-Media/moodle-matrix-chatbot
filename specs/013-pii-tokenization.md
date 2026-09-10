@@ -139,6 +139,13 @@ boundary that actually matters is egress to Gemini, so that is where the guarant
   row rather than embed it, and `_hydrate` tokenizes on the fly instead of returning raw text.
   `row["text_tokenized"] or row["text"]` is exactly the "trust the caller" mistake this boundary
   exists to remove.
+- `AC-38` `tokenize()` runs the same gazetteer as a second pass after NER, so a name already
+  known from anywhere in the corpus is caught even where the model misses it. The German NER
+  model is trained on capitalized prose — which Moodle documents are — while a student's
+  question is lowercase and terse (`wer ist max müller`), so detection is systematically weaker
+  on exactly the side that carries a live leak. Detection therefore improves as the corpus is
+  indexed; the token itself stays a pure function of `(entity_type, normalized_text)`, so AC-2
+  is unaffected, as is idempotency (AC-6).
 - `AC-37` Retrieval sends each half of the hybrid the form it needs: the tokenized query is
   embedded (the vectors it is compared against were built from tokenized chunk text, so both
   sides must agree), while BM25 — which runs entirely locally against the raw `chunks_fts` — is
