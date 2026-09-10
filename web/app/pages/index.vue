@@ -204,7 +204,7 @@ function onSwitchSession(id: string) {
                   class="mt-2 flex flex-wrap gap-1.5"
                 >
                   <UButton
-                    v-for="citation in message.citations"
+                    v-for="citation in dedupeCitations(message.citations ?? [])"
                     :key="citation.index"
                     :to="citation.url ?? undefined"
                     :disabled="!citation.url"
