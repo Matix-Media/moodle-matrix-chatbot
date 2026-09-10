@@ -64,14 +64,19 @@ def normalize_email(text: str) -> str:
 
 
 def normalize_person(text: str) -> str:
-    """Case- and whitespace-insensitive key for a person span (AC-4).
+    """Case-, whitespace- and diacritic-insensitive key for a person span (AC-4).
+
+    Diacritics are folded so `Müller` and `Muller` share one token. Without that
+    the two hash differently, and since a hash is what the embedder and the LLM
+    see, a student who types the name without its umlaut — routine on a phone —
+    gets a different entity than the one the corpus recorded.
 
     Deliberately does not merge different surface forms of the same person
     ("Herr Müller" vs "Max Müller") — there is no coreference resolution
     here, see spec 013 AC-5.
     """
     collapsed = " ".join(unicodedata.normalize("NFKC", text).split())
-    return collapsed.casefold()
+    return fold(collapsed)
 
 
 def fold(text: str) -> str:

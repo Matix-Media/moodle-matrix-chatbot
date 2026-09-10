@@ -342,17 +342,33 @@ class TestIndexerProtection:
             assert "mueller@schule.de" not in prompt
             assert "Herr Mueller" not in prompt
 
-    async def test_stored_chunk_text_is_tokenized(self, store: Store) -> None:
-        """AC-13"""
+    async def test_stored_chunk_text_is_raw_with_a_tokenized_twin(self, store: Store) -> None:
+        """AC-13: raw is what FTS5 needs to match real words; the tokenized twin
+        is what is allowed to leave for Gemini."""
         store.persist_crawl([item(text="Kontakt: Herr Mueller, mueller@schule.de")])
         tok = PiiTokenizer(store, nlp=FakeNlp(["Herr Mueller"]))
         await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
 
-        chunk_text = store.chunks_for("a")[0].text
-        assert "mueller@schule.de" not in chunk_text
-        assert "Herr Mueller" not in chunk_text
-        assert "⟦PIIEMAIL" in chunk_text
-        assert "⟦PIIPERSON" in chunk_text
+        row = store.connection.execute(
+            "SELECT text, text_tokenized FROM chunks WHERE doc_id='a'"
+        ).fetchone()
+        assert "Herr Mueller" in row["text"]
+        assert "mueller@schule.de" in row["text"]
+        assert "Herr Mueller" not in row["text_tokenized"]
+        assert "mueller@schule.de" not in row["text_tokenized"]
+        assert "⟦PIIEMAIL" in row["text_tokenized"]
+        assert "⟦PIIPERSON" in row["text_tokenized"]
+
+    async def test_fts_can_match_a_name_without_its_umlaut(self, store: Store) -> None:
+        """AC-13: the point of storing raw — FTS5's `remove_diacritics 2` folding
+        only works if it is given real words to fold."""
+        store.persist_crawl([item(text="Zuständig ist Frau Müller für alle Fragen.")])
+        tok = PiiTokenizer(store, nlp=FakeNlp(["Frau Müller"]))
+        await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
+
+        hits = HybridSearcher(store, embedder=None, pii_tokenizer=tok).search("Muller")
+
+        assert [h.doc_id for h in hits] == ["a"]
 
     async def test_raw_document_row_is_left_untouched(self, store: Store) -> None:
         """AC-13: `documents.text` stays raw, so local export is unaffected."""
@@ -364,8 +380,9 @@ class TestIndexerProtection:
 
 
 class TestMatrixMessageProtection:
-    def test_message_text_is_tokenized_before_storing(self, store: Store) -> None:
-        """AC-14"""
+    def test_message_is_stored_raw_with_a_tokenized_twin(self, store: Store) -> None:
+        """AC-14: consistent with Moodle content now — raw at rest, tokenized only
+        on the way out."""
         tok = PiiTokenizer(store, nlp=FakeNlp([]))
         store.index_matrix_message(
             room_id="!r:example.org",
@@ -376,8 +393,14 @@ class TestMatrixMessageProtection:
             pii_tokenizer=tok,
         )
         doc_id = "matrix:!r:example.org:$1"
-        assert "mueller@schule.de" not in (store.document(doc_id).text or "")
-        assert "⟦PIIEMAIL" in (store.document(doc_id).text or "")
+        assert "mueller@schule.de" in (store.document(doc_id).text or "")
+
+        row = store.connection.execute(
+            "SELECT text, text_tokenized FROM chunks WHERE doc_id=?", (doc_id,)
+        ).fetchone()
+        assert "mueller@schule.de" in row["text"]
+        assert "mueller@schule.de" not in row["text_tokenized"]
+        assert "⟦PIIEMAIL" in row["text_tokenized"]
         # The sender identifier itself is never tokenized.
         chunks = store.chunks_for(doc_id)
         assert chunks[0].meta["sender"] == "@teacher:example.org"
@@ -388,7 +411,7 @@ class TestHydrateBreadcrumb:
         """AC-16"""
         store.persist_crawl([item(course_name="LF05 Herr Mueller", module_name="Skript Mueller")])
         store.replace_chunks(
-            "a", [("Inhalt zum Thema.", {"ordinal": 0})], header_text="LF05 Herr Mueller"
+            "a", [("Inhalt zum Thema.", None, {"ordinal": 0})], header_text="LF05 Herr Mueller"
         )
         tok = PiiTokenizer(store, nlp=FakeNlp(["Herr Mueller"]))
         searcher = HybridSearcher(store, embedder=None, pii_tokenizer=tok)
@@ -630,6 +653,35 @@ class TestEgressGuard:
         assert make_token("PERSON", normalize_person("Max Müller")) in sent
 
 
+class TestUnmigratedChunks:
+    def test_hydrate_tokenizes_a_row_that_has_no_tokenized_twin(self, store: Store) -> None:
+        """AC-35: a NULL predates the migration. Returning the raw column would be
+        the exact "trust the caller" mistake the boundary removes; failing would
+        block answers mid-rollout."""
+        store.persist_crawl([item()])
+        store.replace_chunks("a", [("Kontakt: mueller@schule.de", None, {"ordinal": 0})])
+        tok = PiiTokenizer(store, nlp=FakeNlp([]))
+
+        hits = HybridSearcher(store, embedder=None, pii_tokenizer=tok).search("Kontakt")
+
+        assert hits
+        assert "mueller@schule.de" not in hits[0].text
+        assert "⟦PIIEMAIL" in hits[0].text
+
+    def test_embed_pass_skips_a_row_that_has_no_tokenized_twin(self, store: Store) -> None:
+        """AC-35: never `text_tokenized or text` — that would embed the raw name."""
+        store.persist_crawl([item()])
+        store.replace_chunks("a", [("Kontakt: mueller@schule.de", None, {"ordinal": 0})])
+
+        rows = store.connection.execute(
+            "SELECT c.chunk_id, c.text, c.text_tokenized FROM chunks c "
+            "LEFT JOIN chunks_vec v ON v.chunk_id = c.chunk_id WHERE v.chunk_id IS NULL"
+        ).fetchall()
+        pending = [r for r in rows if r["text_tokenized"] is not None]
+
+        assert rows and not pending
+
+
 class TestPromptAliases:
     def test_round_trip_restores_the_original_token(self) -> None:
         """AC-30"""
@@ -793,7 +845,7 @@ class TestExport:
             store_.persist_crawl([item()])
             store_.replace_chunks(
                 "a",
-                [(f"Kontakt: {email_token}", {"body": f"Kontakt: {email_token}"})],
+                [(f"Kontakt: {email_token}", None, {"body": f"Kontakt: {email_token}"})],
                 header_text="X",
             )
             tok = PiiTokenizer(store_, nlp=FakeNlp([]))

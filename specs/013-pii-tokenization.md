@@ -32,8 +32,11 @@ one-time reindex.
   state.
 - `AC-3` An email address normalizes case-insensitively (`Teacher@Schule.DE` and
   `teacher@schule.de` tokenize identically).
-- `AC-4` A person name normalizes case- and whitespace-insensitively (`Max Müller`,
-  `MAX MÜLLER`, and `  Max   Müller  ` tokenize identically).
+- `AC-4` A person name normalizes case-, whitespace- and diacritic-insensitively (`Max Müller`,
+  `MAX MÜLLER`, `  Max   Müller  ` and `Max Muller` all tokenize identically). Folding
+  diacritics matters because the token is what the embedder and the LLM see: without it a
+  student who drops an umlaut — routine on a phone keyboard — names a different entity than the
+  one the corpus recorded.
 - `AC-5` Different surface forms of the same real person (`Herr Müller` vs `Max Müller`) are
   **not** merged — they tokenize to different tokens. This is a documented limitation, not a
   bug: there is no coreference resolution.
@@ -55,11 +58,17 @@ one-time reindex.
   the embedder with text containing a detectable, untokenized name or email — covering inline
   page text, uploaded-file text, and the course/section/module breadcrumb used as embedding
   context and citation labels.
-- `AC-13` Chunk text written to the store (`chunks.text`, `chunks_fts`) is the tokenized form;
-  the source `documents.text` row is left untouched (raw), so local export is unaffected.
-- `AC-14` A live Matrix moderator message indexed via `index_matrix_message` is tokenized before
-  it is stored or embedded, the same as Moodle content. The Matrix sender ID itself is never
-  tokenized — it is a protocol identifier, not free-text content.
+- `AC-13` Chunk text written to the store (`chunks.text`, `chunks.header_text`, `chunks_fts`,
+  `meta["body"]`) is **raw**, and each has a tokenized twin — `chunks.text_tokenized`,
+  `chunks.header_text_tokenized`, `meta["body_tokenized"]` — which is what may reach Gemini.
+  Storing raw is what lets FTS5 do its job on names: its `remove_diacritics 2` folding and the
+  `*` prefix matching in `fts5_escape` operate on real words, so `Muller` finds `Müller` and
+  BM25 term overlap still links one surname across different documents. `documents.text` stays
+  raw as before.
+- `AC-14` A live Matrix moderator message indexed via `index_matrix_message` is stored raw with
+  a tokenized twin, the same as Moodle content, and its inline embedding call is given the
+  tokenized form. The Matrix sender ID itself is never tokenized — it is a protocol identifier,
+  not free-text content.
 
 ### Query-time protection and answer detokenization
 - `AC-15` A student's question is tokenized before it is used for query condensing,
@@ -125,6 +134,14 @@ boundary that actually matters is egress to Gemini, so that is where the guarant
 - `AC-29` For the embedding path the scrub happens before the content hash and before the
   request log line, not merely before the API call — the cache must key off exactly what is
   sent (see Notes), and the `embed.request` log echoes the same strings.
+- `AC-35` A chunk whose `text_tokenized` is `NULL` predates this migration and has no
+  Gemini-facing form. Readers never fall back to the raw column: the embed passes skip such a
+  row rather than embed it, and `_hydrate` tokenizes on the fly instead of returning raw text.
+  `row["text_tokenized"] or row["text"]` is exactly the "trust the caller" mistake this boundary
+  exists to remove.
+- `AC-36` A `SearchHit` always carries the tokenized view. It is consumed directly by reranking,
+  CRAG scoring, the follow-up hop and the answer prompt, none of which pass through any later
+  tokenization step, so the raw columns never leave SQL.
 
 ### Prompt-facing aliases
 

@@ -372,7 +372,7 @@ def embed(
 
     with Store(settings.index_db, embed_dim=gemini.embed_dim) as store:
         rows = store.connection.execute(
-            "SELECT c.chunk_id, c.text FROM chunks c "
+            "SELECT c.chunk_id, c.text, c.text_tokenized FROM chunks c "
             "LEFT JOIN chunks_vec v ON v.chunk_id = c.chunk_id "
             "WHERE v.chunk_id IS NULL ORDER BY c.chunk_id"
         ).fetchall()
@@ -380,6 +380,7 @@ def embed(
             typer.secho("all chunks already embedded", fg=typer.colors.GREEN)
             return
 
+        pii_tok = build_pii_tokenizer(settings, store)
         embedder = GeminiEmbedder(
             GeminiClient(gemini),
             store=store,
@@ -388,16 +389,31 @@ def embed(
             batch_size=batch or gemini.embed_batch_size,
             rpm=gemini.embed_rpm,
             items_per_minute=gemini.embed_items_per_minute,
-            pii_tokenizer=build_pii_tokenizer(settings, store),
+            pii_tokenizer=pii_tok,
         )
-        typer.echo(f"embedding {len(rows)} chunks...")
-        vectors = embedder.embed_documents([r["text"] for r in rows], skip_failures=True)
+        # Never `r["text_tokenized"] or r["text"]`: a NULL means the row predates
+        # the egress-boundary migration and has no Gemini-facing form yet, so
+        # falling back to the raw column would send real names (AC-35). Skip it —
+        # the next `bsbot index --reset-all` produces one.
+        pending = [r for r in rows if pii_tok is None or r["text_tokenized"] is not None]
+        skipped = len(rows) - len(pending)
+        if skipped:
+            typer.secho(
+                f"skipping {skipped} chunk(s) with no tokenized text — run "
+                "`bsbot index --reset-all` first",
+                fg=typer.colors.YELLOW,
+            )
+        if not pending:
+            return
+        typer.echo(f"embedding {len(pending)} chunks...")
+        texts = [(r["text_tokenized"] if pii_tok is not None else r["text"]) for r in pending]
+        vectors = embedder.embed_documents(texts, skip_failures=True)
         done = 0
-        for row, vector in zip(rows, vectors, strict=True):
+        for row, vector in zip(pending, vectors, strict=True):
             if vector is not None:
                 store.set_embedding(row["chunk_id"], vector)
                 done += 1
-        typer.secho(f"embedded {done}/{len(rows)} chunks", fg=typer.colors.GREEN)
+        typer.secho(f"embedded {done}/{len(pending)} chunks", fg=typer.colors.GREEN)
 
 
 @app.command()

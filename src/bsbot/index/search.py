@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from typing import Protocol
 
 import structlog
@@ -226,6 +227,7 @@ class HybridSearcher:
         rows = self._store.connection.execute(
             f"""
             SELECT c.chunk_id, c.doc_id, c.text, c.meta, c.header_text, c.page,
+                   c.text_tokenized, c.header_text_tokenized,
                    d.course_name, d.module_name, d.module_url, d.title,
                    -- Moodle's timemodified is only trustworthy for content Moodle
                    -- itself owns. For anything reached through an external adapter
@@ -243,13 +245,18 @@ class HybridSearcher:
             """,
             chunk_ids,
         ).fetchall()
+        # PII tokenization (spec 013 AC-13): the `chunks` columns are raw, so that
+        # FTS5 matches real words above — but a `SearchHit` is what reaches rerank,
+        # CRAG scoring, the follow-up hop and the answer prompt, none of which pass
+        # through any later tokenization step. So a hit always carries the
+        # Gemini-facing view, and the raw columns never leave SQL.
         hits = [
             SearchHit(
                 chunk_id=r["chunk_id"],
                 doc_id=r["doc_id"],
-                text=r["text"],
-                body=json.loads(r["meta"]).get("body", "") if r["meta"] else "",
-                header_text=r["header_text"],
+                text=self._safe(r, "text"),
+                body=self._safe_body(r),
+                header_text=self._safe(r, "header_text"),
                 page=r["page"],
                 course_name=r["course_name"],
                 module_name=r["module_name"],
@@ -260,17 +267,40 @@ class HybridSearcher:
             )
             for r in rows
         ]
-        # PII tokenization (spec 013): `course_name`/`module_name`/`title` are read
-        # straight from the raw `documents` table above (chunk text is already
-        # tokenized at write time, but these breadcrumb fields are not derived
-        # from it) — without this, they would reach the LLM prompt and citations
-        # untokenized on every query, independent of anything done at ingest time.
+        # `course_name`/`module_name`/`title` come from the `documents` table, which
+        # is raw by design (AC-13) and has no tokenized twin, so they are tokenized
+        # here rather than read back.
         if self._pii_tokenizer is not None:
             for hit in hits:
                 hit.course_name = self._pii_tokenizer.tokenize(hit.course_name)
                 hit.module_name = self._pii_tokenizer.tokenize(hit.module_name)
                 hit.title = self._pii_tokenizer.tokenize(hit.title)
         return hits
+
+    def _safe(self, row: sqlite3.Row, column: str) -> str:
+        """The tokenized twin of ``column``, tokenizing on the fly if it is missing.
+
+        ``NULL`` means the row predates the egress-boundary migration. Falling
+        back to the raw value would be the exact "trust the caller" mistake this
+        design removes, and failing would block answers mid-rollout — so the row
+        is tokenized here instead (AC-35).
+        """
+        value = str(row[column] or "")
+        if self._pii_tokenizer is None:
+            return value
+        stored = row[f"{column}_tokenized"]
+        return str(stored) if stored is not None else self._pii_tokenizer.tokenize(value)
+
+    def _safe_body(self, row: sqlite3.Row) -> str:
+        if not row["meta"]:
+            return ""
+        meta = json.loads(row["meta"])
+        if self._pii_tokenizer is None:
+            return str(meta.get("body", ""))
+        stored = meta.get("body_tokenized")
+        if stored is not None:
+            return str(stored)
+        return self._pii_tokenizer.tokenize(str(meta.get("body", "")))
 
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]:
         """Chunks within ``radius`` positions of ``chunk_id`` in the same document,

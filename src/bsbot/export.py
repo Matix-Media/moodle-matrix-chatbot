@@ -291,15 +291,12 @@ def export_all(
 
     for idx, doc in enumerate(documents, start=1):
         md_content, plain_content = extract_document_markdown(doc, store, blobs_dir)
-        # PII tokenization (spec 013): export is a local, explicitly user-triggered
-        # action that never leaves the machine, so real values are what's wanted
-        # here — resolve any token back to its real value. Two of the three
-        # sources `extract_document_markdown` can return from are already raw
-        # (inline `documents.text`, blob re-extraction); this is a no-op for
-        # those and only actually resolves anything for the "chunks from the
-        # database" fallback, which is tokenized. Applying it unconditionally
-        # here (rather than only in that one branch) also covers a live Matrix
-        # -message document, whose `documents.text` is itself tokenized.
+        # PII tokenization (spec 013 AC-22): export is a local, user-triggered
+        # action that never leaves the machine, so real values are what is wanted.
+        # Every source `extract_document_markdown` reads from is raw now — inline
+        # `documents.text`, blob re-extraction, and the chunks fallback alike —
+        # so this only has to resolve tokens an older, pre-migration index still
+        # holds in `chunks.text`.
         if pii_tokenizer is not None:
             md_content = pii_tokenizer.detokenize(md_content)
             plain_content = pii_tokenizer.detokenize(plain_content)

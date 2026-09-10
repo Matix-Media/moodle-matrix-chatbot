@@ -44,7 +44,7 @@ def populated(store: Store) -> Store:
     }
     store.persist_crawl([doc(d) for d in corpus])
     for doc_id, (text, vector) in corpus.items():
-        ids = store.replace_chunks(doc_id, [(text, {"ordinal": 0})], header_text="LF05IT › X")
+        ids = store.replace_chunks(doc_id, [(text, None, {"ordinal": 0})], header_text="LF05IT › X")
         store.set_embedding(ids[0], vector)
     return store
 
@@ -150,7 +150,7 @@ class TestHybridSearch:
     def test_native_document_reports_moodle_timemodified_as_source_date(self, store: Store) -> None:
         """A Moodle-owned file's own timemodified is trustworthy — use it directly."""
         store.persist_crawl([doc("a", timemodified=555)])
-        ids = store.replace_chunks("a", [("Inhalt.", {"ordinal": 0})], header_text="X")
+        ids = store.replace_chunks("a", [("Inhalt.", None, {"ordinal": 0})], header_text="X")
         store.set_embedding(ids[0], [1.0, 0.0, 0.0])
         hit = HybridSearcher(store, embedder=None).search("Inhalt", limit=1)[0]
         assert hit.source_date == 555
@@ -168,7 +168,7 @@ class TestHybridSearch:
             [doc("a", timemodified=111, external_url="https://taskcards.de/#/board/x")]
         )
         store.record_extraction("a", text_sha256="t", extract_version=1, now=777)
-        ids = store.replace_chunks("a", [("Inhalt.", {"ordinal": 0})], header_text="X")
+        ids = store.replace_chunks("a", [("Inhalt.", None, {"ordinal": 0})], header_text="X")
         store.set_embedding(ids[0], [1.0, 0.0, 0.0])
         hit = HybridSearcher(store, embedder=None).search("Inhalt", limit=1)[0]
         assert hit.source_date == 777
@@ -197,7 +197,7 @@ class TestNeighbors:
         store.persist_crawl([doc("a")])
         ids = store.replace_chunks(
             "a",
-            [(f"chunk {i}", {"ordinal": i, "body": f"body {i}"}) for i in range(5)],
+            [(f"chunk {i}", None, {"ordinal": i, "body": f"body {i}"}) for i in range(5)],
             header_text="LF05IT › X",
         )
         neighbors = HybridSearcher(store, embedder=None).neighbors(ids[2], radius=1)
@@ -207,7 +207,7 @@ class TestNeighbors:
         store.persist_crawl([doc("a")])
         ids = store.replace_chunks(
             "a",
-            [(f"chunk {i}", {"ordinal": i, "body": f"body {i}"}) for i in range(3)],
+            [(f"chunk {i}", None, {"ordinal": i, "body": f"body {i}"}) for i in range(3)],
             header_text="LF05IT › X",
         )
         neighbors = HybridSearcher(store, embedder=None).neighbors(ids[0], radius=5)
@@ -216,9 +216,9 @@ class TestNeighbors:
     def test_does_not_cross_into_a_different_document(self, store: Store) -> None:
         store.persist_crawl([doc("a"), doc("b")])
         a_ids = store.replace_chunks(
-            "a", [("a0", {"ordinal": 0}), ("a1", {"ordinal": 1})], header_text="X"
+            "a", [("a0", None, {"ordinal": 0}), ("a1", None, {"ordinal": 1})], header_text="X"
         )
-        b_ids = store.replace_chunks("b", [("b0", {"ordinal": 0})], header_text="X")
+        b_ids = store.replace_chunks("b", [("b0", None, {"ordinal": 0})], header_text="X")
         neighbors = HybridSearcher(store, embedder=None).neighbors(a_ids[-1], radius=5)
         assert all(n.doc_id == "a" for n in neighbors)
         assert b_ids[0] not in [n.chunk_id for n in neighbors]
@@ -230,7 +230,7 @@ class TestNeighbors:
         store.persist_crawl([doc("a")])
         ids = store.replace_chunks(
             "a",
-            [("Kurs › X\n\nNur der Inhalt.", {"ordinal": 0, "body": "Nur der Inhalt."})],
+            [("Kurs › X\n\nNur der Inhalt.", None, {"ordinal": 0, "body": "Nur der Inhalt."})],
             header_text="X",
         )
         neighbors = HybridSearcher(store, embedder=None).neighbors(ids[0], radius=0)
@@ -243,7 +243,7 @@ class TestChannelScopedRetrieval:
         store.persist_crawl([doc("moodle_doc", title="Allgemeines Skript")])
         store.replace_chunks(
             "moodle_doc",
-            [("LF05IT › Skript\n\nPrüfungsthemen für alle Klassen.", {"ordinal": 0})],
+            [("LF05IT › Skript\n\nPrüfungsthemen für alle Klassen.", None, {"ordinal": 0})],
             header_text="LF05IT › Skript",
         )
 

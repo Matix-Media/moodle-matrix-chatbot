@@ -221,15 +221,17 @@ class TestChunks:
     def test_chunks_are_replaced_atomically(self, store: Store) -> None:
         """AC-14: never a window with both old and new chunks visible."""
         store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("erste fassung", {"ordinal": 0})])
-        store.replace_chunks("a", [("zweite fassung", {"ordinal": 0}), ("mehr", {"ordinal": 1})])
+        store.replace_chunks("a", [("erste fassung", None, {"ordinal": 0})])
+        store.replace_chunks(
+            "a", [("zweite fassung", None, {"ordinal": 0}), ("mehr", None, {"ordinal": 1})]
+        )
         texts = [c.text for c in store.chunks_for("a")]
         assert texts == ["zweite fassung", "mehr"]
 
     def test_tombstoning_removes_chunks_from_every_index(self, store: Store) -> None:
         """AC-15: chunks, FTS and vectors must go together."""
         store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("Netzwerkgrundlagen", {"ordinal": 0})])
+        store.replace_chunks("a", [("Netzwerkgrundlagen", None, {"ordinal": 0})])
         chunk_id = store.chunks_for("a")[0].chunk_id
         store.set_embedding(chunk_id, [0.6, 0.8])
 
@@ -242,7 +244,7 @@ class TestChunks:
 
     def test_fts_index_is_populated(self, store: Store) -> None:
         store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("Die Abschlussprüfung ist im März", {"ordinal": 0})])
+        store.replace_chunks("a", [("Die Abschlussprüfung ist im März", None, {"ordinal": 0})])
         hits = store.connection.execute(
             "select count(*) from chunks_fts where chunks_fts match ?", ("Abschlussprüfung",)
         ).fetchone()[0]
@@ -268,7 +270,7 @@ class TestEmbeddings:
         of bug that degrades answers without ever raising an error.
         """
         store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("text", {"ordinal": 0})])
+        store.replace_chunks("a", [("text", None, {"ordinal": 0})])
         chunk_id = store.chunks_for("a")[0].chunk_id
         store.set_embedding(chunk_id, [3.0, 4.0])  # norm 5.0
 
@@ -333,7 +335,7 @@ class TestExtractionReset:
         store.persist_crawl([item("empty"), item("full")])
         for doc_id in ("empty", "full"):
             store.record_extraction(doc_id, text_sha256="x", extract_version=2)
-        store.replace_chunks("full", [("hat text", {"ordinal": 0})])
+        store.replace_chunks("full", [("hat text", None, {"ordinal": 0})])
 
         assert store.documents_needing_extraction(extract_version=2) == []
         reset = store.reset_extraction_for_empty_documents()
