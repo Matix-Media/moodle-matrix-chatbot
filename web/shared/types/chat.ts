@@ -1,5 +1,7 @@
 export interface Citation {
   index: number
+  title: string
+  course_name: string
   header_text: string
   url: string | null
   page: number | null

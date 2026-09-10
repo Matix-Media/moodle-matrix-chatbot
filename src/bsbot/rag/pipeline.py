@@ -20,7 +20,7 @@ import structlog
 from pydantic import BaseModel
 
 from bsbot.index.search import SearchHit, reciprocal_rank_fusion
-from bsbot.pii.tokenizer import PiiTokenizer
+from bsbot.pii.tokenizer import TOKEN_RE, PiiTokenizer
 from bsbot.rag.prompts import (
     ANSWER_TEMPLATE,
     COMPRESS_CONTEXT_TEMPLATE,
@@ -191,9 +191,11 @@ class AnswerPipeline:
         *,
         history: list[tuple[str, str]] | None = None,
         room_id: str | None = None,
+        event_id: str | None = None,
     ) -> Answer:
         question = (question or "").strip()
-        log.info("rag.question", question=question, room_id=room_id)
+        origin = f"matrix:{room_id}:{event_id}" if room_id is not None else "webchat"
+        log.info("rag.question", question=question, origin=origin)
 
         # PII tokenization (spec 013): a name/email in the student's own question
         # must never reach the LLM either — everything from here on (condense,
@@ -367,7 +369,8 @@ class AnswerPipeline:
             log.info("rag.decompose_failed", error=str(exc))
             return []
         lines = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
-        return [line for line in lines if line and line.lower() != question.lower()][:4]
+        sub_qs = [line for line in lines if line and line.lower() != question.lower()][:4]
+        return _keeping_pii_entities(question, sub_qs)
 
     def _step_back_query(self, question: str) -> str | None:
         """Generate a higher-level, broader query to retrieve background context."""
@@ -467,7 +470,8 @@ class AnswerPipeline:
             log.info("rag.expand_failed", error=str(exc))
             return []
         variants = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
-        return [v for v in variants if v and v.lower() != question.lower()][: self._expansions]
+        variants = [v for v in variants if v and v.lower() != question.lower()][: self._expansions]
+        return _keeping_pii_entities(question, variants)
 
     def _retrieve(
         self, question: str, queries: list[str], *, room_id: str | None = None
@@ -583,6 +587,8 @@ class AnswerPipeline:
             return None
         query = raw.strip().splitlines()[0].strip(_STRIP_CHARS) if raw.strip() else ""
         if not query or query.lower() == question.lower():
+            return None
+        if not _keeping_pii_entities(question, [query]):
             return None
         return query[:200]
 
@@ -774,6 +780,29 @@ def _diversify(hits: list[SearchHit], *, max_per_document: int) -> list[SearchHi
         counts[hit.doc_id] = seen + 1
         result.append(hit)
     return result
+
+
+def _pii_entities(text: str) -> set[str]:
+    """Every ``⟦PII...⟧`` placeholder literally present in ``text``."""
+    return {m.group(0) for m in TOKEN_RE.finditer(text)}
+
+
+def _keeping_pii_entities(source: str, variants: list[str]) -> list[str]:
+    """Drop any rewritten query that silently lost a ``⟦PII...⟧`` placeholder
+    named in ``source``.
+
+    The query-rewriting prompts (expand/decompose/followup) are instructed to
+    carry a placeholder through unchanged, but the model cannot see what it
+    stands for and sometimes just writes around it instead — producing a
+    plausible-looking query that has quietly stopped being about the person or
+    email the student actually asked about. Such a variant is worse than
+    useless: it survives reciprocal-rank-fusion as a "real" query and crowds
+    out the one query that could still exact-match the token in the index.
+    """
+    needed = _pii_entities(source)
+    if not needed:
+        return variants
+    return [v for v in variants if needed <= _pii_entities(v)]
 
 
 def _clip(text: str, limit: int) -> str:

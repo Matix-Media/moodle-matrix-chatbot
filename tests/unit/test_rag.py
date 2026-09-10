@@ -531,6 +531,20 @@ class TestTransparencyLogging:
         events = [e for e in logs if e.get("event") == "rag.question"]
         assert events and events[0]["question"] == "Wann ist die Prüfung?"
 
+    def test_logs_webchat_origin_when_no_room_id(self) -> None:
+        pipeline, _, _ = make([hit(1, "Die Prüfung ist am 15.03.")])
+        with structlog.testing.capture_logs() as logs:
+            pipeline.answer("Wann ist die Prüfung?")
+        events = [e for e in logs if e.get("event") == "rag.question"]
+        assert events and events[0]["origin"] == "webchat"
+
+    def test_logs_matrix_origin_with_room_and_event_id(self) -> None:
+        pipeline, _, _ = make([hit(1, "Die Prüfung ist am 15.03.")])
+        with structlog.testing.capture_logs() as logs:
+            pipeline.answer("Wann ist die Prüfung?", room_id="!room:example.org", event_id="$e1")
+        events = [e for e in logs if e.get("event") == "rag.question"]
+        assert events and events[0]["origin"] == "matrix:!room:example.org:$e1"
+
     def test_logs_what_was_retrieved(self) -> None:
         hits = [hit(1, "Erstes"), hit(2, "Zweites")]
         pipeline, _, _ = make(hits)

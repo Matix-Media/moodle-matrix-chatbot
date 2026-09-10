@@ -68,6 +68,8 @@ class FakePipeline:
         self._raises = raises
         self.questions: list[str] = []
         self.histories: list[list[tuple[str, str]] | None] = []
+        self.room_ids: list[str | None] = []
+        self.event_ids: list[str | None] = []
 
     def answer(
         self,
@@ -75,9 +77,12 @@ class FakePipeline:
         *,
         history: list[tuple[str, str]] | None = None,
         room_id: str | None = None,
+        event_id: str | None = None,
     ) -> Answer:
         self.questions.append(question)
         self.histories.append(history)
+        self.room_ids.append(room_id)
+        self.event_ids.append(event_id)
         if self._raises:
             raise RuntimeError("pipeline exploded")
         return self._answer
@@ -547,3 +552,11 @@ class TestModeratorMessageIngestion:
         # It should be answered by the bot, not indexed as a moderator knowledge announcement
         assert ingest.indexed == []
         assert pipeline.questions == ["Wann beginnt das Praktikum?"]
+
+    async def test_answer_call_passes_the_triggering_room_and_event_id(self) -> None:
+        bot, _, pipeline = make_bot()
+        room = FakeRoom(room_id=ROOM)
+        event = FakeEvent("!bs Frage?", event_id="$q1")
+        await bot.handle_message(room, event)
+        assert pipeline.room_ids == [ROOM]
+        assert pipeline.event_ids == ["$q1"]

@@ -15,6 +15,27 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  // Renders "[1]"/"[1, 2]" citation markers (rewritten into cite:// links by
+  // citationsToLinks(), see app/utils/citationLinks.ts) as icon badges instead
+  // of plain <a> tags — see app/components/ChatCitationLink.global.vue.
+  mdc: {
+    components: {
+      map: {
+        a: 'ChatCitationLink'
+      }
+    }
+  },
+  // @nuxt/icon only pre-bundles @nuxt/ui's own default icons (menu,
+  // chevron-*, check, x, ...) unless told to scan the app for the rest.
+  // Without this, icons we reference ourselves (e.g. i-lucide-graduation-cap,
+  // i-lucide-message-circle) fall back to a runtime fetch that fails during
+  // SSR — "[Icon] failed to load icon" in the server logs.
+  icon: {
+    clientBundle: {
+      scan: true
+    }
+  },
+
   // Server-only — never exposed to the client bundle (bsbot-matrix-chatbot
   // spec 014). Read via useRuntimeConfig() inside server/api routes only.
   runtimeConfig: {
