@@ -18,6 +18,7 @@ from bsbot.ingest.indexer import Indexer
 from bsbot.ingest.model import ContentItem, ContentKind
 from bsbot.llm.embed import TASK_DOCUMENT, GeminiEmbedder
 from bsbot.pii import build_pii_tokenizer
+from bsbot.pii.alias import Aliaser
 from bsbot.pii.guard import GuardedLLM
 from bsbot.pii.tokenizer import (
     PiiTokenizer,
@@ -435,8 +436,11 @@ class TestPipeline:
         answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
         assert "Herr Mueller" not in answer_prompt
         assert "mueller@schule.de" not in answer_prompt
-        assert person_token in answer_prompt
-        assert email_token in answer_prompt
+        # AC-30: what the model sees is a short alias, not the twelve-hex token.
+        assert person_token not in answer_prompt
+        assert email_token not in answer_prompt
+        assert "⟦PERSON_A⟧" in answer_prompt
+        assert "⟦EMAIL_A⟧" in answer_prompt
 
         assert "mueller@schule.de" in answer.text
         assert "Herr Mueller" in answer.text
@@ -493,7 +497,8 @@ class TestPipeline:
 
         followup_prompt = next(p for kind, p in llm.prompts if kind == "suggest_followup")
         assert "mueller@schule.de" not in followup_prompt
-        assert email_token in followup_prompt
+        assert email_token not in followup_prompt  # AC-30: aliased, not hashed
+        assert "⟦EMAIL_A⟧" in followup_prompt
 
     def test_suggested_questions_are_detokenized_before_reaching_the_student(self) -> None:
         """AC-20: the call is fed tokens, so it answers in tokens — and `_finalise`
@@ -623,6 +628,105 @@ class TestEgressGuard:
         sent = inner.prompts[0][1]
         assert "Max Müller" not in sent
         assert make_token("PERSON", normalize_person("Max Müller")) in sent
+
+
+class TestPromptAliases:
+    def test_round_trip_restores_the_original_token(self) -> None:
+        """AC-30"""
+        aliaser = Aliaser()
+        token = make_token("PERSON", normalize_person("Max Müller"))
+
+        aliased = aliaser.alias_out(f"Wer ist {token}?")
+
+        assert aliased == "Wer ist ⟦PERSON_A⟧?"
+        assert aliaser.alias_in(aliased) == f"Wer ist {token}?"
+
+    def test_the_same_entity_keeps_one_alias_across_a_request(self) -> None:
+        """AC-30: a stable label is the whole reason the model can carry it."""
+        aliaser = Aliaser()
+        token = make_token("PERSON", normalize_person("Max Müller"))
+
+        first = aliaser.alias_out(f"{token} lehrt.")
+        second = aliaser.alias_out(f"Frag {token}.")
+
+        assert "⟦PERSON_A⟧" in first
+        assert "⟦PERSON_A⟧" in second
+
+    def test_person_and_email_are_numbered_independently(self) -> None:
+        """AC-30: per-type counters read more naturally when debugging a prompt."""
+        aliaser = Aliaser()
+        person = make_token("PERSON", normalize_person("Max Müller"))
+        email = make_token("EMAIL", normalize_email("a@b.de"))
+
+        aliased = aliaser.alias_out(f"{person} {email}")
+
+        assert aliased == "⟦PERSON_A⟧ ⟦EMAIL_A⟧"
+
+    def test_alias_suffixes_overflow_past_twenty_six(self) -> None:
+        """AC-33: one attendance chunk can carry more than 26 names."""
+        aliaser = Aliaser()
+        tokens = [make_token("PERSON", f"person {i}") for i in range(28)]
+
+        aliased = aliaser.alias_out(" ".join(tokens))
+
+        assert "⟦PERSON_Z⟧" in aliased
+        assert "⟦PERSON_AA⟧" in aliased
+        assert "⟦PERSON_AB⟧" in aliased
+
+    def test_an_alias_the_model_invented_is_dropped(self) -> None:
+        """AC-32: a corrupted alias must never become a search term."""
+        aliaser = Aliaser()
+        token = make_token("PERSON", normalize_person("Max Müller"))
+        aliaser.alias_out(token)
+
+        restored = aliaser.alias_in("Sprechstunde ⟦PERSON_Q⟧ Termin")
+
+        assert "PERSON_Q" not in restored
+        assert restored == "Sprechstunde  Termin"
+
+    def test_a_garbled_rewrite_does_not_become_a_junk_search_query(self) -> None:
+        """AC-32: the failure this whole layer exists to prevent — an expansion
+        stage silently turning into a query that can never match anything."""
+        store_ = FakePiiStore()
+        person_token = make_token("PERSON", normalize_person("Herr Mueller"))
+        store_.upsert_pii_token(
+            person_token, "PERSON", normalize_person("Herr Mueller"), "Herr Mueller"
+        )
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        # The model answers with an alias it was never given.
+        llm = FakeLLM(responses={"expand": "Sprechstunde ⟦PERSON_Z⟧"})
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(searcher, llm, expand=True, rerank=False, pii_tokenizer=tok)
+
+        pipeline.answer("Wann hat Herr Mueller Sprechstunde?")
+
+        # The expansion did reach the retriever — it just arrived without the
+        # invented alias, rather than carrying a term that matches nothing.
+        assert any("Sprechstunde" in q for q in searcher.queries)
+        assert not any("PERSON_Z" in q for q in searcher.queries)
+
+    def test_rerank_ignores_digits_inside_an_echoed_token(self) -> None:
+        """AC-31: `_reranked` scans a raw response for candidate indices, and a
+        token's twelve hex characters contain digits."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp([]))
+        # Mixed hex is the dangerous shape, not an all-digit payload: `\d+` splits
+        # `1a2b3c…` into the single digits 1, 2, 3 — every one a valid candidate
+        # index — where one long run would simply fall out of range and be ignored.
+        noisy = "⟦PIIPERSON1a2b3c4d5e6f⟧"
+        llm = FakeLLM(responses={"rerank": f"{noisy} 2 1"})
+        hits = [hit(1, "Erster."), hit(2, "Zweiter.")]
+        pipeline = AnswerPipeline(
+            FakeSearcher(hits), llm, expand=False, rerank=True, pii_tokenizer=tok
+        )
+
+        pipeline.answer("Frage?")
+
+        # The model named 2 then 1, so the context must be in that order. Had the
+        # hex payload been scanned, those twelve leading digits would have driven
+        # the ordering instead.
+        answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
+        assert answer_prompt.index("Zweiter.") < answer_prompt.index("Erster.")
 
 
 class TestBenchmarkJudge:

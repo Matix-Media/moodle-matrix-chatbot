@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -20,6 +21,7 @@ import structlog
 from pydantic import BaseModel
 
 from bsbot.index.search import SearchHit, reciprocal_rank_fusion
+from bsbot.pii.alias import ENTITY_RE, Aliaser, AliasingLLM
 from bsbot.pii.tokenizer import PiiTokenizer
 from bsbot.rag.prompts import (
     ANSWER_TEMPLATE,
@@ -90,6 +92,15 @@ class LLMLike(Protocol):
     ) -> str: ...
 
 
+#: The alias-wrapped LLM for the request currently being answered. A ContextVar
+#: rather than a temporary attribute swap: ``AnswerPipeline`` is a singleton
+#: reused across requests (see ``web.app``), and ``answer()`` is called
+#: synchronously from an async route. That serializes today only because nothing
+#: inside it yields — an implicit invariant a threadpool move would break
+#: silently, with one request's alias map answering another's prompts.
+_REQUEST_LLM: ContextVar[LLMLike | None] = ContextVar("bsbot_request_llm", default=None)
+
+
 class Citation(BaseModel):
     index: int
     title: str
@@ -155,7 +166,7 @@ class AnswerPipeline:
         pii_tokenizer: PiiTokenizer | None = None,
     ) -> None:
         self._searcher = searcher
-        self._llm = llm
+        self._base_llm = llm
         self._expand = expand
         self._rerank = rerank
         self._followup = followup
@@ -178,6 +189,15 @@ class AnswerPipeline:
         self._clock = clock
         self._pii_tokenizer = pii_tokenizer
 
+    @property
+    def _llm(self) -> LLMLike:
+        """The LLM for the request in flight — alias-wrapped while one is.
+
+        A property rather than a plain attribute so that every ``generate`` call
+        site below picks the wrapper up without knowing it exists.
+        """
+        return _REQUEST_LLM.get() or self._base_llm
+
     def _detok(self, text: str) -> str:
         return self._pii_tokenizer.detokenize(text) if self._pii_tokenizer else text
 
@@ -186,6 +206,22 @@ class AnswerPipeline:
         return SYSTEM_PROMPT
 
     def answer(
+        self,
+        question: str,
+        *,
+        history: list[tuple[str, str]] | None = None,
+        room_id: str | None = None,
+    ) -> Answer:
+        """Answer one question, with a fresh alias map bound for its duration."""
+        if self._pii_tokenizer is None:
+            return self._answer(question, history=history, room_id=room_id)
+        bound = _REQUEST_LLM.set(AliasingLLM(self._base_llm, Aliaser()))
+        try:
+            return self._answer(question, history=history, room_id=room_id)
+        finally:
+            _REQUEST_LLM.reset(bound)
+
+    def _answer(
         self,
         question: str,
         *,
@@ -423,7 +459,9 @@ class AnswerPipeline:
                 model=self._utility_model,
                 temperature=0.0,
             )
-            match = re.search(r"(\d+(?:\.\d+)?)", raw)
+            # An entity echoed into the response carries twelve hex characters,
+            # and the digits among them would be read as the score.
+            match = re.search(r"(\d+(?:\.\d+)?)", ENTITY_RE.sub(" ", raw))
             if match:
                 score = float(match.group(1))
                 return min(max(score, 0.0), 1.0)
@@ -551,7 +589,9 @@ class AnswerPipeline:
             # the back of a rerank failure we already degraded from once.
             return hits, len(hits)
 
-        order = [int(n) for n in re.findall(r"\d+", raw)]
+        # Same hazard as `_evaluate_relevance`: a token's hex payload would be
+        # scanned as candidate indices.
+        order = [int(n) for n in re.findall(r"\d+", ENTITY_RE.sub(" ", raw))]
         chosen: list[SearchHit] = []
         seen: set[int] = set()
         for number in order:

@@ -126,6 +126,32 @@ boundary that actually matters is egress to Gemini, so that is where the guarant
   request log line, not merely before the API call — the cache must key off exactly what is
   sent (see Notes), and the `embed.request` log echoes the same strings.
 
+### Prompt-facing aliases
+
+Five stages — condensing, decomposition, expansion, step-back and the follow-up hop — ask the
+model to rewrite a question and then use its answer *as a search query*. Asking it to carry
+twelve hex characters through a generative rewrite is asking for a term that matches nothing:
+one character of drift is enough, and dropping the token as noise is a likely outcome too. So
+the model is never shown a token at all.
+
+- `AC-30` A prompt sent to the LLM carries short aliases (`⟦PERSON_A⟧`, `⟦EMAIL_A⟧`) rather than
+  `⟦PII…⟧` tokens, and the response is mapped back to real tokens before any caller sees it. The
+  model therefore never has to reproduce a name or a hash, only a short label, and the real
+  value is restored from a map it cannot corrupt.
+- `AC-31` Alias suffixes are letters, never digits. `_reranked` and `_evaluate_relevance` parse
+  numbers directly out of a raw response, and a `[0-9a-f]{12}` payload echoed into either one
+  injects garbage indices or a garbage score. Both also strip entities before parsing, so a real
+  token appearing in a response cannot corrupt them either.
+- `AC-32` An alias in a response that this request never issued — invented or garbled by the
+  model — is dropped rather than passed through. Rewrites are additive under RRF, so a query
+  that lost its entity is merely weak, whereas a corrupted one matches nothing.
+- `AC-33` Alias suffixes continue past 26 spreadsheet-style (`PERSON_AA`), since a single roster
+  or attendance chunk can carry more than 26 names.
+- `AC-34` The alias map is per-request, in-memory, and never consulted by `tokenize()` or
+  `detokenize()`. It is a transport encoding for one round-trip, so AC-2's "pure function of
+  `(entity_type, normalized_text)`" is unaffected. It is bound to a `ContextVar` rather than
+  swapped onto the pipeline, which is a singleton shared across requests.
+
 ## Non-goals
 
 - Phone numbers, postal addresses, and other identifiers are out of scope for this iteration.
