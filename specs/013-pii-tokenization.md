@@ -186,6 +186,17 @@ the model is never shown a token at all.
   `detokenize()`. It is a transport encoding for one round-trip, so AC-2's "pure function of
   `(entity_type, normalized_text)`" is unaffected. It is bound to a `ContextVar` rather than
   swapped onto the pipeline, which is a singleton shared across requests.
+- `AC-39` Independent of alias corruption (AC-32), a query-rewriting stage can also return a
+  *well-formed* variant that simply never mentions the entity — the model writes around a
+  placeholder it cannot interpret rather than reproducing it. `_keeping_pii_entities` drops such
+  a variant by comparing, after aliasing has already restored real tokens, whether every entity
+  present in the source question is still present in the rewrite. This is a second, independent
+  filter from AC-32's alias-corruption check: the alias layer can only catch a *malformed* alias
+  reference, not a rewrite that is syntactically clean but has silently changed subject. The two
+  prompt templates' instruction to preserve a placeholder (`_PRESERVE_PII_INSTRUCTION`)
+  describes the alias shape the model actually sees (`⟦PERSON_A⟧`), not the underlying hash
+  token — a rewrite is reinforcement on top of both code-level filters, not the only thing
+  standing between a dropped placeholder and a bad query.
 
 ## Non-goals
 
@@ -195,6 +206,8 @@ the model is never shown a token at all.
   system.
 - Coreference resolution across different surface forms of the same person (see AC-5).
 - spaCy NER recall is not guaranteed — this is a probabilistic filter, not an absolute guarantee.
+  The converse also holds and is not fully solved either: precision on short, context-free
+  fragments is inherently limited (see `PiiTokenizer.tokenize_path` in Notes below).
 
 ## Notes
 
@@ -205,5 +218,15 @@ the model is never shown a token at all.
   citation syntax and are not expected to occur in Moodle content.
 - Name detection uses a local, offline spaCy German NER model (`de_core_news_md` by default);
   email detection uses a regex. Both run entirely on the machine — no additional network calls.
+- A breadcrumb (`header_path`, and `course_name`/`module_name`/`title` at query time) is
+  tokenized via `PiiTokenizer.tokenize_path`, which joins the segments and runs NER once over the
+  whole breadcrumb rather than once per segment. Confirmed against the real `de_core_news_md`
+  model: a lone breadcrumb segment ("Bili-Team", "Klassenteam", even the plain word
+  "Stundenplan") is frequently misclassified as `PER` when judged with no surrounding context —
+  German capitalizes every noun, so the capitalization cue the model otherwise leans on carries no
+  signal on a bare fragment. Reading the segment together with its siblings removes these false
+  positives in every case checked, without losing real detections (a genuine name in a breadcrumb,
+  e.g. "Frau Schmidt", is still caught). This is a mitigation, not a guarantee — precision on an
+  isolated single-word segment can still be imperfect.
 - Tokenization must happen before `content_sha256()` is computed for embedding/OCR cache keys,
   so those caches key off exactly what is actually sent to Gemini.

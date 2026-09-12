@@ -66,17 +66,46 @@ Falls die Frage bereits eigenständig ist, gib sie unverändert aus.
 Gib NUR die eine umformulierte Suchanfrage aus, ohne Anführungszeichen und ohne Erklärung.
 """
 
-SUGGEST_FOLLOWUP_TEMPLATE = """\
+#: Shared across every query-rewriting prompt that may receive a PII-tokenized
+#: question (spec 013 AC-15): a ⟦...⟧ placeholder is not a word to paraphrase
+#: around, it *is* the search target (a redacted name/email), and a rewrite
+#: that drops it stops being about the person the student asked about.
+#:
+#: Describes the *alias* shape (``⟦PERSON_A⟧``), not the underlying hash token
+#: (``⟦PIIPERSONa1b2c3d4e5f6⟧``): the model never sees the latter at all when a
+#: tokenizer is configured — the alias layer (spec 013 AC-30) substitutes it out
+#: of every prompt before this text ever reaches the model, specifically because
+#: a twelve-hex-character string is exactly the kind of token a generative
+#: rewrite reproduces unreliably. A short, stable label is easier to carry
+#: through, and `AliasingLLM`/`_keeping_pii_entities` are the actual backstops
+#: if a rewrite drops or corrupts it anyway — this instruction is reinforcement,
+#: not the only thing standing between a dropped placeholder and a bad query.
+_PRESERVE_PII_INSTRUCTION = """\
+Falls die Frage einen Platzhalter der Form ⟦...⟧ enthält (z. B. ⟦PERSON_A⟧ oder ⟦EMAIL_A⟧),
+steht dieser anonymisiert für einen echten Namen oder eine E-Mail-Adresse, die du nicht siehst.
+Übernimm einen solchen Platzhalter unverändert (exakt dieselben Zeichen) in jede Suchanfrage, in
+der er sinnvoll vorkäme. Erfinde niemals einen Namen dafür und lass den Platzhalter nicht einfach
+weg, auch wenn du nicht weißt, wer oder was er bedeutet.\
+"""
+
+SUGGEST_FOLLOWUP_TEMPLATE = (
+    """\
 Frage der Schülerin / des Schülers: {question}
 Antwort: {answer}
 
 Formuliere 2 bis 3 kurze, sinnvolle Folgefragen, die eine Schülerin oder ein Schüler
 als Nächstes dazu stellen könnte.
 
+"""
+    + _PRESERVE_PII_INSTRUCTION
+    + """
+
 Gib nur die Fragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
 """
+)
 
-EXPAND_TEMPLATE = """\
+EXPAND_TEMPLATE = (
+    """\
 Eine Schülerin oder ein Schüler einer IT-Berufsschule stellt diese Frage:
 
 "{question}"
@@ -84,10 +113,15 @@ Eine Schülerin oder ein Schüler einer IT-Berufsschule stellt diese Frage:
 Schreibe {n} alternative Suchanfragen, die dieselbe Information in Moodle finden würden.
 Nutze dabei die formellen Begriffe, die in Lehrmaterial und offiziellen Dokumenten
 vorkommen (z. B. "Abschlussprüfung Teil 1" statt "AP1", "Lernfeld" statt "LF").
+"""
+    + _PRESERVE_PII_INSTRUCTION
+    + """
 Gib nur die Suchanfragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
 """
+)
 
-FOLLOWUP_TEMPLATE = """\
+FOLLOWUP_TEMPLATE = (
+    """\
 Frage: {question}
 
 Unten stehen die bisher gefundenen Moodle-Auszüge dazu.
@@ -109,8 +143,13 @@ Wiederhole nicht einfach die ursprüngliche Frage und erkläre nichts dazu.
 Beispiel: Die Auszüge erwähnen "die Bewertung erfolgt im Flow", ohne zu erklären,
 was "Flow" ist -> Suchanfrage: "Flow Bewertung".
 
+"""
+    + _PRESERVE_PII_INSTRUCTION
+    + """
+
 Antworte NUR mit der Suchanfrage oder NUR mit einem Bindestrich, sonst nichts.
 """
+)
 
 RERANK_TEMPLATE = """\
 Frage: {question}
@@ -141,7 +180,8 @@ Antworte nur mit den Nummern, durch Komma getrennt, höchstens {k} Stück.
 Wenn keiner passt, antworte mit einem Bindestrich.
 """
 
-DECOMPOSE_TEMPLATE = """\
+DECOMPOSE_TEMPLATE = (
+    """\
 Eine Schülerin oder ein Schüler einer Berufsschule stellt diese Frage:
 
 "{question}"
@@ -151,8 +191,13 @@ verschiedenen Themen oder Fächern wie "Brauche ich in Mathe Rechner und wann is
 Falls ja, zerlege sie in 2 bis 4 eigenständige, präzise Einzelfragen.
 Falls nein (einfache Einzelfrage), gib nur die ursprüngliche Frage unverändert aus.
 
+"""
+    + _PRESERVE_PII_INSTRUCTION
+    + """
+
 Gib nur die Fragen aus, eine pro Zeile, ohne Nummerierung und ohne Erklärung.
 """
+)
 
 STEP_BACK_TEMPLATE = """\
 Eine Schülerin oder ein Schüler stellt diese spezifische Frage zu Schule oder Moodle:

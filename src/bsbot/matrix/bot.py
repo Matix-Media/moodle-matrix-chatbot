@@ -52,6 +52,7 @@ class PipelineLike(Protocol):
         *,
         history: list[tuple[str, str]] | None = ...,
         room_id: str | None = ...,
+        event_id: str | None = ...,
     ) -> Answer: ...
 
 
@@ -225,7 +226,10 @@ class BerufsschuleBot:
         try:
             try:
                 answer = self._pipeline.answer(
-                    question, history=history or None, room_id=room.room_id
+                    question,
+                    history=history or None,
+                    room_id=room.room_id,
+                    event_id=getattr(event, "event_id", None),
                 )
             except TypeError:
                 answer = self._pipeline.answer(question, history=history or None)

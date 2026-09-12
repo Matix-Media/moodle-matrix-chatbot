@@ -7,10 +7,16 @@ condition under which fusing them beats either alone:
   exactly; embeddings blur them into a neighbourhood of "school date-ish things".
 * "wann is die prüfung" against a document titled *Termin der Abschlussprüfung Teil 1*
   — no useful lexical overlap. Embeddings bridge it; BM25 cannot.
+* "der Stundenplan für nächste Woche Montag" against a Blockplan chunked one week per
+  chunk — every week is an equally good BM25/embedding match for "Stundenplan", so
+  neither ranks the one week the question actually means above the other five. Only
+  the *resolved* calendar date (computed from the question, not present in it as
+  text) distinguishes them — see ``target_date``/``_date_search`` below, and
+  ``bsbot.rag.pipeline._detect_target_date`` for where that date comes from.
 
-Reciprocal Rank Fusion combines the two ranked lists without needing their scores to
-be comparable, which matters because BM25 scores and cosine distances are not on any
-shared scale.
+Reciprocal Rank Fusion combines all ranked lists without needing their scores to be
+comparable, which matters because BM25 scores, cosine distances, and a plain
+date-substring match are not on any shared scale.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from datetime import date
 from typing import Protocol
 
 import structlog
@@ -120,8 +127,18 @@ class HybridSearcher:
         limit: int = 8,
         room_id: str | None = None,
         lexical_query: str | None = None,
+        #: Self-querying-retriever style metadata filter (see module docstring):
+        #: a calendar date resolved from the *question* ("nächste Woche Montag" ->
+        #: 2026-09-15), searched as a genuine SQL predicate against each chunk's
+        #: own text alongside keyword/vector search — not a Python-side reorder of
+        #: whatever those two already happened to retrieve. A Blockplan chunk's
+        #: date lives in its content, not in ``source_date`` (that column is the
+        #: document's last-modified time, a different thing entirely), so this is
+        #: the only way retrieval itself — not just reranking — can be told which
+        #: of several near-identical weekly chunks the question actually meant.
+        target_date: date | None = None,
     ) -> list[SearchHit]:
-        """Retrieve with the two halves given the form each one needs.
+        """Retrieve with each input given the form it needs.
 
         ``query`` is the Gemini-facing form: it is what gets embedded, and the
         vectors it is compared against were built from tokenized chunk text, so
@@ -132,11 +149,15 @@ class HybridSearcher:
         FTS5's diacritic folding, `fts5_escape`'s prefix matching, and term
         overlap across documents for names (spec 013 AC-37). Defaults to
         ``query`` when there is nothing to tokenize.
+
+        ``target_date`` is a date literal, never PII, so it is matched as-is
+        against the raw chunk text regardless of tokenization.
         """
         keyword_ids = self._keyword_search(lexical_query or query, room_id=room_id)
         vector_ids = self._vector_search(query, room_id=room_id)
+        date_ids = self._date_search(target_date, room_id=room_id) if target_date else []
 
-        ranked = reciprocal_rank_fusion([keyword_ids, vector_ids])
+        ranked = reciprocal_rank_fusion([keyword_ids, vector_ids, date_ids])
         if not ranked:
             return []
 
@@ -145,6 +166,8 @@ class HybridSearcher:
             found_by.setdefault(chunk_id, []).append("keyword")
         for chunk_id in vector_ids:
             found_by.setdefault(chunk_id, []).append("vector")
+        for chunk_id in date_ids:
+            found_by.setdefault(chunk_id, []).append("date")
 
         top = ranked[: limit * 3]
         hits = self._hydrate([key for key, _ in top])
@@ -239,6 +262,50 @@ class HybridSearcher:
             return []
         return [str(r[0]) for r in rows]
 
+    def _date_search(self, target_date: date, *, room_id: str | None = None) -> list[str]:
+        """Chunks whose own text literally contains ``target_date`` (either
+        written form), independent of how keyword/vector search happened to rank
+        them.
+
+        Neither BM25 nor embeddings can be trusted to place this chunk inside the
+        candidate window: FTS5 tokenises "2026-09-15" fine but competes with every
+        other week's chunk on equal topical footing, and embeddings blur dates
+        into a neighbourhood of "school date-ish things" (see module docstring).
+        A direct substring predicate against the source text sidesteps both —
+        this is the metadata-filter half of retrieval, run as SQL rather than as
+        a Python-side reorder of an already-fixed candidate pool.
+        """
+        needles = (f"%{target_date:%d.%m.%Y}%", f"%{target_date:%Y-%m-%d}%")
+        try:
+            if room_id:
+                rows = self._store.connection.execute(
+                    """
+                    SELECT c.chunk_id
+                    FROM chunks c
+                    JOIN documents d ON d.doc_id = c.doc_id
+                    WHERE (c.text LIKE ? OR c.text LIKE ?) AND d.tombstoned_at IS NULL
+                      AND (d.doc_id NOT LIKE 'matrix:%' OR d.doc_id LIKE 'matrix:' || ? || ':%')
+                    LIMIT ?
+                    """,
+                    (*needles, room_id, self._depth),
+                ).fetchall()
+            else:
+                rows = self._store.connection.execute(
+                    """
+                    SELECT c.chunk_id
+                    FROM chunks c
+                    JOIN documents d ON d.doc_id = c.doc_id
+                    WHERE (c.text LIKE ? OR c.text LIKE ?) AND d.tombstoned_at IS NULL
+                      AND d.doc_id NOT LIKE 'matrix:%'
+                    LIMIT ?
+                    """,
+                    (*needles, self._depth),
+                ).fetchall()
+        except Exception as exc:  # a malformed pattern must never break the bot
+            log.warning("search.date_search_failed", error=str(exc))
+            return []
+        return [str(r[0]) for r in rows]
+
     def _hydrate(self, chunk_ids: list[str]) -> list[SearchHit]:
         if not chunk_ids:
             return []
@@ -291,9 +358,13 @@ class HybridSearcher:
         # here rather than read back.
         if self._pii_tokenizer is not None:
             for hit in hits:
-                hit.course_name = self._pii_tokenizer.tokenize(hit.course_name)
-                hit.module_name = self._pii_tokenizer.tokenize(hit.module_name)
-                hit.title = self._pii_tokenizer.tokenize(hit.title)
+                # Tokenized together, not field-by-field: each field alone is a
+                # short, context-free fragment that spaCy's NER judges poorly
+                # (see `PiiTokenizer.tokenize_path`) — course_name/module_name/
+                # title form the same breadcrumb shape as `header_path` above.
+                hit.course_name, hit.module_name, hit.title = self._pii_tokenizer.tokenize_path(
+                    [hit.course_name, hit.module_name, hit.title]
+                )
         return hits
 
     def _safe(self, row: sqlite3.Row, column: str) -> str:

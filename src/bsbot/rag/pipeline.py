@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from bsbot.index.search import SearchHit, reciprocal_rank_fusion
 from bsbot.pii.alias import ENTITY_RE, Aliaser, AliasingLLM
-from bsbot.pii.tokenizer import PiiTokenizer
+from bsbot.pii.tokenizer import TOKEN_RE, PiiTokenizer
 from bsbot.rag.prompts import (
     ANSWER_TEMPLATE,
     COMPRESS_CONTEXT_TEMPLATE,
@@ -76,6 +76,8 @@ _STRIP_CHARS = " -–—•\t\r\n0123456789.)"
 class SearcherLike(Protocol):
     #: ``lexical_query`` carries the raw (detokenized) form for the local BM25
     #: half, while ``query`` stays the Gemini-facing form the vector half needs.
+    #: ``target_date`` is a resolved calendar date, matched as-is (see
+    #: ``HybridSearcher._date_search``).
     def search(
         self,
         query: str,
@@ -83,6 +85,7 @@ class SearcherLike(Protocol):
         limit: int = 12,
         room_id: str | None = None,
         lexical_query: str | None = None,
+        target_date: date | None = None,
     ) -> list[SearchHit]: ...
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]: ...
 
@@ -218,13 +221,14 @@ class AnswerPipeline:
         *,
         history: list[tuple[str, str]] | None = None,
         room_id: str | None = None,
+        event_id: str | None = None,
     ) -> Answer:
         """Answer one question, with a fresh alias map bound for its duration."""
         if self._pii_tokenizer is None:
-            return self._answer(question, history=history, room_id=room_id)
+            return self._answer(question, history=history, room_id=room_id, event_id=event_id)
         bound = _REQUEST_LLM.set(AliasingLLM(self._base_llm, Aliaser()))
         try:
-            return self._answer(question, history=history, room_id=room_id)
+            return self._answer(question, history=history, room_id=room_id, event_id=event_id)
         finally:
             _REQUEST_LLM.reset(bound)
 
@@ -234,9 +238,11 @@ class AnswerPipeline:
         *,
         history: list[tuple[str, str]] | None = None,
         room_id: str | None = None,
+        event_id: str | None = None,
     ) -> Answer:
         question = (question or "").strip()
-        log.info("rag.question", question=question, room_id=room_id)
+        origin = f"matrix:{room_id}:{event_id}" if room_id is not None else "webchat"
+        log.info("rag.question", question=question, origin=origin)
 
         # PII tokenization (spec 013): a name/email in the student's own question
         # must never reach the LLM either — everything from here on (condense,
@@ -274,7 +280,25 @@ class AnswerPipeline:
             if step_back and step_back not in queries:
                 queries.append(step_back)
 
-        hits = self._retrieve(search_question, queries, room_id=room_id)
+        # Resolve a relative date reference ("nächste Woche Montag") against the
+        # school's real clock *before* retrieval, not only afterwards in `_boost`.
+        # Every query variant above is a semantic paraphrase — none of them ever
+        # contains the literal date a Blockplan chunk is written against, so BM25
+        # (which finds a date "lexical needle" exactly, see search.py) never got a
+        # query that could match it. Appending the resolved date itself as its own
+        # query term is what actually gives retrieval a chance, on top of `_boost`
+        # reordering and `_date_search`'s SQL-level match in the searcher.
+        target_date = (
+            _detect_target_date(search_question, self._clock().date()) if search_question else None
+        )
+        if target_date is not None:
+            date_terms = (f"{target_date:%d.%m.%Y}", f"{target_date:%Y-%m-%d}")
+            for term in date_terms:
+                if term not in queries:
+                    queries.append(term)
+            log.info("rag.date_detected", target_date=target_date.isoformat(), terms=date_terms)
+
+        hits = self._retrieve(search_question, queries, room_id=room_id, target_date=target_date)
         log.info(
             "rag.retrieved",
             queries=queries,
@@ -310,7 +334,9 @@ class AnswerPipeline:
                 followup_query = self._followup_query(search_question, hits[: self._max_context])
                 if followup_query:
                     queries = [*queries, followup_query]
-                    retried = self._retrieve(search_question, queries, room_id=room_id)
+                    retried = self._retrieve(
+                        search_question, queries, room_id=room_id, target_date=target_date
+                    )
                     log.info("rag.followup", query=followup_query, hits=len(retried))
                     if retried:
                         hits, confident = self._reranked(search_question, retried)
@@ -397,7 +423,7 @@ class AnswerPipeline:
                 temperature=0.3,
             )
             lines = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
-            return [line for line in lines if line and line.endswith("?")][:3]
+            return [self._detok(line) for line in lines if line and line.endswith("?")][:3]
         except Exception as exc:
             log.info("rag.suggest_followup_failed", error=str(exc))
             return []
@@ -415,7 +441,8 @@ class AnswerPipeline:
             log.info("rag.decompose_failed", error=str(exc))
             return []
         lines = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
-        return [line for line in lines if line and line.lower() != question.lower()][:4]
+        sub_qs = [line for line in lines if line and line.lower() != question.lower()][:4]
+        return _keeping_pii_entities(question, sub_qs)
 
     def _step_back_query(self, question: str) -> str | None:
         """Generate a higher-level, broader query to retrieve background context."""
@@ -517,40 +544,65 @@ class AnswerPipeline:
             log.info("rag.expand_failed", error=str(exc))
             return []
         variants = [line.strip(_STRIP_CHARS) for line in raw.splitlines() if line.strip()]
-        return [v for v in variants if v and v.lower() != question.lower()][: self._expansions]
+        variants = [v for v in variants if v and v.lower() != question.lower()][: self._expansions]
+        return _keeping_pii_entities(question, variants)
+
+    def _search_one(
+        self, query: str, *, room_id: str | None, target_date: date | None
+    ) -> list[SearchHit]:
+        """Call the searcher, degrading kwarg by kwarg on ``TypeError`` so a
+        ``SearcherLike`` that predates ``target_date``, ``lexical_query``, or
+        ``room_id`` — a test double, an older adapter — still works unmodified,
+        the same way the ``room_id`` fallback always has.
+
+        ``lexical_query`` is always the detokenized form of ``query`` when a
+        tokenizer is configured: BM25 runs locally against raw text, so it wants
+        the real words back, and the name in it is restored from our own token
+        map rather than reproduced by the model — a rewrite that mangles
+        everything around it still yields a correctly spelled name here.
+        """
+        kwargs: dict[str, object] = {"limit": self._per_query_limit}
+        if room_id is not None:
+            kwargs["room_id"] = room_id
+        if self._pii_tokenizer is not None:
+            kwargs["lexical_query"] = self._detok(query)
+        if target_date is not None:
+            kwargs["target_date"] = target_date
+        while True:
+            try:
+                return self._searcher.search(query, **kwargs)  # type: ignore[arg-type]
+            except TypeError:
+                if "target_date" in kwargs:
+                    del kwargs["target_date"]
+                elif "lexical_query" in kwargs:
+                    del kwargs["lexical_query"]
+                elif "room_id" in kwargs:
+                    del kwargs["room_id"]
+                else:
+                    raise
 
     def _retrieve(
-        self, question: str, queries: list[str], *, room_id: str | None = None
+        self,
+        question: str,
+        queries: list[str],
+        *,
+        room_id: str | None = None,
+        target_date: date | None = None,
     ) -> list[SearchHit]:
         """Retrieve per query, fuse, boost, and diversify.
 
         Each query variant is fetched at ``per_query_limit`` — wider than the final
         candidate count (AC-16) — so a document that ranks just outside the cutoff
         for every individual query still has a chance to surface once boosting and
-        diversification run over the combined pool.
+        diversification run over the combined pool. ``target_date``, if given, is
+        also passed to the searcher itself (see ``HybridSearcher._date_search``) so
+        a chunk naming that date can enter the pool independent of how any query
+        variant's keyword/vector match happened to rank it.
         """
         ranked_lists: list[list[str]] = []
         by_id: dict[str, SearchHit] = {}
         for query in queries:
-            # BM25 runs locally against raw text, so it gets the real words back.
-            # Note the name is restored from our own token map, not reproduced by
-            # the model — a rewrite that mangled everything around it still yields
-            # a correctly spelled name here.
-            lexical = self._detok(query)
-            if room_id is not None:
-                try:
-                    hits = self._searcher.search(
-                        query,
-                        limit=self._per_query_limit,
-                        room_id=room_id,
-                        lexical_query=lexical,
-                    )
-                except TypeError:
-                    hits = self._searcher.search(query, limit=self._per_query_limit)
-            else:
-                hits = self._searcher.search(
-                    query, limit=self._per_query_limit, lexical_query=lexical
-                )
+            hits = self._search_one(query, room_id=room_id, target_date=target_date)
             ranked_lists.append([str(h.chunk_id) for h in hits])
             for h in hits:
                 by_id.setdefault(str(h.chunk_id), h)
@@ -563,7 +615,7 @@ class AnswerPipeline:
                 found.score = score
                 scored.append(found)
 
-        boosted = _boost(question, scored, today=self._clock().date())
+        boosted = _boost(question, scored, today=self._clock().date(), target_date=target_date)
         diversified = _diversify(boosted, max_per_document=self._max_per_document)
         return diversified[: self._candidates]
 
@@ -645,6 +697,8 @@ class AnswerPipeline:
             return None
         query = raw.strip().splitlines()[0].strip(_STRIP_CHARS) if raw.strip() else ""
         if not query or query.lower() == question.lower():
+            return None
+        if not _keeping_pii_entities(question, [query]):
             return None
         return query[:200]
 
@@ -797,7 +851,9 @@ def _detect_target_date(question: str, today: date) -> date | None:
     return None
 
 
-def _boost(question: str, hits: list[SearchHit], *, today: date) -> list[SearchHit]:
+def _boost(
+    question: str, hits: list[SearchHit], *, today: date, target_date: date | None = None
+) -> list[SearchHit]:
     """Rank candidates matching an explicit signal in the question first (AC-18
     for Lernfeld; the date case is the same idea applied to schedule documents).
 
@@ -806,10 +862,15 @@ def _boost(question: str, hits: list[SearchHit], *, today: date) -> list[SearchH
     says "2026-08-24" — a generic retriever has no way to know either one matters
     more than topical similarity, so whichever the question actually names is
     honoured over whatever BM25/embedding scores happened to produce.
+
+    ``target_date`` is normally passed in already resolved by the caller (single
+    source of truth with the queries/searcher-filter use of the same date); it is
+    only re-detected here when a caller (e.g. a direct test) doesn't have it yet.
     """
     lernfeld = _detect_named_lernfeld(question)
     lernfeld_needles = _lernfeld_needles(lernfeld) if lernfeld else ()
-    target_date = _detect_target_date(question, today)
+    if target_date is None:
+        target_date = _detect_target_date(question, today)
     date_needles = (f"{target_date:%Y-%m-%d}", f"{target_date:%d.%m.%Y}") if target_date else ()
 
     def sort_key(hit: SearchHit) -> tuple[bool, bool, float]:
@@ -836,6 +897,29 @@ def _diversify(hits: list[SearchHit], *, max_per_document: int) -> list[SearchHi
         counts[hit.doc_id] = seen + 1
         result.append(hit)
     return result
+
+
+def _pii_entities(text: str) -> set[str]:
+    """Every ``⟦PII...⟧`` placeholder literally present in ``text``."""
+    return {m.group(0) for m in TOKEN_RE.finditer(text)}
+
+
+def _keeping_pii_entities(source: str, variants: list[str]) -> list[str]:
+    """Drop any rewritten query that silently lost a ``⟦PII...⟧`` placeholder
+    named in ``source``.
+
+    The query-rewriting prompts (expand/decompose/followup) are instructed to
+    carry a placeholder through unchanged, but the model cannot see what it
+    stands for and sometimes just writes around it instead — producing a
+    plausible-looking query that has quietly stopped being about the person or
+    email the student actually asked about. Such a variant is worse than
+    useless: it survives reciprocal-rank-fusion as a "real" query and crowds
+    out the one query that could still exact-match the token in the index.
+    """
+    needed = _pii_entities(source)
+    if not needed:
+        return variants
+    return [v for v in variants if needed <= _pii_entities(v)]
 
 
 def _clip(text: str, limit: int) -> str:

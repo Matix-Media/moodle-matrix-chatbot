@@ -32,8 +32,17 @@ class _FakePipeline:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def answer(self, question: str, *, history: list[tuple[str, str]] | None = None) -> Answer:
-        self.calls.append({"question": question, "history": history})
+    def answer(
+        self,
+        question: str,
+        *,
+        history: list[tuple[str, str]] | None = None,
+        room_id: str | None = None,
+        event_id: str | None = None,
+    ) -> Answer:
+        self.calls.append(
+            {"question": question, "history": history, "room_id": room_id, "event_id": event_id}
+        )
         return Answer(text=f"answer to: {question}", grounded=True, citations=[])
 
 
