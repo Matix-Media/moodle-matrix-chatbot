@@ -109,8 +109,11 @@ one-time reindex.
   opt in, and no new dependency (spaCy) is imported unless it is enabled.
 - `AC-24` Enabling the flag on a deployment with an existing index does not require any manual
   deletion of chunks, vectors, or cache rows — a forced re-extraction pass alone produces a
-  fully tokenized index, because changed content hashes make the existing "skip unchanged
-  content" and cache-invalidation logic behave correctly on their own.
+  fully tokenized index. Originally true simply because changed content hashes made the existing
+  "skip unchanged content" logic behave correctly on their own — before the storage flip (AC-13),
+  `chunk.body` *was* the tokenized form, so any tokenization change was a body content change by
+  construction. AC-13 broke that coincidence (`chunk.body` is now raw and invariant to detection
+  logic), so the guarantee is now carried explicitly by AC-42 instead of following for free.
 
 ### Egress boundary
 
@@ -231,6 +234,29 @@ if sources are unclear") can easily latch onto.
   specifically — literal dates (`07.11.2023`), which would otherwise corrupt the date strings
   `HybridSearcher._date_search`/`_boost` depend on matching exactly.
 
+### Reindexing when only detection logic changes
+
+Found live, right after AC-40/AC-41 shipped: running `bsbot index --reset-all` did not fix a
+single already-indexed chunk. `--reset-all` only clears `extract_version`, putting a document
+back into `documents_needing_extraction()`'s queue — the actual "has anything worth rewriting
+changed" decision is a separate check inside `_index_one`, comparing a hash of `chunk.body`
+(plus `_augmentation_signature()`) against the document's stored `text_sha256`. Since AC-13's
+storage flip, `chunk.body` is raw and untouched by anything `PiiTokenizer` does — AC-40 and
+AC-41 change only the derived `text_tokenized`/`header_text_tokenized` columns, so the hash
+matched, every document was skipped, and 65% of the live corpus's chunks kept stale tokenized
+headers through a `--reset-all` that appeared to run cleanly. This is the identical failure
+mode `_augmentation_signature()` already exists to prevent for `--hype`/`--summarize`
+/`--contextualize` — the same class of bug, just not extended to cover the PII tokenizer.
+
+- `AC-42` A PII-detection logic version is folded into the same change-detection hash, active
+  whenever a tokenizer is configured. Bumping it is what makes a `--reset-all` actually rewrite
+  a chunk whose raw body is unchanged but whose desired tokenized view now differs — this is
+  what AC-24 now depends on explicitly, rather than getting it by accident the way the
+  pre-storage-flip architecture did. Whoever changes what `PiiTokenizer.tokenize()` detects —
+  a new normalization rule, a new exclusion, a NER model swap — is responsible for bumping this
+  alongside the change, the same manual discipline `EXTRACT_VERSION` already requires for
+  extraction-logic changes.
+
 ## Non-goals
 
 - Phone numbers, postal addresses, and other identifiers are out of scope for this iteration.
@@ -258,7 +284,8 @@ if sources are unclear") can easily latch onto.
 - Tokenization must happen before `content_sha256()` is computed for embedding/OCR cache keys,
   so those caches key off exactly what is actually sent to Gemini.
 - A deployment that already ran the AC-24 rollout reindex needs to run
-  `bsbot index --reset-all` again after AC-40/AC-41 ship: existing `chunks.header_text_tokenized`
-  rows and any document summary generated before this change can still hold hash tokens for
-  metadata/digit-bearing spans that will no longer be produced going forward, and only a fresh
-  extraction pass rewrites them.
+  `bsbot index --reset-all` again after AC-40/AC-41/AC-42 ship: existing
+  `chunks.header_text_tokenized` rows and any document summary generated before this change can
+  still hold hash tokens for metadata/digit-bearing spans that will no longer be produced going
+  forward, and only a fresh extraction pass rewrites them. This note was wrong on its own before
+  AC-42 landed — see AC-42's finding for why "run `--reset-all` again" alone did not work.

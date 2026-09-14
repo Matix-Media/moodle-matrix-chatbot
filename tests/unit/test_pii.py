@@ -478,6 +478,52 @@ class TestIndexerProtection:
         assert any("Sprechstunde Frau Schmidt" in p for p in summary_prompts)
         assert not any("⟦PIIPERSON" in p for p in summary_prompts)
 
+    async def test_enabling_pii_forces_reprocessing_of_unchanged_raw_text(
+        self, store: Store
+    ) -> None:
+        """AC-42: found live — chunk.body is raw and invariant to PiiTokenizer
+        (AC-13), so the change-detection hash must not skip a document just
+        because its raw text is unchanged when tokenization itself just turned
+        on. Without this, `--reset-all` after enabling PII tokenization for the
+        first time would silently do nothing."""
+        store.persist_crawl([item(text="Kontakt: Herr Mueller.")])
+        await Indexer(store, _NoFetch()).index_pending()  # type: ignore[arg-type]
+        assert "Herr Mueller" in store.chunks_for("a")[0].text
+
+        store.reset_extraction_for_all_documents()
+        tok = PiiTokenizer(store, nlp=FakeNlp(["Herr Mueller"]))
+        second = await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
+
+        assert second.skipped == 0
+        assert second.indexed == 1
+        row = store.connection.execute(
+            "SELECT text_tokenized FROM chunks WHERE doc_id='a'"
+        ).fetchone()
+        assert "⟦PIIPERSON" in row["text_tokenized"]
+
+    async def test_a_tokenizer_logic_version_bump_forces_reprocessing(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC-42: the regression this whole mechanism exists to prevent — two
+        PII-tokenizer-enabled runs in a row, with detection logic changing in
+        between (simulated here via the version bump itself, the same thing a
+        real AC-40/AC-41-style change does), must not silently skip every
+        document. Confirmed live: without this, a `--reset-all` after shipping
+        a detection-logic change left 65% of a real corpus's chunks stale."""
+        import bsbot.ingest.indexer as indexer_module
+
+        store.persist_crawl([item(text="Kontakt: Herr Mueller.")])
+        tok = PiiTokenizer(store, nlp=FakeNlp(["Herr Mueller"]))
+        first = await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
+        assert first.indexed == 1
+
+        store.reset_extraction_for_all_documents()
+        monkeypatch.setattr(indexer_module, "TOKENIZER_LOGIC_VERSION", 999)
+        second = await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
+
+        assert second.skipped == 0
+        assert second.indexed == 1
+
 
 class TestMatrixMessageProtection:
     def test_message_is_stored_raw_with_a_tokenized_twin(self, store: Store) -> None:
