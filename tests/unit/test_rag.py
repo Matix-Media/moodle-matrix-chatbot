@@ -198,6 +198,22 @@ class TestPromptSafety:
         assert "nur" in system.lower()
         assert "moodle" in system.lower()
 
+    def test_system_prompt_carves_out_navigational_questions(self) -> None:
+        """AC-19: found live — "Wo finde ich den Stundenplan?" retrieved genuinely
+        relevant Blockplan documents and still refused, because a schedule chunk
+        is data, never a sentence saying "the schedule is here". The exception
+        must be scoped to location-style questions, not to facts in general —
+        the "never guess" language (a wrong exam date is worse than no answer)
+        stays untouched for that case."""
+        pipeline, _, _ = make([hit(1, "Inhalt.")])
+        pipeline.answer("Frage?")
+        system = pipeline.system_prompt
+        assert "Wo finde ich" in system
+        # The core caution — don't invent a fact that isn't literally present —
+        # must still be there, unweakened, right next to the new exception.
+        assert "Prüfungstermin-Angabe ist schlimmer als keine Angabe" in system
+        assert "konkrete Fakten innerhalb einer Quelle" in system
+
 
 class TestExpansionAndRerank:
     def test_expansion_retrieves_for_each_variant(self) -> None:

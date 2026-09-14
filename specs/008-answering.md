@@ -31,6 +31,17 @@ answer at all, so refusal is a first-class outcome, not an error path.
   rendered as a broken link.
 - `AC-10` A refusal is detected and marked `grounded=False`, so callers can render it
   differently.
+- `AC-19` Grounding for a navigational question ("Wo finde ich...", "Zeig mir...", "Gibt es
+  einen/eine...") requires only that a retrieved source *contain* the requested content — not
+  a sentence that literally states where to find it. Found live: "Wo finde ich den
+  Stundenplan?" retrieved genuinely relevant `Blockplan` documents (real schedule content,
+  clean citations, nothing wrong with retrieval) and still refused, because a Blockplan chunk
+  is schedule *data*, never a sentence saying "the schedule is here." AC-6's rule that the
+  model use only retrieved chunks is unaffected; this narrows only what counts as "the
+  sources answer the question" for this one question shape. A factual question asking for a
+  specific fact *within* a source (a date, a number, a name, a criterion) is unaffected by
+  this exception — that fact must still be literally present, per the Goal's own rationale
+  (a wrong exam date is worse than no answer at all) which this deliberately does not touch.
 
 ### Language and tone
 - `AC-11` The system prompt is German and instructs the model to answer in the question's
