@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -20,6 +21,7 @@ import structlog
 from pydantic import BaseModel
 
 from bsbot.index.search import SearchHit, reciprocal_rank_fusion
+from bsbot.pii.alias import ENTITY_RE, Aliaser, AliasingLLM
 from bsbot.pii.tokenizer import TOKEN_RE, PiiTokenizer
 from bsbot.rag.prompts import (
     ANSWER_TEMPLATE,
@@ -72,12 +74,17 @@ _STRIP_CHARS = " -–—•\t\r\n0123456789.)"
 
 
 class SearcherLike(Protocol):
+    #: ``lexical_query`` carries the raw (detokenized) form for the local BM25
+    #: half, while ``query`` stays the Gemini-facing form the vector half needs.
+    #: ``target_date`` is a resolved calendar date, matched as-is (see
+    #: ``HybridSearcher._date_search``).
     def search(
         self,
         query: str,
         *,
         limit: int = 12,
         room_id: str | None = None,
+        lexical_query: str | None = None,
         target_date: date | None = None,
     ) -> list[SearchHit]: ...
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]: ...
@@ -93,6 +100,15 @@ class LLMLike(Protocol):
         temperature: float = ...,
         purpose: str = ...,
     ) -> str: ...
+
+
+#: The alias-wrapped LLM for the request currently being answered. A ContextVar
+#: rather than a temporary attribute swap: ``AnswerPipeline`` is a singleton
+#: reused across requests (see ``web.app``), and ``answer()`` is called
+#: synchronously from an async route. That serializes today only because nothing
+#: inside it yields — an implicit invariant a threadpool move would break
+#: silently, with one request's alias map answering another's prompts.
+_REQUEST_LLM: ContextVar[LLMLike | None] = ContextVar("bsbot_request_llm", default=None)
 
 
 class Citation(BaseModel):
@@ -160,7 +176,7 @@ class AnswerPipeline:
         pii_tokenizer: PiiTokenizer | None = None,
     ) -> None:
         self._searcher = searcher
-        self._llm = llm
+        self._base_llm = llm
         self._expand = expand
         self._rerank = rerank
         self._followup = followup
@@ -183,6 +199,15 @@ class AnswerPipeline:
         self._clock = clock
         self._pii_tokenizer = pii_tokenizer
 
+    @property
+    def _llm(self) -> LLMLike:
+        """The LLM for the request in flight — alias-wrapped while one is.
+
+        A property rather than a plain attribute so that every ``generate`` call
+        site below picks the wrapper up without knowing it exists.
+        """
+        return _REQUEST_LLM.get() or self._base_llm
+
     def _detok(self, text: str) -> str:
         return self._pii_tokenizer.detokenize(text) if self._pii_tokenizer else text
 
@@ -191,6 +216,23 @@ class AnswerPipeline:
         return SYSTEM_PROMPT
 
     def answer(
+        self,
+        question: str,
+        *,
+        history: list[tuple[str, str]] | None = None,
+        room_id: str | None = None,
+        event_id: str | None = None,
+    ) -> Answer:
+        """Answer one question, with a fresh alias map bound for its duration."""
+        if self._pii_tokenizer is None:
+            return self._answer(question, history=history, room_id=room_id, event_id=event_id)
+        bound = _REQUEST_LLM.set(AliasingLLM(self._base_llm, Aliaser()))
+        try:
+            return self._answer(question, history=history, room_id=room_id, event_id=event_id)
+        finally:
+            _REQUEST_LLM.reset(bound)
+
+    def _answer(
         self,
         question: str,
         *,
@@ -337,7 +379,12 @@ class AnswerPipeline:
             # value by `_finalise`, and this call sends its `answer` argument to
             # Gemini for follow-up-question suggestions. Passing `result.text`
             # here would re-leak exactly the PII tokenization exists to protect.
-            result.suggested_questions = self._suggest_followup_questions(question, raw)
+            # The suggestions therefore come back in token space too, so they
+            # need resolving before they reach the student — `_finalise` has
+            # already run by this point and never sees them.
+            result.suggested_questions = [
+                self._detok(q) for q in self._suggest_followup_questions(question, raw)
+            ]
         log.info("rag.answered", grounded=result.grounded, citations=len(result.citations))
         return result
 
@@ -446,7 +493,9 @@ class AnswerPipeline:
                 model=self._utility_model,
                 temperature=0.0,
             )
-            match = re.search(r"(\d+(?:\.\d+)?)", raw)
+            # An entity echoed into the response carries twelve hex characters,
+            # and the digits among them would be read as the score.
+            match = re.search(r"(\d+(?:\.\d+)?)", ENTITY_RE.sub(" ", raw))
             if match:
                 score = float(match.group(1))
                 return min(max(score, 0.0), 1.0)
@@ -502,13 +551,21 @@ class AnswerPipeline:
         self, query: str, *, room_id: str | None, target_date: date | None
     ) -> list[SearchHit]:
         """Call the searcher, degrading kwarg by kwarg on ``TypeError`` so a
-        ``SearcherLike`` that predates ``target_date`` (or ``room_id``) — a test
-        double, an older adapter — still works unmodified, the same way the
-        ``room_id`` fallback always has.
+        ``SearcherLike`` that predates ``target_date``, ``lexical_query``, or
+        ``room_id`` — a test double, an older adapter — still works unmodified,
+        the same way the ``room_id`` fallback always has.
+
+        ``lexical_query`` is always the detokenized form of ``query`` when a
+        tokenizer is configured: BM25 runs locally against raw text, so it wants
+        the real words back, and the name in it is restored from our own token
+        map rather than reproduced by the model — a rewrite that mangles
+        everything around it still yields a correctly spelled name here.
         """
         kwargs: dict[str, object] = {"limit": self._per_query_limit}
         if room_id is not None:
             kwargs["room_id"] = room_id
+        if self._pii_tokenizer is not None:
+            kwargs["lexical_query"] = self._detok(query)
         if target_date is not None:
             kwargs["target_date"] = target_date
         while True:
@@ -517,6 +574,8 @@ class AnswerPipeline:
             except TypeError:
                 if "target_date" in kwargs:
                     del kwargs["target_date"]
+                elif "lexical_query" in kwargs:
+                    del kwargs["lexical_query"]
                 elif "room_id" in kwargs:
                     del kwargs["room_id"]
                 else:
@@ -599,7 +658,9 @@ class AnswerPipeline:
             # the back of a rerank failure we already degraded from once.
             return hits, len(hits)
 
-        order = [int(n) for n in re.findall(r"\d+", raw)]
+        # Same hazard as `_evaluate_relevance`: a token's hex payload would be
+        # scanned as candidate indices.
+        order = [int(n) for n in re.findall(r"\d+", ENTITY_RE.sub(" ", raw))]
         chosen: list[SearchHit] = []
         seen: set[int] = set()
         for number in order:

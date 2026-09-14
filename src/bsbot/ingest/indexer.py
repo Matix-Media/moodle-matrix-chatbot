@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import structlog
@@ -38,6 +38,16 @@ log = structlog.get_logger(__name__)
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
+
+
+def _assemble_indexed_text(base: str, context: str | None, questions: list[str]) -> str:
+    """Situating context first (it frames the excerpt), hypothetical questions last
+    (they extend, rather than reframe, the searchable text)."""
+    if context:
+        base = f"{context}\n\n{base}"
+    if questions:
+        base = f"{base}\n\nFragen:\n" + "\n".join(questions)
+    return base
 
 
 class LLMLike(Protocol):
@@ -286,23 +296,28 @@ class Indexer:
         if segments is None and aliases is None:
             return
 
-        # PII tokenization (spec 013): every segment, plus the course/section/module
-        # breadcrumb, is tokenized before anything downstream — chunking, HyPE,
-        # summarization, contextual retrieval, embedding — touches it. `document`
-        # itself is never mutated, so `documents.text`/header fields stay raw for
-        # local export.
+        # PII tokenization (spec 013): chunking runs on *raw* text, so `chunks.text`
+        # and `chunks_fts` hold real words and FTS5's diacritic folding and prefix
+        # matching work on names. The Gemini-facing view is derived per finished
+        # chunk below. Chunking the tokenized text instead would not give two
+        # aligned views of the same document: `_find_split` counts characters, and
+        # a 22-character token is not length-parity with the name it replaced, so
+        # the boundaries would land in different places.
         header_path = document.header_path
         title = document.title
-        if self._pii_tokenizer is not None:
-            if segments is not None:
-                segments = [
-                    replace(seg, text=self._pii_tokenizer.tokenize(seg.text)) for seg in segments
-                ]
-            # Tokenized together, not segment-by-segment: a lone breadcrumb
-            # segment is too short and context-free for spaCy's NER to judge
-            # reliably (see `PiiTokenizer.tokenize_path`).
-            header_path = self._pii_tokenizer.tokenize_path(document.header_path)
-            title = self._pii_tokenizer.tokenize(document.title)
+
+        # Semantic chunking is the exception to "tokenize after chunking": it
+        # embeds individual sentences to *find* the boundaries, before any chunk
+        # exists. Tokenizing a sentence never merges, splits or reorders
+        # sentences, so the tokenized list stays index-aligned with the raw one —
+        # boundaries are chosen from tokenized text, bodies assembled from raw.
+        embedder = self._embedder
+        if embedder is not None and self._pii_tokenizer is not None:
+            inner_embedder = embedder
+            tokenizer = self._pii_tokenizer
+
+            def embedder(texts: list[str]) -> list[list[float]]:
+                return inner_embedder([tokenizer.tokenize(t) for t in texts])
 
         chunks = (
             chunk_segments(
@@ -311,7 +326,7 @@ class Indexer:
                 target_chars=self._target,
                 overlap_chars=self._overlap,
                 semantic=self._semantic,
-                embedder=self._embedder,
+                embedder=embedder,
             )
             if segments is not None
             else []
@@ -332,29 +347,44 @@ class Indexer:
             )
             return
 
+        def tokenize(text: str) -> str:
+            return self._pii_tokenizer.tokenize(text) if self._pii_tokenizer is not None else text
+
+        def detokenize(text: str) -> str:
+            return self._pii_tokenizer.detokenize(text) if self._pii_tokenizer is not None else text
+
+        #: The Gemini-facing twin of every chunk body, index-aligned with ``chunks``.
+        bodies_tok: list[str] = [tokenize(c.body) for c in chunks]
+
         # Hierarchical Indexing: generate document summary for multi-chunk documents
         if (self._summarize or self._summary_generator) and len(chunks) >= 2:
-            full_text = "\n\n".join(c.body for c in chunks)
-            summary_text = await self._generate_summary(title, full_text)
-            if summary_text:
+            summary_tok = await self._generate_summary(tokenize(title), "\n\n".join(bodies_tok))
+            if summary_tok:
                 header_text = " › ".join(p for p in header_path if p)
                 summary_chunk = Chunk(
-                    body=summary_text,
+                    body=detokenize(summary_tok),
                     header_text=f"{header_text} › Zusammenfassung",
                     page=None,
                     ordinal=0,
                 )
                 chunks.insert(0, summary_chunk)
+                # Keep what the model actually wrote as the tokenized view rather
+                # than re-running NER over its own prose: the detokenized text is
+                # what belongs in the raw index, but round-tripping it back through
+                # detection could silently miss a name NER caught the first time.
+                bodies_tok.insert(0, summary_tok)
 
         # Re-assign ordinals
         for ordinal, chunk in enumerate(chunks):
             chunk.ordinal = ordinal
 
-        # HyPE / Document Augmentation: generate hypothetical questions per chunk
+        # HyPE / Document Augmentation: generate hypothetical questions per chunk.
+        # These are LLM output, so they arrive in token space and need resolving
+        # before they can join the raw view (see `_assemble_indexed_text` below).
         chunk_questions: dict[int, list[str]] = {}
         if self._hype or self._hype_generator:
-            for idx, chunk in enumerate(chunks):
-                qs = await self._generate_hype(chunk.body)
+            for idx, body_tok in enumerate(bodies_tok):
+                qs = await self._generate_hype(body_tok)
                 if qs:
                     chunk_questions[idx] = qs
 
@@ -363,13 +393,15 @@ class Indexer:
         # the document-level context, contextualizing it would be circular.
         chunk_context: dict[int, str] = {}
         if self._contextualize or self._context_generator:
-            full_text = "\n\n".join(
-                c.body for c in chunks if "Zusammenfassung" not in c.header_text
+            full_text_tok = "\n\n".join(
+                body
+                for body, chunk in zip(bodies_tok, chunks, strict=True)
+                if "Zusammenfassung" not in chunk.header_text
             )
             for idx, chunk in enumerate(chunks):
                 if "Zusammenfassung" in chunk.header_text:
                     continue
-                ctx = await self._generate_context(full_text, chunk.body)
+                ctx = await self._generate_context(full_text_tok, bodies_tok[idx])
                 if ctx:
                     chunk_context[idx] = ctx
 
@@ -392,17 +424,25 @@ class Indexer:
             )
             return
 
-        formatted_chunks = []
+        formatted_chunks: list[tuple[str, str | None, dict[str, Any]]] = []
         for idx, chunk in enumerate(chunks):
             qs = chunk_questions.get(idx, [])
             ctx = chunk_context.get(idx)
-            # Situating context goes first (it frames the excerpt), hypothetical
-            # questions last (they extend, rather than reframe, the searchable text).
-            text_to_index = chunk.text
-            if ctx:
-                text_to_index = f"{ctx}\n\n{text_to_index}"
-            if qs:
-                text_to_index = f"{text_to_index}\n\nFragen:\n" + "\n".join(qs)
+
+            header_tok = tokenize(chunk.header_text)
+            body_tok = bodies_tok[idx]
+            chunk_text_tok = f"{header_tok}\n\n{body_tok}" if header_tok else body_tok
+
+            # The augmentation text is LLM output and therefore already tokenized;
+            # the raw index needs it resolved back, the Gemini-facing view does not.
+            raw_qs = [detokenize(q) for q in qs]
+            raw_ctx = detokenize(ctx) if ctx else None
+            text_to_index = _assemble_indexed_text(chunk.text, raw_ctx, raw_qs)
+            text_tokenized = (
+                _assemble_indexed_text(chunk_text_tok, ctx, qs)
+                if self._pii_tokenizer is not None
+                else None
+            )
 
             meta: dict[str, Any] = {
                 "ordinal": chunk.ordinal,
@@ -410,14 +450,17 @@ class Indexer:
                 "header_text": chunk.header_text,
                 "body": chunk.body,
             }
-            if qs:
-                meta["questions"] = qs
-            if ctx:
-                meta["context"] = ctx
+            if self._pii_tokenizer is not None:
+                meta["header_text_tokenized"] = header_tok
+                meta["body_tokenized"] = body_tok
+            if raw_qs:
+                meta["questions"] = raw_qs
+            if raw_ctx:
+                meta["context"] = raw_ctx
             if "Zusammenfassung" in chunk.header_text:
                 meta["summary"] = True
 
-            formatted_chunks.append((text_to_index, meta))
+            formatted_chunks.append((text_to_index, text_tokenized, meta))
 
         self._store.replace_chunks(
             document.doc_id,

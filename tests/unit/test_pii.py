@@ -8,16 +8,22 @@ from typing import Any
 import pytest
 
 from bsbot.config import Settings
+from bsbot.eval.golden import GoldenQuestion
+from bsbot.eval.runner import PRESETS, run_benchmark
 from bsbot.export import export_all
 from bsbot.index.search import HybridSearcher, SearchHit
-from bsbot.index.store import Store
+from bsbot.index.store import Store, content_sha256
 from bsbot.ingest.fetcher import FetchResult
 from bsbot.ingest.indexer import Indexer
 from bsbot.ingest.model import ContentItem, ContentKind
+from bsbot.llm.embed import TASK_DOCUMENT, GeminiEmbedder
 from bsbot.pii import build_pii_tokenizer
+from bsbot.pii.alias import Aliaser
+from bsbot.pii.guard import GuardedLLM
 from bsbot.pii.tokenizer import (
     PATH_SEP,
     PiiTokenizer,
+    fold,
     make_token,
     normalize_email,
     normalize_person,
@@ -79,17 +85,22 @@ class FakePiiStore:
 
     def __init__(self) -> None:
         self._map: dict[str, str] = {}
+        self._normalized: dict[str, tuple[str, str]] = {}
 
     def upsert_pii_token(
         self, token: str, entity_type: str, normalized: str, original: str
     ) -> None:
         self._map.setdefault(token, original)
+        self._normalized[token] = (entity_type, normalized)
 
     def pii_original(self, token: str) -> str | None:
         return self._map.get(token)
 
     def all_pii_tokens(self) -> dict[str, str]:
         return dict(self._map)
+
+    def pii_normalized(self, entity_type: str) -> list[str]:
+        return [n for kind, n in self._normalized.values() if kind == entity_type]
 
 
 def hit(chunk_id: int, text: str, **kw: Any) -> SearchHit:
@@ -112,9 +123,18 @@ class FakeSearcher:
     def __init__(self, hits: list[SearchHit]) -> None:
         self._hits = hits
         self.queries: list[str] = []
+        self.lexical_queries: list[str] = []
 
-    def search(self, query: str, *, limit: int = 8, room_id: str | None = None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 8,
+        room_id: str | None = None,
+        lexical_query: str | None = None,
+    ) -> list[SearchHit]:
         self.queries.append(query)
+        self.lexical_queries.append(lexical_query if lexical_query is not None else query)
         return self._hits[:limit]
 
     def neighbors(self, chunk_id: int, *, radius: int) -> list[SearchHit]:
@@ -131,6 +151,17 @@ class FakeLLM:
     ) -> str:
         self.prompts.append((purpose, prompt))
         return self._responses.get(purpose, "OK. [1]")
+
+
+class _FakeEmbedAPI:
+    """Records the texts an embed call actually put on the wire."""
+
+    def __init__(self) -> None:
+        self.batches: list[list[str]] = []
+
+    def embed(self, *, texts: list[str], task_type: str, dim: int) -> list[list[float]]:
+        self.batches.append(list(texts))
+        return [[1.0, 0.0] for _ in texts]
 
 
 class SpyLLM:
@@ -389,17 +420,33 @@ class TestIndexerProtection:
             assert "mueller@schule.de" not in prompt
             assert "Herr Mueller" not in prompt
 
-    async def test_stored_chunk_text_is_tokenized(self, store: Store) -> None:
-        """AC-13"""
+    async def test_stored_chunk_text_is_raw_with_a_tokenized_twin(self, store: Store) -> None:
+        """AC-13: raw is what FTS5 needs to match real words; the tokenized twin
+        is what is allowed to leave for Gemini."""
         store.persist_crawl([item(text="Kontakt: Herr Mueller, mueller@schule.de")])
         tok = PiiTokenizer(store, nlp=FakeNlp(["Herr Mueller"]))
         await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
 
-        chunk_text = store.chunks_for("a")[0].text
-        assert "mueller@schule.de" not in chunk_text
-        assert "Herr Mueller" not in chunk_text
-        assert "⟦PIIEMAIL" in chunk_text
-        assert "⟦PIIPERSON" in chunk_text
+        row = store.connection.execute(
+            "SELECT text, text_tokenized FROM chunks WHERE doc_id='a'"
+        ).fetchone()
+        assert "Herr Mueller" in row["text"]
+        assert "mueller@schule.de" in row["text"]
+        assert "Herr Mueller" not in row["text_tokenized"]
+        assert "mueller@schule.de" not in row["text_tokenized"]
+        assert "⟦PIIEMAIL" in row["text_tokenized"]
+        assert "⟦PIIPERSON" in row["text_tokenized"]
+
+    async def test_fts_can_match_a_name_without_its_umlaut(self, store: Store) -> None:
+        """AC-13: the point of storing raw — FTS5's `remove_diacritics 2` folding
+        only works if it is given real words to fold."""
+        store.persist_crawl([item(text="Zuständig ist Frau Müller für alle Fragen.")])
+        tok = PiiTokenizer(store, nlp=FakeNlp(["Frau Müller"]))
+        await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
+
+        hits = HybridSearcher(store, embedder=None, pii_tokenizer=tok).search("Muller")
+
+        assert [h.doc_id for h in hits] == ["a"]
 
     async def test_raw_document_row_is_left_untouched(self, store: Store) -> None:
         """AC-13: `documents.text` stays raw, so local export is unaffected."""
@@ -411,8 +458,9 @@ class TestIndexerProtection:
 
 
 class TestMatrixMessageProtection:
-    def test_message_text_is_tokenized_before_storing(self, store: Store) -> None:
-        """AC-14"""
+    def test_message_is_stored_raw_with_a_tokenized_twin(self, store: Store) -> None:
+        """AC-14: consistent with Moodle content now — raw at rest, tokenized only
+        on the way out."""
         tok = PiiTokenizer(store, nlp=FakeNlp([]))
         store.index_matrix_message(
             room_id="!r:example.org",
@@ -423,8 +471,14 @@ class TestMatrixMessageProtection:
             pii_tokenizer=tok,
         )
         doc_id = "matrix:!r:example.org:$1"
-        assert "mueller@schule.de" not in (store.document(doc_id).text or "")
-        assert "⟦PIIEMAIL" in (store.document(doc_id).text or "")
+        assert "mueller@schule.de" in (store.document(doc_id).text or "")
+
+        row = store.connection.execute(
+            "SELECT text, text_tokenized FROM chunks WHERE doc_id=?", (doc_id,)
+        ).fetchone()
+        assert "mueller@schule.de" in row["text"]
+        assert "mueller@schule.de" not in row["text_tokenized"]
+        assert "⟦PIIEMAIL" in row["text_tokenized"]
         # The sender identifier itself is never tokenized.
         chunks = store.chunks_for(doc_id)
         assert chunks[0].meta["sender"] == "@teacher:example.org"
@@ -435,7 +489,7 @@ class TestHydrateBreadcrumb:
         """AC-16"""
         store.persist_crawl([item(course_name="LF05 Herr Mueller", module_name="Skript Mueller")])
         store.replace_chunks(
-            "a", [("Inhalt zum Thema.", {"ordinal": 0})], header_text="LF05 Herr Mueller"
+            "a", [("Inhalt zum Thema.", None, {"ordinal": 0})], header_text="LF05 Herr Mueller"
         )
         tok = PiiTokenizer(store, nlp=FakeNlp(["Herr Mueller"]))
         searcher = HybridSearcher(store, embedder=None, pii_tokenizer=tok)
@@ -483,8 +537,11 @@ class TestPipeline:
         answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
         assert "Herr Mueller" not in answer_prompt
         assert "mueller@schule.de" not in answer_prompt
-        assert person_token in answer_prompt
-        assert email_token in answer_prompt
+        # AC-30: what the model sees is a short alias, not the twelve-hex token.
+        assert person_token not in answer_prompt
+        assert email_token not in answer_prompt
+        assert "⟦PERSON_A⟧" in answer_prompt
+        assert "⟦EMAIL_A⟧" in answer_prompt
 
         assert "mueller@schule.de" in answer.text
         assert "Herr Mueller" in answer.text
@@ -541,7 +598,375 @@ class TestPipeline:
 
         followup_prompt = next(p for kind, p in llm.prompts if kind == "suggest_followup")
         assert "mueller@schule.de" not in followup_prompt
-        assert email_token in followup_prompt
+        assert email_token not in followup_prompt  # AC-30: aliased, not hashed
+        assert "⟦EMAIL_A⟧" in followup_prompt
+
+    def test_suggested_questions_are_detokenized_before_reaching_the_student(self) -> None:
+        """AC-20: the call is fed tokens, so it answers in tokens — and `_finalise`
+        has already run by then, so nothing else would ever resolve them."""
+        store_ = FakePiiStore()
+        email_token = make_token("EMAIL", normalize_email("mueller@schule.de"))
+        store_.upsert_pii_token(
+            email_token, "EMAIL", normalize_email("mueller@schule.de"), "mueller@schule.de"
+        )
+        tok = PiiTokenizer(store_, nlp=FakeNlp([]))
+        llm = FakeLLM(
+            responses={
+                "answer": f"Die E-Mail ist {email_token}. [1]",
+                "suggest_followup": f"Wie erreiche ich {email_token}?",
+            }
+        )
+        h = hit(1, f"Kontakt: {email_token}")
+        pipeline = AnswerPipeline(
+            FakeSearcher([h]),
+            llm,
+            expand=False,
+            rerank=False,
+            suggest_followup=True,
+            pii_tokenizer=tok,
+        )
+
+        answer = pipeline.answer("Wie ist die E-Mail?")
+
+        assert answer.suggested_questions == ["Wie erreiche ich mueller@schule.de?"]
+
+
+# --------------------------------------------------------------------------- #
+# Egress boundary
+# --------------------------------------------------------------------------- #
+
+
+class TestEgressGuard:
+    @staticmethod
+    def _seeded(*names: str) -> tuple[PiiTokenizer, FakePiiStore]:
+        """A tokenizer whose store already knows ``names``, but whose NER tags nothing."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp([]))
+        for name in names:
+            normalized = normalize_person(name)
+            store_.upsert_pii_token(make_token("PERSON", normalized), "PERSON", normalized, name)
+        return tok, store_
+
+    def test_fold_is_length_preserving(self) -> None:
+        """AC-28: offsets in folded space must index the original text."""
+        for text in ["Müller", "Straße", "Max Müller", "ÄÖÜ", "José"]:
+            assert len(fold(text)) == len(text)
+
+    def test_scrub_catches_a_name_ner_missed(self) -> None:
+        """AC-26, AC-28: a terse lowercase question is exactly where the German NER
+        model — trained on capitalized prose — fails, and that failure would send a
+        real name to Gemini."""
+        tok, _ = self._seeded("Max Müller")
+
+        scrubbed, caught = tok.scrub("wer ist eigentlich max muller?")
+
+        assert caught == 1
+        assert "muller" not in scrubbed
+        assert make_token("PERSON", normalize_person("Max Müller")) in scrubbed
+
+    def test_tokenize_catches_a_known_name_ner_missed(self) -> None:
+        """AC-38: `FakeNlp([])` tags nothing, standing in for the German model on
+        lowercase chat text. The name is still caught, because the corpus already
+        taught the system about it."""
+        tok, _ = self._seeded("Max Müller")
+
+        result = tok.tokenize("wer ist eigentlich max muller?")
+
+        assert "muller" not in result
+        assert make_token("PERSON", normalize_person("Max Müller")) in result
+
+    def test_scrub_catches_an_untokenized_email(self) -> None:
+        """AC-26"""
+        tok, _ = self._seeded()
+
+        scrubbed, caught = tok.scrub("schreib an mueller@schule.de")
+
+        assert caught == 1
+        assert "mueller@schule.de" not in scrubbed
+
+    def test_scrub_leaves_single_word_names_alone(self) -> None:
+        """AC-27: `klein` is a known surname *and* an everyday German word, and this
+        pass runs over whole prompts including instruction templates."""
+        tok, _ = self._seeded("Klein")
+
+        scrubbed, caught = tok.scrub("Das ist ein kleines Problem, klein aber fein.")
+
+        assert caught == 0
+        assert scrubbed == "Das ist ein kleines Problem, klein aber fein."
+
+    def test_scrub_leaves_clean_text_untouched(self) -> None:
+        """AC-26: the guard must be inert when everything upstream did its job."""
+        tok, _ = self._seeded("Max Müller")
+        prompt = "Beantworte die Frage nur aus dem Kontext. [QUELLE 1] Die Prüfung ist am 15.03."
+
+        scrubbed, caught = tok.scrub(prompt)
+
+        assert caught == 0
+        assert scrubbed == prompt
+
+    def test_embedder_scrubs_before_the_cache_key_and_the_log(self, store: Store) -> None:
+        """AC-29: a guard sitting at the `EmbedAPI` boundary would still leave a
+        cache keyed on the raw text and a request log echoing it."""
+        normalized = normalize_person("Max Müller")
+        store.upsert_pii_token(make_token("PERSON", normalized), "PERSON", normalized, "Max Müller")
+        api = _FakeEmbedAPI()
+        embedder = GeminiEmbedder(
+            api,
+            store=store,
+            model="m",
+            dim=2,
+            rpm=0,
+            pii_tokenizer=PiiTokenizer(store, nlp=FakeNlp([])),
+        )
+
+        embedder.embed_documents(["kontakt: max muller"])
+
+        sent = api.batches[0][0]
+        assert "muller" not in sent
+        assert make_token("PERSON", normalized) in sent
+        assert store.cached_embedding(content_sha256(sent), "m", 2, TASK_DOCUMENT) is not None
+
+    def test_guarded_llm_scrubs_the_prompt_before_it_reaches_the_model(self) -> None:
+        """AC-26: the whole point is that a caller which forgot to tokenize is
+        caught by the boundary rather than trusted."""
+        tok, _ = self._seeded("Max Müller")
+        inner = FakeLLM(responses={"answer": "OK."})
+
+        result = GuardedLLM(inner, tok).generate(
+            "Wer ist Max Müller?", system="Du bist ein Assistent.", purpose="answer"
+        )
+
+        assert result == "OK."
+        sent = inner.prompts[0][1]
+        assert "Max Müller" not in sent
+        assert make_token("PERSON", normalize_person("Max Müller")) in sent
+
+
+class TestQueryPathSplit:
+    def test_bm25_gets_real_words_while_the_vector_half_gets_tokens(self) -> None:
+        """AC-37: the two halves of hybrid retrieval need opposite forms — BM25
+        runs locally against raw text, the vectors were built from tokenized text."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(
+            searcher, FakeLLM(), expand=False, rerank=False, pii_tokenizer=tok
+        )
+
+        pipeline.answer("Wann hat Herr Mueller Sprechstunde?")
+
+        assert "Herr Mueller" not in searcher.queries[0]
+        assert "⟦PIIPERSON" in searcher.queries[0]
+        assert "Herr Mueller" in searcher.lexical_queries[0]
+
+    def test_a_name_survives_a_rewrite_that_mangles_everything_around_it(self) -> None:
+        """AC-37: the name in the lexical query comes from our own token map, not
+        from the model reproducing it — which is the whole reason aliasing and the
+        raw index compose."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        # The expansion keeps the alias but rewrites all the surrounding words.
+        llm = FakeLLM(responses={"expand": "Sprechzeiten von ⟦PERSON_A⟧ im Sekretariat"})
+        pipeline = AnswerPipeline(searcher, llm, expand=True, rerank=False, pii_tokenizer=tok)
+
+        pipeline.answer("Wann hat Herr Mueller Sprechstunde?")
+
+        assert any("Sprechzeiten" in q and "Herr Mueller" in q for q in searcher.lexical_queries)
+
+
+class TestUnmigratedChunks:
+    def test_hydrate_tokenizes_a_row_that_has_no_tokenized_twin(self, store: Store) -> None:
+        """AC-35: a NULL predates the migration. Returning the raw column would be
+        the exact "trust the caller" mistake the boundary removes; failing would
+        block answers mid-rollout."""
+        store.persist_crawl([item()])
+        store.replace_chunks("a", [("Kontakt: mueller@schule.de", None, {"ordinal": 0})])
+        tok = PiiTokenizer(store, nlp=FakeNlp([]))
+
+        hits = HybridSearcher(store, embedder=None, pii_tokenizer=tok).search("Kontakt")
+
+        assert hits
+        assert "mueller@schule.de" not in hits[0].text
+        assert "⟦PIIEMAIL" in hits[0].text
+
+    def test_embed_pass_skips_a_row_that_has_no_tokenized_twin(self, store: Store) -> None:
+        """AC-35: never `text_tokenized or text` — that would embed the raw name."""
+        store.persist_crawl([item()])
+        store.replace_chunks("a", [("Kontakt: mueller@schule.de", None, {"ordinal": 0})])
+
+        rows = store.connection.execute(
+            "SELECT c.chunk_id, c.text, c.text_tokenized FROM chunks c "
+            "LEFT JOIN chunks_vec v ON v.chunk_id = c.chunk_id WHERE v.chunk_id IS NULL"
+        ).fetchall()
+        pending = [r for r in rows if r["text_tokenized"] is not None]
+
+        assert rows and not pending
+
+
+class TestPromptAliases:
+    def test_round_trip_restores_the_original_token(self) -> None:
+        """AC-30"""
+        aliaser = Aliaser()
+        token = make_token("PERSON", normalize_person("Max Müller"))
+
+        aliased = aliaser.alias_out(f"Wer ist {token}?")
+
+        assert aliased == "Wer ist ⟦PERSON_A⟧?"
+        assert aliaser.alias_in(aliased) == f"Wer ist {token}?"
+
+    def test_the_same_entity_keeps_one_alias_across_a_request(self) -> None:
+        """AC-30: a stable label is the whole reason the model can carry it."""
+        aliaser = Aliaser()
+        token = make_token("PERSON", normalize_person("Max Müller"))
+
+        first = aliaser.alias_out(f"{token} lehrt.")
+        second = aliaser.alias_out(f"Frag {token}.")
+
+        assert "⟦PERSON_A⟧" in first
+        assert "⟦PERSON_A⟧" in second
+
+    def test_person_and_email_are_numbered_independently(self) -> None:
+        """AC-30: per-type counters read more naturally when debugging a prompt."""
+        aliaser = Aliaser()
+        person = make_token("PERSON", normalize_person("Max Müller"))
+        email = make_token("EMAIL", normalize_email("a@b.de"))
+
+        aliased = aliaser.alias_out(f"{person} {email}")
+
+        assert aliased == "⟦PERSON_A⟧ ⟦EMAIL_A⟧"
+
+    def test_alias_suffixes_overflow_past_twenty_six(self) -> None:
+        """AC-33: one attendance chunk can carry more than 26 names."""
+        aliaser = Aliaser()
+        tokens = [make_token("PERSON", f"person {i}") for i in range(28)]
+
+        aliased = aliaser.alias_out(" ".join(tokens))
+
+        assert "⟦PERSON_Z⟧" in aliased
+        assert "⟦PERSON_AA⟧" in aliased
+        assert "⟦PERSON_AB⟧" in aliased
+
+    def test_an_alias_the_model_invented_is_dropped(self) -> None:
+        """AC-32: a corrupted alias must never become a search term."""
+        aliaser = Aliaser()
+        token = make_token("PERSON", normalize_person("Max Müller"))
+        aliaser.alias_out(token)
+
+        restored = aliaser.alias_in("Sprechstunde ⟦PERSON_Q⟧ Termin")
+
+        assert "PERSON_Q" not in restored
+        assert restored == "Sprechstunde  Termin"
+
+    def test_a_garbled_rewrite_does_not_become_a_junk_search_query(self) -> None:
+        """AC-32: the failure this whole layer exists to prevent — an expansion
+        stage silently turning into a query that can never match anything."""
+        store_ = FakePiiStore()
+        person_token = make_token("PERSON", normalize_person("Herr Mueller"))
+        store_.upsert_pii_token(
+            person_token, "PERSON", normalize_person("Herr Mueller"), "Herr Mueller"
+        )
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        # The model answers with an alias it was never given.
+        llm = FakeLLM(responses={"expand": "Sprechstunde ⟦PERSON_Z⟧"})
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(searcher, llm, expand=True, rerank=False, pii_tokenizer=tok)
+
+        pipeline.answer("Wann hat Herr Mueller Sprechstunde?")
+
+        # The expansion did reach the retriever — it just arrived without the
+        # invented alias, rather than carrying a term that matches nothing.
+        assert any("Sprechstunde" in q for q in searcher.queries)
+        assert not any("PERSON_Z" in q for q in searcher.queries)
+
+    def test_a_variant_that_silently_drops_the_entity_is_filtered_out(self) -> None:
+        """Regression: found live on "wer ist Heiko Meiwes?" — the model wrote
+        around the placeholder in most variants instead of carrying it through,
+        producing plausible-looking queries about the wrong thing entirely.
+
+        This is a different failure than an invented/corrupted alias (covered by
+        `test_a_garbled_rewrite_does_not_become_a_junk_search_query` above): here
+        the model returns a *well-formed* variant that simply never mentions the
+        alias at all, so `Aliaser.alias_in` has nothing to drop — it is the
+        pipeline-level `_keeping_pii_entities` check, operating on the token
+        already restored by aliasing, that has to catch this one.
+        """
+        store_ = FakePiiStore()
+        person_token = make_token("PERSON", normalize_person("Herr Mueller"))
+        store_.upsert_pii_token(
+            person_token, "PERSON", normalize_person("Herr Mueller"), "Herr Mueller"
+        )
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        llm = FakeLLM(
+            responses={
+                # One variant keeps the alias (should survive, restored to the real
+                # token); one drops it and writes around it entirely (should not).
+                "expand": "Sprechstunde ⟦PERSON_A⟧\nAllgemeine Schulöffnungszeiten"
+            }
+        )
+        searcher = FakeSearcher([hit(1, "Inhalt.")])
+        pipeline = AnswerPipeline(searcher, llm, expand=True, rerank=False, pii_tokenizer=tok)
+
+        pipeline.answer("Wann hat Herr Mueller Sprechstunde?")
+
+        assert any(person_token in q for q in searcher.queries)
+        assert not any("Schulöffnungszeiten" in q for q in searcher.queries)
+
+    def test_rerank_ignores_digits_inside_an_echoed_token(self) -> None:
+        """AC-31: `_reranked` scans a raw response for candidate indices, and a
+        token's twelve hex characters contain digits."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp([]))
+        # Mixed hex is the dangerous shape, not an all-digit payload: `\d+` splits
+        # `1a2b3c…` into the single digits 1, 2, 3 — every one a valid candidate
+        # index — where one long run would simply fall out of range and be ignored.
+        noisy = "⟦PIIPERSON1a2b3c4d5e6f⟧"
+        llm = FakeLLM(responses={"rerank": f"{noisy} 2 1"})
+        hits = [hit(1, "Erster."), hit(2, "Zweiter.")]
+        pipeline = AnswerPipeline(
+            FakeSearcher(hits), llm, expand=False, rerank=True, pii_tokenizer=tok
+        )
+
+        pipeline.answer("Frage?")
+
+        # The model named 2 then 1, so the context must be in that order. Had the
+        # hex payload been scanned, those twelve leading digits would have driven
+        # the ordering instead.
+        answer_prompt = next(p for kind, p in llm.prompts if kind == "answer")
+        assert answer_prompt.index("Zweiter.") < answer_prompt.index("Erster.")
+
+
+class TestBenchmarkJudge:
+    def test_judge_call_tokenizes_question_keywords_and_answer(self) -> None:
+        """AC-25: the judge runs outside the pipeline, so the pipeline's own
+        protection has already ended — `Answer.text` is detokenized by then and
+        the golden question was never tokenized at all."""
+        store_ = FakePiiStore()
+        person_token = make_token("PERSON", normalize_person("Herr Mueller"))
+        store_.upsert_pii_token(
+            person_token, "PERSON", normalize_person("Herr Mueller"), "Herr Mueller"
+        )
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Herr Mueller"]))
+        llm = FakeLLM(responses={"answer": f"{person_token} hilft weiter. [1]", "judge": "4 - gut"})
+        golden = [
+            GoldenQuestion(
+                id="q1", question="Wer ist Herr Mueller?", expected_keywords=["Herr Mueller"]
+            )
+        ]
+
+        report = run_benchmark(
+            golden,
+            FakeSearcher([hit(1, f"Kontakt zu {person_token}")]),
+            llm,
+            presets={"baseline": PRESETS["baseline"]},
+            judge=True,
+            pipeline_kwargs={"pii_tokenizer": tok},
+        )
+
+        judge_prompt = next(p for kind, p in llm.prompts if kind == "judge")
+        assert "Herr Mueller" not in judge_prompt
+        assert person_token in judge_prompt
+        assert report.presets[0].results[0].judge_score == 4.0
 
 
 # --------------------------------------------------------------------------- #
@@ -575,7 +1000,7 @@ class TestExport:
             store_.persist_crawl([item()])
             store_.replace_chunks(
                 "a",
-                [(f"Kontakt: {email_token}", {"body": f"Kontakt: {email_token}"})],
+                [(f"Kontakt: {email_token}", None, {"body": f"Kontakt: {email_token}"})],
                 header_text="X",
             )
             tok = PiiTokenizer(store_, nlp=FakeNlp([]))

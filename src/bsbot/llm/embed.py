@@ -22,6 +22,7 @@ from typing import Protocol
 import structlog
 
 from bsbot.index.store import Store, content_sha256, normalise
+from bsbot.pii.tokenizer import PiiTokenizer
 
 log = structlog.get_logger(__name__)
 
@@ -58,9 +59,10 @@ def _suggested_delay(error: Exception) -> float | None:
 def _preview(text: str) -> str:
     """Trim a text for the log so one giant chunk cannot flood the output.
 
-    Callers are responsible for tokenizing PII out of ``texts`` before calling
-    ``embed_documents``/``embed_query`` (spec 013) — this preview reflects
-    exactly what they hand in, nothing is redacted here.
+    Callers are responsible for tokenizing PII out of ``texts`` (spec 013), and
+    when a ``pii_tokenizer`` is configured ``_embed`` scrubs whatever they
+    missed before this preview is built — so this reflects exactly the strings
+    that go to the API, and nothing needs redacting here.
     """
     collapsed = " ".join(text.split())
     if len(collapsed) <= LOG_PREVIEW_CHARS:
@@ -86,9 +88,11 @@ class GeminiEmbedder:
         max_retries: int = 4,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        pii_tokenizer: PiiTokenizer | None = None,
     ) -> None:
         self._api = api
         self._store = store
+        self._pii_tokenizer = pii_tokenizer
         self._model = model
         self._dim = dim
         self._batch_size = max(1, batch_size)
@@ -117,6 +121,22 @@ class GeminiEmbedder:
     ) -> list[list[float] | None]:
         if not texts:
             return []
+
+        # Before the cache key and before the log preview, not just before the
+        # API call: `content_sha256` must key off exactly what is sent (spec 013
+        # Notes), and `embed.request` below echoes these strings into the log.
+        # A guard placed at the `EmbedAPI` boundary would leave a clean payload
+        # behind a dirty log line and a cache keyed on unscrubbed text.
+        if self._pii_tokenizer is not None:
+            scrubbed: list[str] = []
+            caught_total = 0
+            for text in texts:
+                clean, caught = self._pii_tokenizer.scrub(text)
+                scrubbed.append(clean)
+                caught_total += caught
+            if caught_total:
+                log.warning("pii.egress_scrubbed", purpose="embed", entities=caught_total)
+            texts = scrubbed
 
         results: list[list[float] | None] = [None] * len(texts)
         pending: list[tuple[int, str]] = []

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from bsbot.eval.golden import GoldenQuestion
 from bsbot.eval.metrics import answerable_correct, keyword_coverage, reciprocal_rank, retrieval_hit
 from bsbot.index.search import SearchHit
+from bsbot.pii.tokenizer import PiiTokenizer
 from bsbot.rag.pipeline import AnswerPipeline, LLMLike, SearcherLike
 from bsbot.rag.prompts import JUDGE_TEMPLATE
 
@@ -208,18 +209,32 @@ class _RecordingSearcher:
         *,
         limit: int = 12,
         room_id: str | None = None,
+        lexical_query: str | None = None,
         target_date: date | None = None,
     ) -> list[SearchHit]:
         # Degrade kwarg by kwarg on TypeError, same as AnswerPipeline._search_one:
-        # a golden-set run's own SearcherLike double may predate `target_date` (or
-        # `room_id`) without that being a reason to fail every question.
-        try:
-            hits = self._inner.search(query, limit=limit, room_id=room_id, target_date=target_date)
-        except TypeError:
+        # a golden-set run's own SearcherLike double may predate `target_date`,
+        # `lexical_query`, or `room_id` without that being a reason to fail every
+        # question.
+        kwargs: dict[str, object] = {
+            "limit": limit,
+            "room_id": room_id,
+            "lexical_query": lexical_query,
+            "target_date": target_date,
+        }
+        while True:
             try:
-                hits = self._inner.search(query, limit=limit, room_id=room_id)
+                hits = self._inner.search(query, **kwargs)  # type: ignore[arg-type]
+                break
             except TypeError:
-                hits = self._inner.search(query, limit=limit)
+                if "target_date" in kwargs:
+                    del kwargs["target_date"]
+                elif "lexical_query" in kwargs:
+                    del kwargs["lexical_query"]
+                elif "room_id" in kwargs:
+                    del kwargs["room_id"]
+                else:
+                    raise
         self.recorded.extend(hits)
         return hits
 
@@ -250,11 +265,29 @@ class _RecordingLLM:
         self.chars = 0
 
 
-def _judge_score(llm: LLMLike, question: GoldenQuestion, answer_text: str) -> float | None:
-    """Coarse 1-5 LLM-judge relevance rating (Non-goals: not a metric substitute)."""
+def _judge_score(
+    llm: LLMLike,
+    question: GoldenQuestion,
+    answer_text: str,
+    *,
+    pii_tokenizer: PiiTokenizer | None = None,
+) -> float | None:
+    """Coarse 1-5 LLM-judge relevance rating (Non-goals: not a metric substitute).
+
+    This call sends text to Gemini *after* the pipeline's own protection has
+    ended: the golden question and its keywords are authored text the pipeline
+    never saw, and ``answer_text`` has already had every token resolved back to a
+    real value by ``_finalise``. Both must be tokenized again here.
+    """
+    keywords = ", ".join(question.expected_keywords) or "(keine vorgegeben)"
+    question_text = question.question
+    if pii_tokenizer is not None:
+        question_text = pii_tokenizer.tokenize(question_text)
+        keywords = pii_tokenizer.tokenize(keywords)
+        answer_text = pii_tokenizer.tokenize(answer_text)
     prompt = JUDGE_TEMPLATE.format(
-        question=question.question,
-        expected_keywords=", ".join(question.expected_keywords) or "(keine vorgegeben)",
+        question=question_text,
+        expected_keywords=keywords,
         answer=answer_text,
     )
     try:
@@ -282,6 +315,10 @@ def run_benchmark(
     """
     presets = PRESETS if presets is None else presets
     base_kwargs = dict(pipeline_kwargs or {})
+    # The judge call happens outside the pipeline, so it needs the tokenizer the
+    # pipeline was configured with (spec 013 AC-15's protection stops at the
+    # pipeline boundary).
+    judge_tokenizer: PiiTokenizer | None = base_kwargs.get("pii_tokenizer")
 
     preset_reports: list[PresetReport] = []
     for name, flags in presets.items():
@@ -311,7 +348,11 @@ def run_benchmark(
             ]
             any_ranked = [(h.doc_id, h.header_text) for h in recording_searcher.recorded]
 
-            judge_score = _judge_score(llm, gq, answer.text) if judge and answer.grounded else None
+            judge_score = (
+                _judge_score(llm, gq, answer.text, pii_tokenizer=judge_tokenizer)
+                if judge and answer.grounded
+                else None
+            )
             fallback = (
                 ("🔍" in answer.text) if (not gq.answerable and not answer.grounded) else None
             )

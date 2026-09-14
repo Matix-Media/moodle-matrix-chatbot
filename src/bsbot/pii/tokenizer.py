@@ -47,6 +47,7 @@ class PiiStoreLike(Protocol):
     ) -> None: ...
     def pii_original(self, token: str) -> str | None: ...
     def all_pii_tokens(self) -> dict[str, str]: ...
+    def pii_normalized(self, entity_type: str) -> list[str]: ...
 
 
 class EntLike(Protocol):
@@ -70,14 +71,36 @@ def normalize_email(text: str) -> str:
 
 
 def normalize_person(text: str) -> str:
-    """Case- and whitespace-insensitive key for a person span (AC-4).
+    """Case-, whitespace- and diacritic-insensitive key for a person span (AC-4).
+
+    Diacritics are folded so `Müller` and `Muller` share one token. Without that
+    the two hash differently, and since a hash is what the embedder and the LLM
+    see, a student who types the name without its umlaut — routine on a phone —
+    gets a different entity than the one the corpus recorded.
 
     Deliberately does not merge different surface forms of the same person
     ("Herr Müller" vs "Max Müller") — there is no coreference resolution
     here, see spec 013 AC-5.
     """
     collapsed = " ".join(unicodedata.normalize("NFKC", text).split())
-    return collapsed.casefold()
+    return fold(collapsed)
+
+
+def fold(text: str) -> str:
+    """Case- and diacritic-insensitive fold that preserves length.
+
+    Every input character maps to exactly one output character, so an offset in
+    the folded text is the same offset in the original. That is what lets the
+    gazetteer in ``PiiTokenizer.scrub`` search in folded space ("muller") and
+    still redact the right span of the untouched original ("Müller").
+    """
+    out: list[str] = []
+    for ch in text:
+        decomposed = unicodedata.normalize("NFKD", ch)
+        base = "".join(c for c in decomposed if not unicodedata.combining(c)) or ch
+        lowered = base[0].lower()
+        out.append(lowered[0] if lowered else base[0])
+    return "".join(out)
 
 
 def make_token(entity_type: str, normalized: str) -> str:
@@ -92,6 +115,16 @@ class PiiTokenizer:
     def __init__(self, store: PiiStoreLike, *, nlp: NlpLike) -> None:
         self._store = store
         self._nlp = nlp
+        #: Compiled lazily and dropped whenever a new PERSON is learned, so the
+        #: gazetteer never costs a SQL query plus a regex compile per call — a
+        #: reindex drives `generate()` thousands of times.
+        self._gazetteer: re.Pattern[str] | None = None
+        self._gazetteer_names: dict[str, str] = {}
+
+    def _remember(self, token: str, entity_type: str, normalized: str, original: str) -> None:
+        self._store.upsert_pii_token(token, entity_type, normalized, original)
+        if entity_type == "PERSON" and normalized not in self._gazetteer_names.values():
+            self._gazetteer = None
 
     def tokenize(self, text: str) -> str:
         """Replace every email then person span with its deterministic token.
@@ -142,13 +175,20 @@ class PiiTokenizer:
         if not text:
             return text
         text = EMAIL_RE.sub(self._replace_email, text)
-        return self._tokenize_persons(text)
+        text = self._tokenize_persons(text)
+        # A second pass over what NER left behind, against names already known
+        # (AC-38). The German model is trained on capitalized prose, which is what
+        # Moodle PDFs are — but a student's question is lowercase, terse chat
+        # ("wer ist max müller"), and that is precisely where it fails. Once a name
+        # has been seen anywhere in the corpus, this catches it everywhere.
+        scrubbed, _ = self.scrub(text)
+        return scrubbed
 
     def _replace_email(self, match: re.Match[str]) -> str:
         original = match.group(0)
         normalized = normalize_email(original)
         token = make_token("EMAIL", normalized)
-        self._store.upsert_pii_token(token, "EMAIL", normalized, original)
+        self._remember(token, "EMAIL", normalized, original)
         return token
 
     def _tokenize_persons(self, text: str) -> str:
@@ -167,11 +207,76 @@ class PiiTokenizer:
             original = ent.text.strip()
             normalized = normalize_person(original)
             token = make_token("PERSON", normalized)
-            self._store.upsert_pii_token(token, "PERSON", normalized, original)
+            self._remember(token, "PERSON", normalized, original)
             parts.append(token)
             cursor = ent.end_char
         parts.append(text[cursor:])
         return "".join(parts)
+
+    def _compiled_gazetteer(self) -> re.Pattern[str] | None:
+        if self._gazetteer is not None:
+            return self._gazetteer
+        # Only multi-word names. A bare surname is often an ordinary German word
+        # ("Klein", "Berg", "Neu"), and this pass runs over whole prompts —
+        # including instruction templates — so a single-token gazetteer would
+        # mangle unrelated text. "max müller" as a phrase carries no such risk.
+        names = [n for n in self._store.pii_normalized("PERSON") if " " in n]
+        if not names:
+            return None
+        self._gazetteer_names = {fold(n): n for n in names}
+        # Longest first so the fullest available name wins an overlap.
+        alternation = "|".join(
+            re.escape(f) for f in sorted(self._gazetteer_names, key=len, reverse=True)
+        )
+        self._gazetteer = re.compile(rf"(?<!\w)(?:{alternation})(?!\w)")
+        return self._gazetteer
+
+    def scrub(self, text: str) -> tuple[str, int]:
+        """Last-resort redaction for text about to leave for Gemini (AC-26).
+
+        Deliberately *not* NER: this runs on fully-formatted prompts, where a
+        model pass would be both expensive and indiscriminate. It is a cheap
+        deterministic net for the cases NER structurally misses — a name spaCy
+        failed to tag in a terse lowercase question, a name an LLM reintroduced
+        while rewriting, a call site that forgot to tokenize at all. It catches
+        only entities already known from `pii_tokens`, so it cannot replace
+        `tokenize()`; it is the net beneath it.
+
+        Returns the scrubbed text and how many entities it caught — a non-zero
+        count means something upstream failed to tokenize and is worth logging.
+        """
+        if not text:
+            return text, 0
+        caught = 0
+
+        def replace_email(match: re.Match[str]) -> str:
+            nonlocal caught
+            caught += 1
+            original = match.group(0)
+            normalized = normalize_email(original)
+            token = make_token("EMAIL", normalized)
+            self._remember(token, "EMAIL", normalized, original)
+            return token
+
+        text = EMAIL_RE.sub(replace_email, text)
+
+        pattern = self._compiled_gazetteer()
+        if pattern is None:
+            return text, caught
+
+        folded = fold(text)
+        parts: list[str] = []
+        cursor = 0
+        for match in pattern.finditer(folded):
+            normalized = self._gazetteer_names.get(match.group(0))
+            if normalized is None:  # pragma: no cover - alternation is built from the keys
+                continue
+            parts.append(text[cursor : match.start()])
+            parts.append(make_token("PERSON", normalized))
+            cursor = match.end()
+            caught += 1
+        parts.append(text[cursor:])
+        return "".join(parts), caught
 
     def detokenize(self, text: str) -> str:
         """Resolve every token back to its stored original value (AC-8/AC-9)."""
@@ -192,6 +297,7 @@ __all__ = [
     "NlpLike",
     "PiiStoreLike",
     "PiiTokenizer",
+    "fold",
     "make_token",
     "normalize_email",
     "normalize_person",

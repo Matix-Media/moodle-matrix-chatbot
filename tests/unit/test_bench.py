@@ -48,7 +48,14 @@ class FakeSearcher:
         self.queries: list[str] = []
         self.calls = 0
 
-    def search(self, query: str, *, limit: int = 12, room_id: str | None = None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 12,
+        room_id: str | None = None,
+        lexical_query: str | None = None,
+    ) -> list[SearchHit]:
         self.calls += 1
         self.queries.append(query)
         if query in self._fail_on:

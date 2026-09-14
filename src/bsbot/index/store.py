@@ -155,7 +155,14 @@ CREATE TABLE IF NOT EXISTS chunks (
     header_text TEXT NOT NULL DEFAULT '',
     page        INTEGER,
     text_sha256 TEXT NOT NULL,
-    meta        TEXT NOT NULL DEFAULT '{}'
+    meta        TEXT NOT NULL DEFAULT '{}',
+    -- The Gemini-facing view of `text`/`header_text` (spec 013 AC-13). `text`
+    -- itself is raw so FTS5 can do its job on real words; these carry what is
+    -- allowed to leave the machine. NULL means "not tokenized yet" — a row from
+    -- before the egress-boundary migration — and is never silently treated as
+    -- safe to send (AC-35).
+    text_tokenized        TEXT,
+    header_text_tokenized TEXT
 );
 CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc_id);
 
@@ -273,6 +280,15 @@ class Store:
         columns = {row[1] for row in con.execute("PRAGMA table_info(documents)")}
         if "content_changed_at" not in columns:
             con.execute("ALTER TABLE documents ADD COLUMN content_changed_at INTEGER")
+
+        chunk_columns = {row[1] for row in con.execute("PRAGMA table_info(chunks)")}
+        # Left NULL rather than backfilled: the value depends on the NER model, so
+        # only a re-extraction can produce it. Readers treat NULL as "not safe to
+        # send yet" (AC-35) instead of falling back to the raw column.
+        if "text_tokenized" not in chunk_columns:
+            con.execute("ALTER TABLE chunks ADD COLUMN text_tokenized TEXT")
+        if "header_text_tokenized" not in chunk_columns:
+            con.execute("ALTER TABLE chunks ADD COLUMN header_text_tokenized TEXT")
 
     def close(self) -> None:
         if self._con is not None:
@@ -600,18 +616,28 @@ class Store:
     # ------------------------------------------------------------------ #
 
     def replace_chunks(
-        self, doc_id: str, chunks: Sequence[tuple[str, dict[str, Any]]], *, header_text: str = ""
+        self,
+        doc_id: str,
+        chunks: Sequence[tuple[str, str | None, dict[str, Any]]],
+        *,
+        header_text: str = "",
     ) -> list[int]:
-        """Swap a document's chunks in one transaction (AC-14)."""
+        """Swap a document's chunks in one transaction (AC-14).
+
+        Each entry is ``(text, text_tokenized, meta)``: the raw text FTS indexes,
+        and the Gemini-facing view of it (``None`` only when no tokenizer is
+        configured). The tokenized breadcrumb rides in ``meta`` — it is a short
+        string, so storing it twice costs nothing worth avoiding.
+        """
         con = self.connection
         ids: list[int] = []
         with con:
             self._delete_chunks(con, doc_id)
-            for ordinal, (text, meta) in enumerate(chunks):
+            for ordinal, (text, text_tokenized, meta) in enumerate(chunks):
                 digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
                 cur = con.execute(
                     "INSERT INTO chunks (doc_id, ordinal, text, header_text, page, text_sha256, "
-                    "meta) VALUES (?,?,?,?,?,?,?)",
+                    "meta, text_tokenized, header_text_tokenized) VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         doc_id,
                         meta.get("ordinal", ordinal),
@@ -620,6 +646,8 @@ class Store:
                         meta.get("page"),
                         digest,
                         json.dumps(meta, ensure_ascii=False, default=str),
+                        text_tokenized,
+                        meta.get("header_text_tokenized"),
                     ),
                 )
                 chunk_id = int(cur.lastrowid or 0)
@@ -706,21 +734,21 @@ class Store:
     ) -> list[int]:
         """Index a message from a room moderator with channel-scoped metadata and embed it.
 
-        ``text`` is tokenized first, before anything derived from it is built or
-        stored (spec 013 AC-14) — there is no separate raw-vs-chunked text for a
-        one-message-one-document unit here, unlike Moodle content, so this also
-        tokenizes the stored ``documents.text`` row for a Matrix-message
-        document. ``sender`` (a Matrix user ID) is never tokenized — it is a
-        protocol identifier, not free-text content.
+        Stored raw and tokenized only on the way to Gemini, the same as Moodle
+        content (spec 013 AC-14). ``sender`` (a Matrix user ID) is never
+        tokenized — it is a protocol identifier, not free-text content.
         """
         stamp = now if now is not None else int(time.time())
-        if pii_tokenizer is not None:
-            text = pii_tokenizer.tokenize(text)
         doc_id = f"matrix:{room_id}:{event_id}"
         room_label = room_name or room_id
         header_path = ["Matrix", room_label, f"Mitteilung von {sender}"]
         header_text = " › ".join(header_path)
         chunk_text = f"{header_text}\n\n{text}"
+        chunk_text_tokenized = (
+            f"{header_text}\n\n{pii_tokenizer.tokenize(text)}"
+            if pii_tokenizer is not None
+            else None
+        )
         module_url = f"https://matrix.to/#/{room_id}/{event_id}"
         filesize = len(text.encode("utf-8"))
 
@@ -768,23 +796,30 @@ class Store:
                 ),
             )
 
-        meta = {
+        meta: dict[str, Any] = {
             "header_text": header_text,
             "body": text,
             "room_id": room_id,
             "sender": sender,
             "event_id": event_id,
         }
-        chunk_ids = self.replace_chunks(doc_id, [(chunk_text, meta)], header_text=header_text)
+        if pii_tokenizer is not None:
+            meta["header_text_tokenized"] = header_text
+            meta["body_tokenized"] = pii_tokenizer.tokenize(text)
+        chunk_ids = self.replace_chunks(
+            doc_id, [(chunk_text, chunk_text_tokenized, meta)], header_text=header_text
+        )
 
+        # The embedding is an egress call, so it gets the tokenized view.
+        to_embed = chunk_text_tokenized if chunk_text_tokenized is not None else chunk_text
         if embedder is not None and chunk_ids:
             try:
                 if hasattr(embedder, "embed_documents"):
-                    vecs = embedder.embed_documents([chunk_text])
+                    vecs = embedder.embed_documents([to_embed])
                     if vecs and vecs[0]:
                         self.set_embedding(chunk_ids[0], vecs[0])
                 elif hasattr(embedder, "embed_query"):
-                    vec = embedder.embed_query(chunk_text)
+                    vec = embedder.embed_query(to_embed)
                     if vec:
                         self.set_embedding(chunk_ids[0], vec)
             except Exception as exc:
@@ -911,6 +946,15 @@ class Store:
             r["token"]: r["original"]
             for r in self.connection.execute("SELECT token, original FROM pii_tokens")
         }
+
+    def pii_normalized(self, entity_type: str) -> list[str]:
+        """Every normalized value of one entity type — the egress gazetteer's source."""
+        return [
+            r[0]
+            for r in self.connection.execute(
+                "SELECT normalized FROM pii_tokens WHERE entity_type=?", (entity_type,)
+            )
+        ]
 
     # ------------------------------------------------------------------ #
 

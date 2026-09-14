@@ -67,11 +67,21 @@ Gib NUR die eine umformulierte Suchanfrage aus, ohne Anführungszeichen und ohne
 """
 
 #: Shared across every query-rewriting prompt that may receive a PII-tokenized
-#: question (spec 013 AC-15): a ⟦PII...⟧ placeholder is not a word to
-#: paraphrase around, it *is* the search target (a redacted name/email), and a
-#: rewrite that drops it stops being about the person the student asked about.
+#: question (spec 013 AC-15): a ⟦...⟧ placeholder is not a word to paraphrase
+#: around, it *is* the search target (a redacted name/email), and a rewrite
+#: that drops it stops being about the person the student asked about.
+#:
+#: Describes the *alias* shape (``⟦PERSON_A⟧``), not the underlying hash token
+#: (``⟦PIIPERSONa1b2c3d4e5f6⟧``): the model never sees the latter at all when a
+#: tokenizer is configured — the alias layer (spec 013 AC-30) substitutes it out
+#: of every prompt before this text ever reaches the model, specifically because
+#: a twelve-hex-character string is exactly the kind of token a generative
+#: rewrite reproduces unreliably. A short, stable label is easier to carry
+#: through, and `AliasingLLM`/`_keeping_pii_entities` are the actual backstops
+#: if a rewrite drops or corrupts it anyway — this instruction is reinforcement,
+#: not the only thing standing between a dropped placeholder and a bad query.
 _PRESERVE_PII_INSTRUCTION = """\
-Falls die Frage einen Platzhalter der Form ⟦PII...⟧ enthält (z. B. ⟦PIIPERSONa1b2c3d4e5f6⟧),
+Falls die Frage einen Platzhalter der Form ⟦...⟧ enthält (z. B. ⟦PERSON_A⟧ oder ⟦EMAIL_A⟧),
 steht dieser anonymisiert für einen echten Namen oder eine E-Mail-Adresse, die du nicht siehst.
 Übernimm einen solchen Platzhalter unverändert (exakt dieselben Zeichen) in jede Suchanfrage, in
 der er sinnvoll vorkäme. Erfinde niemals einen Namen dafür und lass den Platzhalter nicht einfach
