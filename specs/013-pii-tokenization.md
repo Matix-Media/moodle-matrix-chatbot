@@ -61,15 +61,16 @@ one-time reindex.
 ### Ingest-time protection
 - `AC-12` When a PII tokenizer is configured, an `Indexer` never calls the LLM's `generate()` or
   the embedder with text containing a detectable, untokenized name or email — covering inline
-  page text, uploaded-file text, and the course/section/module breadcrumb used as embedding
-  context and citation labels.
+  page text and uploaded-file text. The course/section/module breadcrumb is a separate case, see
+  AC-40: it is deliberately never run through NER at all, not tokenized-then-checked.
 - `AC-13` Chunk text written to the store (`chunks.text`, `chunks.header_text`, `chunks_fts`,
   `meta["body"]`) is **raw**, and each has a tokenized twin — `chunks.text_tokenized`,
   `chunks.header_text_tokenized`, `meta["body_tokenized"]` — which is what may reach Gemini.
   Storing raw is what lets FTS5 do its job on names: its `remove_diacritics 2` folding and the
   `*` prefix matching in `fts5_escape` operate on real words, so `Muller` finds `Müller` and
   BM25 term overlap still links one surname across different documents. `documents.text` stays
-  raw as before.
+  raw as before. `header_text_tokenized` is the identity of `header_text` — see AC-40, the
+  breadcrumb it is built from is never run through NER, so there is nothing to transform.
 - `AC-14` A live Matrix moderator message indexed via `index_matrix_message` is stored raw with
   a tokenized twin, the same as Moodle content, and its inline embedding call is given the
   tokenized form. The Matrix sender ID itself is never tokenized — it is a protocol identifier,
@@ -80,8 +81,9 @@ one-time reindex.
   decomposition, expansion, step-back, embedding, reranking, relevance evaluation, or the final
   answer-generation prompt — every one of these sends text to Gemini.
 - `AC-16` Retrieved-chunk metadata surfaced to the LLM prompt and to citations —
-  `course_name`, `module_name`, `title` — is tokenized even though it is read from the raw
-  `documents` table at query time, not only from pre-tokenized chunk text.
+  `course_name`, `module_name`, `title` — is read as-is from the raw `documents` table at query
+  time. See AC-40: these are deliberately excluded from NER entirely, so there is no tokenized
+  form to read instead.
 - `AC-17` The final `Answer.text` returned to the caller has every token resolved back to its
   real value.
 - `AC-18` Every citation field that can carry a token (`title`, `course_name`, `header_text`) is
@@ -198,6 +200,37 @@ the model is never shown a token at all.
   token — a rewrite is reinforcement on top of both code-level filters, not the only thing
   standing between a dropped placeholder and a bad query.
 
+### Detection precision
+
+Recall (AC-38) improves what NER catches; nothing before this addressed the other direction —
+what it wrongly catches. Auditing a live deployment found `de_core_news_md` misclassifying
+ordinary German words, technical jargon, imperative verbs, filenames, URLs, and course codes as
+`PERSON`, badly enough that citations and prompts were visibly corrupted and plausibly
+contributing to inconsistent refusals: a source list where every label reads `⟦PIIPERSON…⟧`
+instead of a real course name is the kind of thing rule 5 of the system prompt ("say so openly
+if sources are unclear") can easily latch onto.
+
+- `AC-40` Structured Moodle metadata — `course_name`, `section_name`, `module_name`, `title`,
+  and the breadcrumb built from them (`header_path`/`header_text`) — is never run through NER,
+  at ingest or at query time. These fields are assigned by the Moodle API
+  (`course.get("fullname")`, `section.get("name")`, `module.get("name")`), not free text a
+  student or teacher wrote, and auditing the live corpus found zero genuine person names among
+  every metadata value that had ever been misdetected as `PERSON` — all 69 matches across all
+  four fields (out of 2,024 distinct `PERSON` detections total) were course/class codes,
+  filenames, or ordinary words. Running NER on them was pure precision cost for no measured
+  protection. This is a deliberate scope decision, not a proof: a future document whose title
+  genuinely names a real person (e.g. a resource a teacher named after themselves) would reach
+  Gemini untokenized. Supersedes `PiiTokenizer.tokenize_path`, which mitigated the same failure
+  class by giving NER more context rather than removing metadata from NER's input; the audit
+  above showed that mitigation wasn't sufficient on its own (`Klassenkurs IT4bili` still
+  misfired with all three breadcrumb segments present).
+- `AC-41` A candidate `PERSON` span containing a digit is never accepted, at either the NER
+  detection point or the gazetteer (AC-38). No real name contains a digit, so this costs no
+  recall. It is the single largest remaining false-positive class after AC-40: course/class
+  codes (`IT4L`, `DSSW10IE11-G`), filenames, URLs, and — the case worth calling out
+  specifically — literal dates (`07.11.2023`), which would otherwise corrupt the date strings
+  `HybridSearcher._date_search`/`_boost` depend on matching exactly.
+
 ## Non-goals
 
 - Phone numbers, postal addresses, and other identifiers are out of scope for this iteration.
@@ -206,8 +239,12 @@ the model is never shown a token at all.
   system.
 - Coreference resolution across different surface forms of the same person (see AC-5).
 - spaCy NER recall is not guaranteed — this is a probabilistic filter, not an absolute guarantee.
-  The converse also holds and is not fully solved either: precision on short, context-free
-  fragments is inherently limited (see `PiiTokenizer.tokenize_path` in Notes below).
+- Precision on free-text body content is not fully solved. AC-40/AC-41 remove metadata and
+  digit-bearing spans, the two highest-volume false-positive classes found live, but an ordinary
+  single word in running prose that happens to look like a name (a verb capitalized only because
+  it starts a sentence, a compound noun the model hasn't seen) is not caught by either — this
+  needs its own investigation (a POS-tag check against the parse spaCy already computes is the
+  leading candidate, not yet implemented).
 
 ## Notes
 
@@ -218,15 +255,10 @@ the model is never shown a token at all.
   citation syntax and are not expected to occur in Moodle content.
 - Name detection uses a local, offline spaCy German NER model (`de_core_news_md` by default);
   email detection uses a regex. Both run entirely on the machine — no additional network calls.
-- A breadcrumb (`header_path`, and `course_name`/`module_name`/`title` at query time) is
-  tokenized via `PiiTokenizer.tokenize_path`, which joins the segments and runs NER once over the
-  whole breadcrumb rather than once per segment. Confirmed against the real `de_core_news_md`
-  model: a lone breadcrumb segment ("Bili-Team", "Klassenteam", even the plain word
-  "Stundenplan") is frequently misclassified as `PER` when judged with no surrounding context —
-  German capitalizes every noun, so the capitalization cue the model otherwise leans on carries no
-  signal on a bare fragment. Reading the segment together with its siblings removes these false
-  positives in every case checked, without losing real detections (a genuine name in a breadcrumb,
-  e.g. "Frau Schmidt", is still caught). This is a mitigation, not a guarantee — precision on an
-  isolated single-word segment can still be imperfect.
 - Tokenization must happen before `content_sha256()` is computed for embedding/OCR cache keys,
   so those caches key off exactly what is actually sent to Gemini.
+- A deployment that already ran the AC-24 rollout reindex needs to run
+  `bsbot index --reset-all` again after AC-40/AC-41 ship: existing `chunks.header_text_tokenized`
+  rows and any document summary generated before this change can still hold hash tokens for
+  metadata/digit-bearing spans that will no longer be produced going forward, and only a fresh
+  extraction pass rewrites them.

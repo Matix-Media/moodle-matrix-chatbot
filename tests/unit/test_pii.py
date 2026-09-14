@@ -21,7 +21,6 @@ from bsbot.pii import build_pii_tokenizer
 from bsbot.pii.alias import Aliaser
 from bsbot.pii.guard import GuardedLLM
 from bsbot.pii.tokenizer import (
-    PATH_SEP,
     PiiTokenizer,
     fold,
     make_token,
@@ -268,72 +267,56 @@ class TestTokenFormat:
         assert tok.tokenize("") == ""
 
 
-class TestTokenizePath:
-    """`tokenize_path` (breadcrumb segments tokenized together, not in isolation).
+class TestDigitRejection:
+    """AC-41: no real name contains a digit."""
 
-    Regression coverage for false-positive PERSON detections on ordinary
-    course/section/module names — a lone breadcrumb segment ("Lernfeld 10", a
-    team name) is a short, context-free fragment that spaCy's NER judges much
-    less reliably than the same text read together with its neighbors.
-    """
+    def test_a_course_code_flagged_by_ner_is_not_tokenized(self) -> None:
+        """Regression: `de_core_news_md` misclassified 'Klassenkurs IT4bili' —
+        a course/class code, not a person — as PERSON. Confirmed live: this
+        string alone accounted for the corrupted header on every document
+        under that class."""
+        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp(["Klassenkurs IT4bili"]))
+        result = tok.tokenize("Kurs: Klassenkurs IT4bili")
+        assert result == "Kurs: Klassenkurs IT4bili"
 
-    def test_empty_path_returns_empty_list(self) -> None:
-        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp([]))
-        assert tok.tokenize_path([]) == []
+    def test_a_date_flagged_by_ner_is_not_tokenized(self) -> None:
+        """Regression: a literal date string found misclassified as PERSON live
+        — HybridSearcher._date_search/_boost depend on this exact substring
+        surviving in chunk text."""
+        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp(["07.11.2023"]))
+        result = tok.tokenize("Termin: 07.11.2023")
+        assert result == "Termin: 07.11.2023"
 
-    def test_segments_without_pii_pass_through_unchanged(self) -> None:
-        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp([]))
-        assert tok.tokenize_path(["LF05", "Sec", "Mod"]) == ["LF05", "Sec", "Mod"]
+    def test_a_url_flagged_by_ner_is_not_tokenized(self) -> None:
+        tok = PiiTokenizer(
+            FakePiiStore(), nlp=FakeNlp(["https://moodle.itech-bs14.de/course/view.php?id=1"])
+        )
+        result = tok.tokenize("Link: https://moodle.itech-bs14.de/course/view.php?id=1")
+        assert result == "Link: https://moodle.itech-bs14.de/course/view.php?id=1"
 
-    def test_a_name_spanning_one_segment_is_tokenized_in_place(self) -> None:
-        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp(["Herr Mueller"]))
-        result = tok.tokenize_path(["LF05", "Sec", "Kontakt Herr Mueller"])
-        assert result[0] == "LF05"
-        assert result[1] == "Sec"
-        assert "Herr Mueller" not in result[2]
-        assert "⟦PIIPERSON" in result[2]
+    def test_a_real_name_with_no_digit_is_still_tokenized(self) -> None:
+        """Digit-rejection must not become a blanket bypass — only spans that
+        actually contain a digit are affected."""
+        tok = PiiTokenizer(FakePiiStore(), nlp=FakeNlp(["Max Müller"]))
+        result = tok.tokenize("Frag Max Müller")
+        assert "Max Müller" not in result
+        assert "⟦PIIPERSON" in result
 
-    def test_isolated_fragment_false_positive_is_avoided_with_sibling_context(self) -> None:
-        """A fake NER that only (wrongly) flags a bare fragment when it is the
-        *entire* input — standing in for spaCy's real tendency to misjudge a
-        short, context-free noun phrase read on its own. Tokenizing the whole
-        breadcrumb in one pass gives the segment real neighbors and avoids the
-        false positive that per-segment tokenization would produce."""
+    def test_digit_bearing_names_never_enter_the_gazetteer(self) -> None:
+        """AC-27/AC-38: rejecting at the acceptance point, not just the display
+        point, means a digit-bearing false positive can never later resurface
+        via the gazetteer's second pass elsewhere in the corpus. Uses a
+        two-word span so AC-27's own single-word gazetteer exclusion isn't
+        what's actually being tested here."""
+        store_ = FakePiiStore()
+        tok = PiiTokenizer(store_, nlp=FakeNlp(["Klassenkurs IT4bili"]))
+        tok.tokenize("Kurs: Klassenkurs IT4bili")
 
-        class FlagsOnlyWhenAlone:
-            def __init__(self, flagged: str) -> None:
-                self._flagged = flagged
-
-            def __call__(self, text: str) -> _Doc:
-                if text.strip() == self._flagged:
-                    return _Doc([_Ent(text, 0, len(text))])
-                return _Doc([])
-
-        nlp = FlagsOnlyWhenAlone("Lernfeldverantwortliche")
-        tok_isolated = PiiTokenizer(FakePiiStore(), nlp=nlp)
-        assert "⟦PIIPERSON" in tok_isolated.tokenize("Lernfeldverantwortliche")
-
-        tok_path = PiiTokenizer(FakePiiStore(), nlp=nlp)
-        result = tok_path.tokenize_path(["Lernfeld 10", "Lernfeldverantwortliche", "Mod"])
-        assert result == ["Lernfeld 10", "Lernfeldverantwortliche", "Mod"]
-
-    def test_falls_back_per_segment_when_the_split_misaligns(self) -> None:
-        """A detected span that swallows the join separator must not corrupt
-        the result list — the count of returned segments must always match
-        the count of input segments."""
-
-        class SpansTheSeparator:
-            def __call__(self, text: str) -> _Doc:
-                sep = PATH_SEP
-                if sep in text:
-                    start = text.index(sep)
-                    end = min(start + len(sep) + 3, len(text))
-                    return _Doc([_Ent(text[start:end], start, end)])
-                return _Doc([])
-
-        tok = PiiTokenizer(FakePiiStore(), nlp=SpansTheSeparator())
-        result = tok.tokenize_path(["AAA", "BBB", "CCC"])
-        assert len(result) == 3
+        # Nothing was learned, so a second tokenizer sharing the same store has
+        # no gazetteer entry to (wrongly) match "Klassenkurs IT4bili" against
+        # elsewhere, even on a lowercase, un-tagged occurrence.
+        tok2 = PiiTokenizer(store_, nlp=FakeNlp([]))
+        assert tok2.tokenize("wir sind in klassenkurs it4bili") == "wir sind in klassenkurs it4bili"
 
 
 # --------------------------------------------------------------------------- #
@@ -456,6 +439,45 @@ class TestIndexerProtection:
 
         assert store.document("a").text == "Kontakt: mueller@schule.de"
 
+    async def test_breadcrumb_is_never_run_through_ner_even_when_name_shaped(
+        self, store: Store
+    ) -> None:
+        """AC-40: the header_path breadcrumb (course/section/module) is metadata,
+        not free text — it never reaches NER at all, so `header_text_tokenized`
+        is always the identity of `header_text`, regardless of what a (possibly
+        over-eager) NER model would have done with it."""
+        store.persist_crawl([item(header_path=["Klassenkurs IT4bili", "Sec", "Mod"], text="Hi.")])
+        # A FakeNlp that (wrongly) flags the breadcrumb, standing in for the real
+        # de_core_news_md false positive on this exact string found live.
+        tok = PiiTokenizer(store, nlp=FakeNlp(["Klassenkurs IT4bili", "IT4bili"]))
+        await Indexer(store, _NoFetch(), pii_tokenizer=tok).index_pending()  # type: ignore[arg-type]
+
+        row = store.connection.execute(
+            "SELECT header_text, header_text_tokenized FROM chunks WHERE doc_id='a'"
+        ).fetchone()
+        assert row["header_text"] == row["header_text_tokenized"]
+        assert "⟦PIIPERSON" not in row["header_text_tokenized"]
+
+    async def test_document_title_is_never_run_through_ner_for_the_summary_prompt(
+        self, store: Store
+    ) -> None:
+        """AC-40: `document.title` is metadata too — a name-shaped title (e.g. a
+        resource a teacher named after themselves, the accepted-risk case AC-40
+        documents explicitly) still reaches the summary prompt as-is rather than
+        being tokenized."""
+        long_text = "Dies ist ein Abschnitt zur Sprechstundenregelung. " * 40
+        store.persist_crawl([item(title="Sprechstunde Frau Schmidt", text=long_text)])
+        llm = SpyLLM()
+        tok = PiiTokenizer(store, nlp=FakeNlp(["Frau Schmidt"]))
+        await Indexer(
+            store, _NoFetch(), llm=llm, summarize=True, target_chars=300, pii_tokenizer=tok
+        ).index_pending()  # type: ignore[arg-type]
+
+        summary_prompts = [p for p in llm.prompts if "Sprechstunde" in p or "Schmidt" in p]
+        assert summary_prompts
+        assert any("Sprechstunde Frau Schmidt" in p for p in summary_prompts)
+        assert not any("⟦PIIPERSON" in p for p in summary_prompts)
+
 
 class TestMatrixMessageProtection:
     def test_message_is_stored_raw_with_a_tokenized_twin(self, store: Store) -> None:
@@ -485,8 +507,12 @@ class TestMatrixMessageProtection:
 
 
 class TestHydrateBreadcrumb:
-    def test_course_module_title_are_tokenized(self, store: Store) -> None:
-        """AC-16"""
+    def test_course_module_title_are_never_run_through_ner(self, store: Store) -> None:
+        """AC-16, AC-40: structured Moodle metadata is read as-is, never NER'd —
+        so even a course_name shaped like a real name passes through unchanged.
+        This is the accepted-risk tradeoff AC-40 documents explicitly, not an
+        oversight: the corpus audit backing it found zero genuine names among
+        every metadata field ever misdetected as PERSON."""
         store.persist_crawl([item(course_name="LF05 Herr Mueller", module_name="Skript Mueller")])
         store.replace_chunks(
             "a", [("Inhalt zum Thema.", None, {"ordinal": 0})], header_text="LF05 Herr Mueller"
@@ -497,8 +523,8 @@ class TestHydrateBreadcrumb:
         hits = searcher.search("Inhalt", limit=5)
 
         assert hits
-        assert "Mueller" not in hits[0].course_name
-        assert "⟦PIIPERSON" in hits[0].course_name
+        assert hits[0].course_name == "LF05 Herr Mueller"
+        assert "⟦PIIPERSON" not in hits[0].course_name
 
 
 # --------------------------------------------------------------------------- #
