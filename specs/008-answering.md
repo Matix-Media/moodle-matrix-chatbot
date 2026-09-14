@@ -62,6 +62,18 @@ to know which near-duplicate candidate carries the date `_boost` already promote
   outright, for the wrong reason (a real corrective filter should still let the answer prompt
   see the (weak) evidence and refuse from it, not from having nothing to look at).
 
+### Determinism of the grounding decision
+
+- `AC-18` The final answer-generation call runs at `temperature=0.0`, the same as every other
+  decision-relevant stage (`_condense_question`, `_decomposed_queries`, `_step_back_query`,
+  `_compress_hit`, `_evaluate_relevance`, `_reranked`). Found live: with the call left at
+  `GeminiClient`'s default of `0.2`, the identical question against an unchanged retrieved
+  context flipped between `grounded=True` (a correct, cited answer) and `grounded=False`
+  (refusal) across repeated calls — 1 refusal in 5 identical trials, measured directly against
+  production. Only `_expanded_queries`/`_suggest_followup_questions` keep non-zero temperature
+  deliberately, for phrasing diversity in a role where variety is the point; the model refusing
+  or not refusing is not a stylistic choice.
+
 ## Non-goals
 
 - No conversational memory in this spec; each question is answered independently.

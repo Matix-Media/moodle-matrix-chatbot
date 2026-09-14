@@ -354,7 +354,14 @@ class AnswerPipeline:
             context=self._format_context(context_hits, question=search_question),
         )
         try:
-            raw = self._llm.generate(prompt, system=SYSTEM_PROMPT, purpose="answer")
+            # temperature=0.0, like every other decision-relevant stage (spec 008
+            # AC-18): left at the default 0.2, the identical question against an
+            # unchanged context flipped between a grounded answer and a refusal
+            # across repeated calls, measured live. Whether to refuse is not a
+            # stylistic choice.
+            raw = self._llm.generate(
+                prompt, system=SYSTEM_PROMPT, purpose="answer", temperature=0.0
+            )
         except Exception as exc:
             log.warning("rag.answer_failed", error=str(exc))
             result = Answer(

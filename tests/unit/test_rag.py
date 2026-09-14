@@ -57,12 +57,16 @@ class FakeLLM:
         self._responses = responses or {}
         self._fail = fail or set()
         self.prompts: list[tuple[str, str]] = []
+        #: Every call's full kwargs, keyed by purpose — additive alongside
+        #: `prompts` so existing `(kind, prompt)` assertions are untouched.
+        self.calls: list[dict] = []
 
     def generate(
         self, prompt: str, *, system: str | None = None, purpose: str = "answer", **kw
     ) -> str:
         kind = purpose
         self.prompts.append((kind, prompt))
+        self.calls.append({"purpose": kind, "prompt": prompt, "system": system, **kw})
         if kind in self._fail:
             raise RuntimeError("quota exceeded")
         return self._responses.get(kind, "Die Prüfung ist am 15.03.2026. [1]")
@@ -95,6 +99,19 @@ class TestGrounding:
         assert len(answer.citations) == 1
         assert answer.citations[0].url == "https://m.example/mod/page/view.php?id=1"
         assert answer.citations[0].page == 3
+
+    def test_answer_call_is_deterministic(self) -> None:
+        """AC-18: found live — left at GeminiClient's default 0.2, the identical
+        question against an unchanged context flipped between a grounded answer
+        and a refusal across repeated calls (1 in 5 trials, measured against
+        production). Whether to refuse is not a stylistic choice, unlike
+        _expanded_queries/_suggest_followup_questions, which keep temperature>0
+        on purpose."""
+        pipeline, _, llm = make([hit(1, "Die Abschlussprüfung ist am 15.03.2026.")])
+        pipeline.answer("Wann ist die Prüfung?")
+        answer_calls = [c for c in llm.calls if c["purpose"] == "answer"]
+        assert answer_calls
+        assert all(c["temperature"] == 0.0 for c in answer_calls)
 
     def test_no_results_refuses_without_calling_the_model(self) -> None:
         """AC-7: don't pay for a call that can only hallucinate."""
