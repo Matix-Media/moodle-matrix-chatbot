@@ -33,12 +33,12 @@ EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{1,}")
 #: the ``[QUELLE N]`` citation syntax elsewhere in the RAG pipeline.
 TOKEN_RE = re.compile(r"⟦PII(PERSON|EMAIL)([0-9a-f]{12})⟧")
 
-#: Separator used by :meth:`PiiTokenizer.tokenize_path` to join breadcrumb
-#: segments before running NER once over the whole path. Matches the
-#: separator already used to *render* a breadcrumb (``header_text`` in
-#: ``store.py``/``indexer.py``), which is already relied on elsewhere as not
-#: occurring in real Moodle course/section/module names.
-PATH_SEP = " › "
+#: Matches any digit, in any script — a cheap, near-zero-false-negative signal
+#: that a NER-flagged span is not a real person's name (spec 013 AC-41). A
+#: live corpus audit found this covers course/class codes ("IT4bili"),
+#: filenames, URLs, and — notably — literal dates, whose exact substring
+#: HybridSearcher._date_search/_boost depend on surviving untouched.
+_DIGIT_RE = re.compile(r"\d")
 
 
 class PiiStoreLike(Protocol):
@@ -146,31 +146,6 @@ class PiiTokenizer:
         parts.append(self._tokenize_span(text[cursor:]))
         return "".join(parts)
 
-    def tokenize_path(self, parts: Sequence[str]) -> list[str]:
-        """Tokenize breadcrumb-style path segments (course › section › module)
-        together instead of one call per segment.
-
-        A lone breadcrumb segment is typically a 1-4 word fragment with no
-        sentence structure ("Lernfeld 10", a course code, a team name) — spaCy's
-        statistical NER is trained on running prose and is unreliable on bare,
-        context-free noun phrases, and German capitalizes every noun, so the
-        capitalization cue that helps in English carries no signal here either.
-        In practice this made ordinary course/category names get tokenized as
-        PERSON. Joining the segments into one string and running NER once gives
-        the model real neighboring context — closer to the prose it was trained
-        on — before the result is split back into per-segment values.
-        """
-        if not parts:
-            return list(parts)
-        tokenized = self.tokenize(PATH_SEP.join(parts))
-        result = tokenized.split(PATH_SEP)
-        if len(result) != len(parts):
-            # A detected span crossed a separator (or a part contained one) and
-            # the split no longer lines up 1:1 with the input — fall back to
-            # tokenizing each part in isolation rather than misalign the list.
-            return [self.tokenize(p) for p in parts]
-        return result
-
     def _tokenize_span(self, text: str) -> str:
         if not text:
             return text
@@ -193,7 +168,7 @@ class PiiTokenizer:
 
     def _tokenize_persons(self, text: str) -> str:
         ents = sorted(
-            (e for e in self._nlp(text).ents if e.label_ == "PER"),
+            (e for e in self._nlp(text).ents if e.label_ == "PER" and not _DIGIT_RE.search(e.text)),
             key=lambda e: e.start_char,
         )
         if not ents:
@@ -220,7 +195,13 @@ class PiiTokenizer:
         # ("Klein", "Berg", "Neu"), and this pass runs over whole prompts —
         # including instruction templates — so a single-token gazetteer would
         # mangle unrelated text. "max müller" as a phrase carries no such risk.
-        names = [n for n in self._store.pii_normalized("PERSON") if " " in n]
+        # Digit-bearing entries are excluded too (AC-41) — defensively, since a
+        # digit-bearing PERSON is never accepted going forward (_tokenize_persons
+        # already filters it), but a deployment's `pii_tokens` table can still
+        # hold rows written before that filter existed.
+        names = [
+            n for n in self._store.pii_normalized("PERSON") if " " in n and not _DIGIT_RE.search(n)
+        ]
         if not names:
             return None
         self._gazetteer_names = {fold(n): n for n in names}
@@ -290,7 +271,6 @@ class PiiTokenizer:
 
 __all__ = [
     "EMAIL_RE",
-    "PATH_SEP",
     "TOKEN_RE",
     "DocLike",
     "EntLike",

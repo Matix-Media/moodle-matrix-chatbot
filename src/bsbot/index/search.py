@@ -353,18 +353,11 @@ class HybridSearcher:
             )
             for r in rows
         ]
-        # `course_name`/`module_name`/`title` come from the `documents` table, which
-        # is raw by design (AC-13) and has no tokenized twin, so they are tokenized
-        # here rather than read back.
-        if self._pii_tokenizer is not None:
-            for hit in hits:
-                # Tokenized together, not field-by-field: each field alone is a
-                # short, context-free fragment that spaCy's NER judges poorly
-                # (see `PiiTokenizer.tokenize_path`) — course_name/module_name/
-                # title form the same breadcrumb shape as `header_path` above.
-                hit.course_name, hit.module_name, hit.title = self._pii_tokenizer.tokenize_path(
-                    [hit.course_name, hit.module_name, hit.title]
-                )
+        # `course_name`/`module_name`/`title` are structured Moodle metadata —
+        # assigned by the Moodle API, not free text a student or teacher wrote —
+        # and are deliberately never run through NER at all (spec 013 AC-40). A
+        # corpus audit found zero genuine names among every metadata value ever
+        # misdetected as PERSON, so they are read here exactly as stored.
         return hits
 
     def _safe(self, row: sqlite3.Row, column: str) -> str:

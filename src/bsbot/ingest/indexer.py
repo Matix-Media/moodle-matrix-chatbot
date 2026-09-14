@@ -356,9 +356,11 @@ class Indexer:
         #: The Gemini-facing twin of every chunk body, index-aligned with ``chunks``.
         bodies_tok: list[str] = [tokenize(c.body) for c in chunks]
 
-        # Hierarchical Indexing: generate document summary for multi-chunk documents
+        # Hierarchical Indexing: generate document summary for multi-chunk documents.
+        # `title` is structured Moodle metadata (spec 013 AC-40) and is never run
+        # through NER, so it goes to the prompt as-is rather than through `tokenize`.
         if (self._summarize or self._summary_generator) and len(chunks) >= 2:
-            summary_tok = await self._generate_summary(tokenize(title), "\n\n".join(bodies_tok))
+            summary_tok = await self._generate_summary(title, "\n\n".join(bodies_tok))
             if summary_tok:
                 header_text = " › ".join(p for p in header_path if p)
                 summary_chunk = Chunk(
@@ -429,7 +431,11 @@ class Indexer:
             qs = chunk_questions.get(idx, [])
             ctx = chunk_context.get(idx)
 
-            header_tok = tokenize(chunk.header_text)
+            # `chunk.header_text` is built from `header_path` — course/section/
+            # module names, structured Moodle metadata (spec 013 AC-40) — and is
+            # never run through NER, unlike the body. The tokenized twin is its
+            # own identity.
+            header_tok = chunk.header_text
             body_tok = bodies_tok[idx]
             chunk_text_tok = f"{header_tok}\n\n{body_tok}" if header_tok else body_tok
 
