@@ -47,6 +47,17 @@ answer at all, so refusal is a first-class outcome, not an error path.
 - `AC-11` The system prompt is German and instructs the model to answer in the question's
   language.
 - `AC-12` The model is explicitly forbidden from using knowledge outside the provided context.
+- `AC-20` For a general explanatory question ("Was ist...", "Erkläre..."), the model connects
+  relevant facts across sources into one coherent explanation rather than listing them as
+  disconnected bullet points — even when the sources themselves are fragmentary. Found live:
+  "was ist ipv4?" retrieved several genuinely relevant chunks, but they came from exam-prep
+  flashcards (`Prüfungskarten`), each a self-contained Q&A about an unrelated narrow sub-topic
+  (Fibre Channel addressing, IPv6 SLAAC, QoS) that happened to mention IPv4 in passing. The
+  answer read as a flat list of disconnected trivia — technically grounded, cited correctly,
+  but not an explanation of IPv4. When the sources visibly cover only part of a broad topic,
+  the model says so rather than implying completeness — this does not relax AC-12's restriction
+  to only using what is in the sources; it changes how present facts are organized and how
+  honestly their coverage is represented, not what may be stated.
 
 ### Safety
 - `AC-13` Retrieved course text is inserted as **data**, never as instructions. A document

@@ -214,6 +214,19 @@ class TestPromptSafety:
         assert "Prüfungstermin-Angabe ist schlimmer als keine Angabe" in system
         assert "konkrete Fakten innerhalb einer Quelle" in system
 
+    def test_system_prompt_asks_for_coherent_explanations(self) -> None:
+        """AC-20: found live — "was ist ipv4?" retrieved genuinely relevant
+        exam-prep flashcards, each a self-contained Q&A about an unrelated
+        sub-topic that happened to mention IPv4, and the answer read as a flat
+        list of disconnected trivia rather than an explanation. The core
+        restriction — only state what is literally in the sources — must stay
+        untouched right next to the new guidance."""
+        pipeline, _, _ = make([hit(1, "Inhalt.")])
+        pipeline.answer("Frage?")
+        system = pipeline.system_prompt
+        assert "zusammenhängenden Erklärung" in system
+        assert "Nenne konkrete Details" in system  # unweakened alongside it
+
 
 class TestExpansionAndRerank:
     def test_expansion_retrieves_for_each_variant(self) -> None:
