@@ -25,7 +25,7 @@ from bsbot.ingest.chunk import (
 from bsbot.ingest.extract import EXTRACT_VERSION, OcrCallable
 from bsbot.ingest.segments import FetcherLike, TaskcardsFetch, resolve_segments
 from bsbot.ingest.youtube import TranscriptApi
-from bsbot.pii.tokenizer import PiiTokenizer
+from bsbot.pii.tokenizer import TOKENIZER_LOGIC_VERSION, PiiTokenizer
 from bsbot.rag.prompts import CONTEXTUAL_CHUNK_TEMPLATE, DOCUMENT_SUMMARY_TEMPLATE, HYPE_TEMPLATE
 
 HypeGenerator = Callable[[str], Awaitable[list[str]] | list[str]]
@@ -407,8 +407,20 @@ class Indexer:
                 if ctx:
                     chunk_context[idx] = ctx
 
+        # PII detection logic (spec 013 AC-42) is folded in alongside the
+        # augmentation flags, for the identical reason: chunk.body is raw since
+        # the storage flip (AC-13) and untouched by anything PiiTokenizer does,
+        # so a change to what counts as PERSON is otherwise invisible to this
+        # hash and silently skipped — found live, this is exactly what left 65%
+        # of a real corpus's chunks with stale tokenized headers through a
+        # `--reset-all` that appeared to run cleanly.
+        pii_signature = f"pii={TOKENIZER_LOGIC_VERSION}" if self._pii_tokenizer is not None else ""
         text_sha256 = content_sha256(
-            "\n".join(c.body for c in chunks) + "|" + self._augmentation_signature()
+            "\n".join(c.body for c in chunks)
+            + "|"
+            + self._augmentation_signature()
+            + "|"
+            + pii_signature
         )
         # External content (a live TaskCards board, a HackMD note) is re-fetched on
         # a schedule we don't control the granularity of, so re-extraction happens

@@ -33,6 +33,18 @@ EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{1,}")
 #: the ``[QUELLE N]`` citation syntax elsewhere in the RAG pipeline.
 TOKEN_RE = re.compile(r"⟦PII(PERSON|EMAIL)([0-9a-f]{12})⟧")
 
+#: Bump whenever ``tokenize()``'s detection semantics change in a way that
+#: does not alter chunk body text — a new normalization rule, a new exclusion,
+#: a model swap. Folded into the indexer's change-detection hash (spec 013
+#: AC-42) alongside ``chunk.body``: since the storage flip (AC-13), body text
+#: is raw and untouched by anything this module does, so a detection-logic-only
+#: change is otherwise invisible to that hash and silently skipped by
+#: ``--reset-all`` — found live, 65% of a real corpus's chunks kept stale
+#: tokenized headers through a `--reset-all` that appeared to run cleanly.
+#: Mirrors ``EXTRACT_VERSION`` in ``ingest/extract.py``, same convention:
+#:   1 -> AC-40 (metadata skip) and AC-41 (digit rejection)
+TOKENIZER_LOGIC_VERSION = 1
+
 #: Matches any digit, in any script — a cheap, near-zero-false-negative signal
 #: that a NER-flagged span is not a real person's name (spec 013 AC-41). A
 #: live corpus audit found this covers course/class codes ("IT4bili"),
@@ -271,6 +283,7 @@ class PiiTokenizer:
 
 __all__ = [
     "EMAIL_RE",
+    "TOKENIZER_LOGIC_VERSION",
     "TOKEN_RE",
     "DocLike",
     "EntLike",
