@@ -6,6 +6,7 @@ import typer
 
 from moodle_llm_chat import __version__
 from moodle_llm_chat.config import ConfigError, Settings, load_settings
+from moodle_llm_chat.crypto.keys import generate_master_key
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -53,6 +54,12 @@ def doctor() -> None:
     """Show which subsystems are configured, without contacting anything."""
     for line in _doctor_lines(load_settings()):
         typer.echo(line)
+
+
+@app.command("gen-master-key")
+def gen_master_key() -> None:
+    """Print a new random master key (base64). Store it in a 0600 file."""
+    typer.echo(generate_master_key())
 
 
 if __name__ == "__main__":  # pragma: no cover

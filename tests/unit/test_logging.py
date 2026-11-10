@@ -31,3 +31,14 @@ def test_httpx_request_lines_are_quieted() -> None:
 def test_httpcore_is_quieted_too() -> None:
     configure_logging("DEBUG")
     assert logging.getLogger("httpcore").level >= logging.WARNING
+
+
+def test_payload_fields_are_redacted() -> None:
+    """Course text and chats are encrypted at rest; logs must not leak them."""
+    from moodle_llm_chat.logging import redact_payloads
+
+    event = {"event": "x", "text": "secret", "content": "secret", "count": 3, "doc_id": "d1"}
+    out = redact_payloads(None, "info", dict(event))
+    assert out["text"] == "[redacted]"
+    assert out["content"] == "[redacted]"
+    assert out["count"] == 3 and out["doc_id"] == "d1"

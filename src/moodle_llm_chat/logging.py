@@ -20,6 +20,21 @@ import structlog
 #: drowns out our own structured logs, which is what matters when something is wrong.
 _QUIET_LOGGERS = ("httpx", "httpcore")
 
+#: Event fields that may carry course content or chat text. Content is encrypted at
+#: rest, so a log line must never become a plaintext copy of it.
+REDACTED_FIELDS = frozenset(
+    {"text", "content", "body", "question", "answer", "prompt", "message", "texts", "query"}
+)
+
+
+def redact_payloads(
+    logger: object, method_name: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
+    """structlog processor: replace payload-carrying fields with a marker."""
+    for key in REDACTED_FIELDS.intersection(event_dict):
+        event_dict[key] = "[redacted]"
+    return event_dict
+
 
 def configure_logging(level: str = "INFO", *, pretty: bool = True) -> None:
     """Configure structlog once, at process start."""
@@ -27,6 +42,7 @@ def configure_logging(level: str = "INFO", *, pretty: bool = True) -> None:
 
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        redact_payloads,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="%H:%M:%S"),
     ]

@@ -40,3 +40,11 @@ def test_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "0.2.0" in result.output
+
+
+def test_gen_master_key_prints_a_valid_key() -> None:
+    import base64
+
+    result = runner.invoke(app, ["gen-master-key"])
+    assert result.exit_code == 0
+    assert len(base64.b64decode(result.output.strip())) == 32
