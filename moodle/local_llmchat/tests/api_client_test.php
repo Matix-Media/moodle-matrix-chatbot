@@ -77,7 +77,7 @@ final class api_client_test extends \advanced_testcase {
             'POST /ingest/sync/finish',
             'PUT /ingest/policy',
             'PUT /ingest/blobs/' . str_repeat('a', 64),
-            'GET /api/usage',
+            'GET /ingest/usage',
         ], $t->sequence());
         $this->assertSame(
             ['sync_id' => 'sid', 'chunk_no' => 1, 'of' => 2, 'entries' => []],

@@ -62,7 +62,6 @@ final class chat_token {
         $claims = [
             'iss' => $CFG->wwwroot,
             'sub' => (string)$userid,
-            'site_id' => self::site_id(),
             'name' => fullname($user),
             'lang' => $user->lang ?: ($CFG->lang ?? 'en'),
             'caps' => self::CAPS,
@@ -74,13 +73,16 @@ final class chat_token {
             'iat' => $now,
             'exp' => $now + self::TTL,
         ];
-        $token = jwt::encode($claims, $key);
+        if ($contextcourseid && $contextcourseid != SITEID) {
+            $claims['course'] = $contextcourseid;
+        }
+        $token = jwt::encode($claims, $key, self::site_id());
         $claims['roles'] = $roles;
         return ['token' => $token, 'expires' => $claims['exp'], 'claims' => $claims];
     }
 
     /**
-     * The API's site id for this Moodle, learned from GET /ingest/status and cached.
+     * The API's site id for this Moodle (the token header's `kid`), learned from GET /ingest/status and cached.
      *
      * @return string|int|null
      */

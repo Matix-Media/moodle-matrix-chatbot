@@ -39,15 +39,15 @@ final class jwt_test extends \basic_testcase {
      * @return array
      */
     private static function vectors(): array {
-        return json_decode(file_get_contents(__DIR__ . '/fixtures/jwt_vectors.json'), true)['vectors'];
+        return json_decode(file_get_contents(__DIR__ . '/fixtures/jwt_vectors.json'), true)['cases'];
     }
 
     public function test_encode_matches_shared_vectors_byte_for_byte(): void {
         // Decode to objects so empty JSON objects ({} for roles) survive the round trip.
-        $vectors = json_decode(file_get_contents(__DIR__ . '/fixtures/jwt_vectors.json'))->vectors;
+        $vectors = json_decode(file_get_contents(__DIR__ . '/fixtures/jwt_vectors.json'))->cases;
         foreach ($vectors as $vector) {
             $key = secret::derive_chat_key($vector->secret);
-            $this->assertSame($vector->token, jwt::encode((array)$vector->claims, $key));
+            $this->assertSame($vector->token, jwt::encode((array)$vector->claims, $key, $vector->site_id));
         }
     }
 
@@ -56,6 +56,7 @@ final class jwt_test extends \basic_testcase {
             $key = secret::derive_chat_key($vector['secret']);
             $claims = jwt::decode($vector['token'], $key, $vector['claims']['iss'], $vector['claims']['iat'] + 1);
             $this->assertSame($vector['claims'], $claims);
+            $this->assertSame($vector['site_id'], jwt::header($vector['token'])['kid']);
         }
     }
 
@@ -71,10 +72,15 @@ final class jwt_test extends \basic_testcase {
         return [jwt::encode($claims, $key), $key];
     }
 
-    public function test_header_pins_hs256(): void {
-        [$token] = $this->sample();
-        $header = json_decode(jwt::base64url_decode(explode('.', $token)[0]), true);
-        $this->assertSame(['alg' => 'HS256', 'typ' => 'JWT'], $header);
+    public function test_header_pins_hs256_and_carries_kid_in_sorted_key_order(): void {
+        $key = secret::derive_chat_key('secret');
+        $token = jwt::encode(['iss' => 'x', 'exp' => 2], $key, 'site-9');
+        $this->assertSame(
+            '{"alg":"HS256","kid":"site-9","typ":"JWT"}',
+            jwt::base64url_decode(explode('.', $token)[0])
+        );
+        [$plain] = $this->sample();
+        $this->assertSame('{"alg":"HS256","typ":"JWT"}', jwt::base64url_decode(explode('.', $plain)[0]));
     }
 
     public function test_rejects_wrong_key(): void {

@@ -98,7 +98,7 @@ final class callback_handler_test extends \advanced_testcase {
         $this->assertSame(400, $result['status']);
         [$status] = $this->call(['action' => 'nope']);
         $this->assertSame(400, $status);
-        [$status] = $this->call(['action' => 'check_access', 'user_id' => 'x', 'cmids' => 'y']);
+        [$status] = $this->call(['action' => 'check_access', 'userid' => 'x', 'cmids' => 'y']);
         $this->assertSame(400, $status);
     }
 
@@ -112,7 +112,7 @@ final class callback_handler_test extends \advanced_testcase {
     }
 
     public function test_check_access(): void {
-        [$status, $body] = $this->call(['action' => 'check_access', 'user_id' => (int)$this->user->id,
+        [$status, $body] = $this->call(['action' => 'check_access', 'userid' => (int)$this->user->id,
             'cmids' => [$this->visible, $this->hidden]]);
         $this->assertSame(200, $status);
         $this->assertSame(['allowed' => [$this->visible]], $body);
@@ -121,14 +121,42 @@ final class callback_handler_test extends \advanced_testcase {
     public function test_check_access_suspended_user_is_403(): void {
         global $DB;
         $DB->set_field('user', 'suspended', 1, ['id' => $this->user->id]);
-        [$status, $body] = $this->call(['action' => 'check_access', 'user_id' => (int)$this->user->id,
+        [$status, $body] = $this->call(['action' => 'check_access', 'userid' => (int)$this->user->id,
             'cmids' => [$this->visible]]);
         $this->assertSame(403, $status);
         $this->assertSame(['error' => 'user_unavailable'], $body);
     }
 
+    public function test_user_info_returns_groups_per_course(): void {
+        [$status, $body] = $this->call(['action' => 'user_info', 'userid' => (int)$this->user->id]);
+        $this->assertSame(200, $status);
+        $this->assertSame(['groups' => [(string)$this->course->id => ['7b']]], $body);
+        $this->assertSame('{"groups":{"' . $this->course->id . '":["7b"]}}', json_encode($body));
+    }
+
+    public function test_user_info_empty_groups_encode_as_object(): void {
+        $other = $this->getDataGenerator()->create_user();
+        [$status, $body] = $this->call(['action' => 'user_info', 'userid' => (int)$other->id]);
+        $this->assertSame(200, $status);
+        $this->assertSame('{"groups":{}}', json_encode($body));
+    }
+
+    public function test_user_info_suspended_user_is_403(): void {
+        global $DB;
+        $DB->set_field('user', 'suspended', 1, ['id' => $this->user->id]);
+        [$status] = $this->call(['action' => 'user_info', 'userid' => (int)$this->user->id]);
+        $this->assertSame(403, $status);
+    }
+
+    public function test_legacy_user_id_key_is_still_accepted(): void {
+        [$status, $body] = $this->call(['action' => 'check_access', 'user_id' => (int)$this->user->id,
+            'cmids' => [$this->visible]]);
+        $this->assertSame(200, $status);
+        $this->assertSame(['allowed' => [$this->visible]], $body);
+    }
+
     public function test_resolve_user_returns_profile_without_pii(): void {
-        [$status, $body] = $this->call(['action' => 'resolve_user', 'user_id' => (int)$this->user->id]);
+        [$status, $body] = $this->call(['action' => 'resolve_user', 'userid' => (int)$this->user->id]);
         $this->assertSame(200, $status);
         $this->assertSame([
             'user_id' => (int)$this->user->id,

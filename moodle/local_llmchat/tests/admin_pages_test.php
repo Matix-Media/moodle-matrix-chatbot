@@ -83,7 +83,7 @@ final class admin_pages_test extends \advanced_testcase {
         set_config('user_tokens_per_day', 1000, 'local_llmchat');
         policy::save_override((int)$user->id, null, 0, true, 'Lehrkraft');
         $t = new fake_transport();
-        $t->routes['GET /api/usage'] = fake_transport::json([
+        $t->routes['GET /ingest/usage'] = fake_transport::json([
             'rows' => [['user_id' => (int)$user->id, 'tokens' => 4321, 'estimated' => true]], 'site_total' => 9999,
         ]);
         $ctx = (new quota_report(new api_client('https://api.example', 's', $t)))->export_for_template($this->output);
@@ -98,8 +98,8 @@ final class admin_pages_test extends \advanced_testcase {
         $this->assertTrue($ctx['usage'][0]['rows'][0]['estimated']);
         $this->assertSame('9.999', $ctx['usage'][0]['sitetotal']);
         $requests = array_map(fn($r) => $r['url'], $t->requests);
-        $this->assertContains('https://api.example/api/usage?period=day&by=user', $requests);
-        $this->assertContains('https://api.example/api/usage?period=month&by=user', $requests);
+        $this->assertContains('https://api.example/ingest/usage?period=day&by=user', $requests);
+        $this->assertContains('https://api.example/ingest/usage?period=month&by=user', $requests);
         $html = $this->output->render_from_template('local_llmchat/quota_report', $ctx);
         $this->assertStringContainsString('Uta Nutzer', $html);
     }

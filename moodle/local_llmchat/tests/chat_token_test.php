@@ -62,7 +62,8 @@ final class chat_token_test extends \advanced_testcase {
 
         $this->assertSame($CFG->wwwroot, $claims['iss']);
         $this->assertSame((string)$this->user->id, $claims['sub']);
-        $this->assertSame('site-7', $claims['site_id']);
+        $this->assertArrayNotHasKey('site_id', $claims);
+        $this->assertSame('site-7', jwt::header($issued['token'])['kid']);
         $this->assertSame('Erika Muster', $claims['name']);
         $this->assertSame('en', $claims['lang']);
         $this->assertSame(['read', 'interact'], $claims['caps']);
@@ -89,7 +90,7 @@ final class chat_token_test extends \advanced_testcase {
         $this->assertStringNotContainsString('X-99', $payload);
         $this->assertStringNotContainsString('0123', $payload);
         $this->assertSame(
-            ['iss', 'sub', 'site_id', 'name', 'lang', 'caps', 'courses', 'roles', 'cmids', 'quota', 'jti', 'iat', 'exp'],
+            ['iss', 'sub', 'name', 'lang', 'caps', 'courses', 'roles', 'cmids', 'quota', 'jti', 'iat', 'exp'],
             array_keys($issued['claims'])
         );
     }
@@ -108,6 +109,18 @@ final class chat_token_test extends \advanced_testcase {
         $second = chat_token::issue((int)$this->user->id);
         $this->assertSame([$this->cmid], $first['claims']['cmids']);
         $this->assertSame([], $second['claims']['cmids']);
+    }
+
+    public function test_course_claim_only_when_opened_from_a_course(): void {
+        $this->assertArrayNotHasKey('course', chat_token::issue((int)$this->user->id)['claims']);
+        $issued = chat_token::issue((int)$this->user->id, (int)$this->course->id);
+        $this->assertSame((int)$this->course->id, $issued['claims']['course']);
+        $this->assertSame('course', array_key_last($issued['claims']));
+    }
+
+    public function test_lifetime_stays_within_api_limit(): void {
+        $issued = chat_token::issue((int)$this->user->id);
+        $this->assertLessThanOrEqual(900, $issued['claims']['exp'] - $issued['claims']['iat']);
     }
 
     public function test_requires_configured_secret(): void {

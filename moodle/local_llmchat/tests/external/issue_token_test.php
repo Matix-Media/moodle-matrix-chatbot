@@ -53,7 +53,7 @@ final class issue_token_test extends \advanced_testcase {
         $result = external_api::clean_returnvalue(issue_token::execute_returns(), $result);
         $claims = jwt::decode($result['token'], secret::chat_key(), $CFG->wwwroot);
         $this->assertSame((string)$user->id, $claims['sub']);
-        $this->assertSame(1, $claims['site_id']);
+        $this->assertSame('1', \local_llmchat\access\jwt::header($result['token'])['kid']);
         $this->assertSame($claims['exp'], $result['expires']);
         $this->assertSame('wss://api.example/ws/chat', $result['wsurl']);
         $this->assertSame('https://api.example', $result['apiurl']);

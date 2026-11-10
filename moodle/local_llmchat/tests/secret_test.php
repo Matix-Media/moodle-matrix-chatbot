@@ -36,7 +36,7 @@ final class secret_test extends \advanced_testcase {
      * @return array
      */
     private static function vectors(): array {
-        return json_decode(file_get_contents(__DIR__ . '/fixtures/jwt_vectors.json'), true)['vectors'];
+        return json_decode(file_get_contents(__DIR__ . '/fixtures/jwt_vectors.json'), true)['cases'];
     }
 
     public function test_unconfigured_secret_is_null(): void {

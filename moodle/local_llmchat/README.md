@@ -18,11 +18,10 @@ websocket client inside Moodle).
 | Direction | Mechanism |
 |---|---|
 | Moodle → API | `Authorization: Bearer <secret>` on `/ingest/*` (`classes/api_client.php`). Event observers only write to `local_llmchat_outbox`; `drain_outbox_task` pushes every minute, with backoff of 1 min doubling up to 6 h. The nightly `full_sync_task` is manifest-based and resumes at the next course. |
-| API → Moodle | `callback.php` (`ping`, `check_access`, `resolve_user`), protected by the same bearer secret. |
-| Browser → API | `local_llmchat_issue_token` (AJAX, sesskey) issues an HS256 JWT signed with `HKDF-SHA256(secret, info="chat-token")`. It lives at most 10 min and carries `cmids`, `roles` and `quota`. `amd/src/chat.js` sends `auth{token}` as its first websocket frame. |
+| API → Moodle | `callback.php` (`ping`, `check_access {userid, cmids}`, `user_info {userid}` → `{groups}`, `resolve_user`), protected by the same bearer secret. |
+| Browser → API | `local_llmchat_issue_token` (AJAX, sesskey) issues an HS256 JWT signed with `HKDF-SHA256(secret, info="chat-token")`. Header `kid` = the API's site id. It lives 10 min (API limit 15) and carries `cmids`, `roles`, `quota` and, when opened from a course, `course`. `amd/src/chat.js` sends `auth{token}` as its first websocket frame. |
 
-`tests/fixtures/jwt_vectors.json` holds the shared HKDF/HS256 test vectors. The Python side
-must produce and accept exactly these tokens.
+`tests/fixtures/jwt_vectors.json` is a copy of the API's shared vectors (HKDF/HS256 with `kid`); the PHP encoder reproduces them byte for byte.
 
 ## Tests
 

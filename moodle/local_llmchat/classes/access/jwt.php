@@ -27,8 +27,8 @@ namespace local_llmchat\access;
 /**
  * Minimal HS256 JSON Web Token codec (RFC 7519) with a pinned algorithm.
  *
- * Encoding is deterministic (compact JSON, unescaped slashes and unicode, header
- * {"alg":"HS256","typ":"JWT"}) so the shared test vectors match byte for byte on both sides.
+ * Encoding is deterministic (compact JSON, unescaped slashes and unicode, sorted header keys)
+ * so the shared test vectors match byte for byte on both sides.
  *
  * @package    local_llmchat
  * @copyright  2026 Matix-Media
@@ -46,10 +46,13 @@ final class jwt {
      *
      * @param array $claims
      * @param string $key raw key bytes
+     * @param string|int|null $kid key id (the API's site id), placed in the header
      * @return string compact JWS
      */
-    public static function encode(array $claims, string $key): string {
-        $header = self::base64url_encode(json_encode(['alg' => 'HS256', 'typ' => 'JWT'], self::JSON_FLAGS));
+    public static function encode(array $claims, string $key, $kid = null): string {
+        // Header keys are sorted (alg, kid, typ) so tokens match the shared vectors byte for byte.
+        $header = ['alg' => 'HS256'] + ($kid !== null ? ['kid' => (string)$kid] : []) + ['typ' => 'JWT'];
+        $header = self::base64url_encode(json_encode($header, self::JSON_FLAGS));
         $payload = self::base64url_encode(json_encode($claims, self::JSON_FLAGS));
         $signature = self::base64url_encode(hash_hmac('sha256', "$header.$payload", $key, true));
         return "$header.$payload.$signature";
@@ -92,6 +95,17 @@ final class jwt {
             throw new jwt_exception('issuer');
         }
         return $claims;
+    }
+
+    /**
+     * Decoded header of a token (no verification).
+     *
+     * @param string $token
+     * @return array
+     */
+    public static function header(string $token): array {
+        $header = json_decode(self::base64url_decode(explode('.', $token)[0]), true);
+        return is_array($header) ? $header : [];
     }
 
     /**

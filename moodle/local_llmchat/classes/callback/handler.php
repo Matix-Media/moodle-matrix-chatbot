@@ -66,7 +66,7 @@ class handler {
                 case 'ping':
                     return self::out(200, $this->ping());
                 case 'check_access':
-                    $userid = self::int_param($body, 'user_id');
+                    $userid = self::userid($body);
                     $cmids = $body['cmids'] ?? null;
                     if (
                         $userid === null || !is_array($cmids) || count($cmids) > self::MAX_CMIDS
@@ -75,8 +75,14 @@ class handler {
                         return self::out(400, ['error' => 'bad_request']);
                     }
                     return self::out(200, ['allowed' => (new check_access())->check($userid, $cmids)]);
+                case 'user_info':
+                    $userid = self::userid($body);
+                    if ($userid === null) {
+                        return self::out(400, ['error' => 'bad_request']);
+                    }
+                    return self::out(200, $this->user_info($userid));
                 case 'resolve_user':
-                    $userid = self::int_param($body, 'user_id');
+                    $userid = self::userid($body);
                     if ($userid === null) {
                         return self::out(400, ['error' => 'bad_request']);
                     }
@@ -87,6 +93,16 @@ class handler {
         } catch (user_unavailable_exception $e) {
             return self::out(403, ['error' => 'user_unavailable']);
         }
+    }
+
+    /**
+     * The user id of a request: `userid` (API contract), or the older `user_id`.
+     *
+     * @param array $body
+     * @return int|null
+     */
+    private static function userid(array $body): ?int {
+        return self::int_param($body, 'userid') ?? self::int_param($body, 'user_id');
     }
 
     /**
@@ -119,6 +135,23 @@ class handler {
     private function ping(): array {
         global $CFG;
         return ['ok' => true, 'site_url' => $CFG->wwwroot, 'plugin_version' => (int)get_config('local_llmchat', 'version')];
+    }
+
+    /**
+     * Group names per course, for the agent's user profile ({"groups": {courseid: [names]}}).
+     *
+     * @param int $userid
+     * @return array
+     */
+    private function user_info(int $userid): array {
+        check_access::require_active_user($userid);
+        $groups = [];
+        foreach ((new scope_builder())->build($userid)->groups as $courseid => $names) {
+            if ($names) {
+                $groups[(string)$courseid] = $names;
+            }
+        }
+        return ['groups' => $groups ?: new \stdClass()];
     }
 
     /**

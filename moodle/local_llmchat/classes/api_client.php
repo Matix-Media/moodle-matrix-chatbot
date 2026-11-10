@@ -292,13 +292,13 @@ class api_client {
     }
 
     /**
-     * GET /api/usage.
+     * GET /ingest/usage.
      *
      * @param string $period day|month
      * @param string $by user|site
      * @return array
      */
     public function usage(string $period, string $by): array {
-        return $this->request('GET', '/api/usage', null, ['period' => $period, 'by' => $by]);
+        return $this->request('GET', '/ingest/usage', null, ['period' => $period, 'by' => $by]);
     }
 }
