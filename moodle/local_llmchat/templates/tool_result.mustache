@@ -1,0 +1,51 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/tool_result
+
+    Result section of an expanded tool card: the tool's summary and the sources it found.
+
+    Example context (json):
+    {
+        "hasresult": true,
+        "summary": "4 Treffer in LF7",
+        "hascitations": true,
+        "citations": [
+            {"index": 1, "title": "Abgabe Subnetting-Projekt", "meta": "LF7", "url": "https://moodle.example/mod/assign/view.php?id=3", "hasurl": true},
+            {"index": 2, "title": "Bewertungsraster.txt", "meta": "LF7 · Page 2", "url": "", "hasurl": false}
+        ]
+    }
+}}
+<div class="local-llmchat-toolresult">
+    {{#hasresult}}
+    <h4 class="local-llmchat-label text-uppercase text-muted mb-1">{{#str}} tool:result, local_llmchat {{/str}}</h4>
+    {{#summary}}<p class="mb-1">{{summary}}</p>{{/summary}}
+    {{#hascitations}}
+    <ul class="list-unstyled mb-0">
+        {{#citations}}
+        <li class="d-flex align-items-baseline mb-1">
+            {{#index}}<span class="local-llmchat-citenum me-2">{{index}}</span>{{/index}}
+            <span class="local-llmchat-minw0">
+                {{#hasurl}}<a href="{{url}}" target="_blank" rel="noopener">{{title}}</a>{{/hasurl}}{{^hasurl}}{{title}}{{/hasurl}}
+                {{#meta}}<span class="text-muted"> · {{meta}}</span>{{/meta}}
+            </span>
+        </li>
+        {{/citations}}
+    </ul>
+    {{/hascitations}}
+    {{/hasresult}}
+</div>

@@ -534,3 +534,74 @@
         transition: none;
     }
 }
+
+/* Expanded tool card: parameters as label/value rows, the result, raw data behind a toggle. */
+.local-llmchat-tooldetails {
+    margin-top: .5rem;
+    padding: .625rem .75rem;
+    border-radius: .5rem;
+    background: var(--llmchat-accent-soft);
+}
+
+.local-llmchat-params {
+    display: grid;
+    grid-template-columns: minmax(6rem, max-content) 1fr;
+    gap: .25rem 1rem;
+    margin-bottom: .5rem;
+}
+
+.local-llmchat-param {
+    display: contents;
+}
+
+.local-llmchat-params dt {
+    color: var(--llmchat-muted);
+    font-weight: 400;
+}
+
+.local-llmchat-params dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.local-llmchat-params code {
+    padding: .0625rem .25rem;
+    border-radius: .25rem;
+    background: var(--bs-body-bg, #fff);
+}
+
+.local-llmchat .local-llmchat-path {
+    flex-wrap: wrap;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-size: inherit;
+}
+
+.local-llmchat-chips {
+    gap: .25rem;
+}
+
+.local-llmchat-chips .badge {
+    font-weight: 500;
+}
+
+.local-llmchat-toolresult {
+    margin-bottom: .5rem;
+}
+
+.local-llmchat-toolresult:empty {
+    display: none;
+}
+
+@media (max-width: 575.98px) {
+    .local-llmchat-params {
+        grid-template-columns: 1fr;
+        gap: 0;
+    }
+
+    .local-llmchat-params dd {
+        margin-bottom: .375rem;
+    }
+}

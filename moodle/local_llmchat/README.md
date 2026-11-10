@@ -30,6 +30,12 @@ vendor/bin/phpunit --testsuite local_llmchat_testsuite   # inside a Moodle check
 moodle-plugin-ci phplint && moodle-plugin-ci phpcs && moodle-plugin-ci phpunit
 ```
 
+The tool-card parser (`amd/src/tooldetails.js`, pure functions) has its own tests:
+
+```bash
+node --test tests/js/tooldetails.test.mjs
+```
+
 The API is never contacted: tests inject `tests/fixtures/fake_transport.php` through
 `api_client::set_test_transport()`.
 

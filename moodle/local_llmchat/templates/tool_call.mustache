@@ -17,7 +17,8 @@
 {{!
     @template local_llmchat/tool_call
 
-    One tool call as a list-group item: icon, label, live status, expandable arguments and result.
+    One tool call as a list-group item: icon, label, live status; expands to the readable
+    parameters, the result and the raw data (local_llmchat/tool_details).
 
     Example context (json):
     {
@@ -25,7 +26,9 @@
         "icon": "a/search",
         "component": "core",
         "label": "Suche „Abgabe Subnetting-Projekt“",
-        "args": "{\n  \"query\": \"Abgabe Subnetting-Projekt\"\n}"
+        "hasparams": true,
+        "params": [{"label": "Search for", "istext": true, "text": "Abgabe Subnetting-Projekt"}],
+        "raw": "{\"query\": \"Abgabe Subnetting-Projekt\"}"
     }
 }}
 <div class="list-group-item local-llmchat-tool" data-region="tool">
@@ -41,7 +44,6 @@
         <span class="local-llmchat-chevron ms-1 flex-shrink-0">{{#pix}} t/expandedchevron, core {{/pix}}</span>
     </button>
     <div class="collapse" id="{{uniqid}}" data-region="collapsible">
-        <pre class="small bg-light rounded p-2 mt-2 mb-1 local-llmchat-args">{{args}}</pre>
-        <div class="small text-muted" data-region="detail"></div>
+        {{> local_llmchat/tool_details }}
     </div>
 </div>

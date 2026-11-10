@@ -35,6 +35,7 @@ import ReconnectingSocket from 'local_llmchat/socket';
 import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
 import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
+import {describeCall, describeResult, STRING_KEYS as TOOL_STRING_KEYS} from 'local_llmchat/tooldetails';
 
 const STRING_KEYS = [
     'cancelled', 'copied', 'error', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
@@ -695,6 +696,15 @@ class ChatController {
     }
 
     /**
+     * Strings and locale for local_llmchat/tooldetails.
+     *
+     * @returns {Object}
+     */
+    displayOptions() {
+        return {strings: this.str, locale: document.documentElement.lang || undefined};
+    }
+
+    /**
      * Tool card.
      *
      * @param {Object} frame tool_call{id, name, args}
@@ -711,9 +721,8 @@ class ChatController {
             label = `${meta.label || frame.name}${firstArg ? ` „${firstArg}“` : ''}`;
         }
         const [icon, component] = toolIcon(frame.name, meta);
-        const node = await renderNode('tool_call', {
-            uniqid: uniqid('llmchat-tool'), icon, component, label, args: JSON.stringify(args, null, 2),
-        });
+        const node = await renderNode('tool_call', Object.assign({uniqid: uniqid('llmchat-tool'), icon, component, label},
+            describeCall(args, this.displayOptions())));
         turn.tools.classList.remove('d-none');
         turn.tools.appendChild(node);
         turn.cards.set(frame.id, node);
@@ -746,12 +755,8 @@ class ChatController {
         card.querySelector('[data-region="spinner"]').classList.add('d-none');
         card.querySelector('[data-region="done"]').classList.remove('d-none');
         card.querySelector('[data-region="summary"]').textContent = frame.summary ? String(frame.summary) : '';
-        const detail = card.querySelector('[data-region="detail"]');
-        (frame.citations || []).forEach((c) => {
-            const line = document.createElement('div');
-            line.textContent = `[${c.index ?? '?'}] ${c.title || ''}`;
-            detail.appendChild(line);
-        });
+        await renderInto(card.querySelector('[data-region="result"]'), 'local_llmchat/tool_result',
+            describeResult(frame, this.displayOptions()));
     }
 
     /**
@@ -1086,7 +1091,7 @@ export const init = async(config) => {
     if (!root) {
         return;
     }
-    const requests = STRING_KEYS.map((key) => ({key, component: 'local_llmchat'}));
+    const requests = [...STRING_KEYS, ...TOOL_STRING_KEYS].map((key) => ({key, component: 'local_llmchat'}));
     requests.push({key: 'page', component: 'core'});
     const values = await getStrings(requests);
     const strings = {};
