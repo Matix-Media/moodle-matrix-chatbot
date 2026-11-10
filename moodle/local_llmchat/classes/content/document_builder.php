@@ -90,12 +90,20 @@ class document_builder {
             case 'book':
                 $chapters = $DB->get_records('book_chapters', ['bookid' => $instance->id, 'hidden' => 0], 'pagenum');
                 foreach ($chapters as $chapter) {
-                    $text = file_rewrite_pluginfile_urls($chapter->content, 'pluginfile.php', $context->id,
-                        'mod_book', 'chapter', $chapter->id);
+                    $text = file_rewrite_pluginfile_urls(
+                        $chapter->content,
+                        'pluginfile.php',
+                        $context->id,
+                        'mod_book',
+                        'chapter',
+                        $chapter->id
+                    );
                     $doc = $this->html($base, 'chapter:' . $chapter->id, $chapter->title, $text, [$chapter->title]);
                     $data = $doc->to_wire();
-                    $data['module_url'] = (new \moodle_url('/mod/book/view.php',
-                        ['id' => $cm->id, 'chapterid' => $chapter->id]))->out(false);
+                    $data['module_url'] = (new \moodle_url(
+                        '/mod/book/view.php',
+                        ['id' => $cm->id, 'chapterid' => $chapter->id]
+                    ))->out(false);
                     $data['timemodified'] = (int)$chapter->timemodified;
                     $docs[] = new document($data);
                 }
@@ -190,8 +198,14 @@ class document_builder {
         $data['title'] = $file->get_filename();
         $data['header_path'] = array_merge($base['header_path'], $folders, [$file->get_filename()]);
         if ($cm->modname === 'folder') {
-            $data['module_url'] = \moodle_url::make_pluginfile_url($context->id, 'mod_folder', 'content', 0,
-                $file->get_filepath(), $file->get_filename())->out(false);
+            $data['module_url'] = \moodle_url::make_pluginfile_url(
+                $context->id,
+                'mod_folder',
+                'content',
+                0,
+                $file->get_filepath(),
+                $file->get_filename()
+            )->out(false);
         }
         $data['timemodified'] = (int)$file->get_timemodified();
         $data['kind'] = 'file';
@@ -237,8 +251,10 @@ class document_builder {
         if ($raw === false || trim($raw) === '') {
             $raw = self::DEFAULT_FILETYPES;
         }
-        return array_values(array_filter(array_map(fn($e) => ltrim(strtolower(trim($e)), '.'),
-            preg_split('/[\s,;]+/', $raw))));
+        return array_values(array_filter(array_map(
+            fn($e) => ltrim(strtolower(trim($e)), '.'),
+            preg_split('/[\s,;]+/', $raw)
+        )));
     }
 
     /**

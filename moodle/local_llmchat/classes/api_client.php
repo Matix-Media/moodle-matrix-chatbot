@@ -53,7 +53,12 @@ class api_client {
      * @param transport|null $transport
      * @throws api_exception on an unacceptable URL
      */
-    public function __construct(string $baseurl, private string $secret, ?transport $transport = null) {
+    public function __construct(
+        string $baseurl,
+        /** @var string the site secret, sent as bearer token */
+        private string $secret,
+        ?transport $transport = null,
+    ) {
         self::validate_url($baseurl);
         $this->baseurl = rtrim($baseurl, '/');
         $this->transport = $transport ?? new curl_transport();
@@ -158,8 +163,12 @@ class api_client {
             throw new api_exception('error:apiunreachable', 0, $this->redact($response->error));
         }
         if ($response->status < 200 || $response->status >= 300) {
-            throw new api_exception('error:apistatus', $response->status,
-                $this->redact(\core_text::substr($response->body, 0, 500)), $response->status);
+            throw new api_exception(
+                'error:apistatus',
+                $response->status,
+                $this->redact(\core_text::substr($response->body, 0, 500)),
+                $response->status
+            );
         }
         if (trim($response->body) === '') {
             return [];
@@ -228,8 +237,11 @@ class api_client {
      * @return array
      */
     public function push_manifest(string $syncid, int $chunkno, int $of, array $entries): array {
-        return $this->request('POST', '/ingest/manifest',
-            ['sync_id' => $syncid, 'chunk_no' => $chunkno, 'of' => $of, 'entries' => array_values($entries)]);
+        return $this->request(
+            'POST',
+            '/ingest/manifest',
+            ['sync_id' => $syncid, 'chunk_no' => $chunkno, 'of' => $of, 'entries' => array_values($entries)]
+        );
     }
 
     /**

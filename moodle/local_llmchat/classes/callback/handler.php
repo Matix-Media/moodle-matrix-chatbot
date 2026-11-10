@@ -68,8 +68,10 @@ class handler {
                 case 'check_access':
                     $userid = self::int_param($body, 'user_id');
                     $cmids = $body['cmids'] ?? null;
-                    if ($userid === null || !is_array($cmids) || count($cmids) > self::MAX_CMIDS
-                            || array_filter($cmids, fn($c) => !is_int($c))) {
+                    if (
+                        $userid === null || !is_array($cmids) || count($cmids) > self::MAX_CMIDS
+                            || array_filter($cmids, fn($c) => !is_int($c))
+                    ) {
                         return self::out(400, ['error' => 'bad_request']);
                     }
                     return self::out(200, ['allowed' => (new check_access())->check($userid, $cmids)]);

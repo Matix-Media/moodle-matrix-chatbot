@@ -64,8 +64,13 @@ if ($form->is_cancelled()) {
     redirect($url);
 } else if ($data = $form->get_data()) {
     $limit = fn($v) => trim((string)$v) === '' ? null : (int)$v;
-    policy::save_override((int)$data->userid, $limit($data->tokensperday), $limit($data->tokenspermonth),
-        !empty($data->exempt), (string)$data->note);
+    policy::save_override(
+        (int)$data->userid,
+        $limit($data->tokensperday),
+        $limit($data->tokenspermonth),
+        !empty($data->exempt),
+        (string)$data->note
+    );
     redirect($url, get_string('quota:saved', 'local_llmchat'), null, \core\output\notification::NOTIFY_SUCCESS);
 }
 
@@ -80,8 +85,10 @@ if (api_client::is_configured()) {
 
 echo $OUTPUT->header();
 echo $OUTPUT->heading(get_string('quotas', 'local_llmchat'));
-echo $OUTPUT->render_from_template('local_llmchat/quota_report',
-    (new \local_llmchat\output\quota_report($client))->export_for_template($OUTPUT));
+echo $OUTPUT->render_from_template(
+    'local_llmchat/quota_report',
+    (new \local_llmchat\output\quota_report($client))->export_for_template($OUTPUT)
+);
 echo $OUTPUT->heading(get_string('quota:addoverride', 'local_llmchat'), 3);
 $form->display();
 echo $OUTPUT->footer();

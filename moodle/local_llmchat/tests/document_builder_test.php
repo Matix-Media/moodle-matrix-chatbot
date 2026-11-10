@@ -74,8 +74,13 @@ final class document_builder_test extends \advanced_testcase {
      * @param string $filepath
      * @return \stored_file
      */
-    private function add_file(int $cmid, string $component, string $filename, string $content,
-            string $filepath = '/'): \stored_file {
+    private function add_file(
+        int $cmid,
+        string $component,
+        string $filename,
+        string $content,
+        string $filepath = '/'
+    ): \stored_file {
         return get_file_storage()->create_file_from_string([
             'contextid' => \context_module::instance($cmid)->id, 'component' => $component, 'filearea' => 'content',
             'itemid' => 0, 'filepath' => $filepath, 'filename' => $filename,

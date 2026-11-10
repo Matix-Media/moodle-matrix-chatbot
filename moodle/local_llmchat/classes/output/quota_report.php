@@ -114,8 +114,10 @@ class quota_report implements \renderable, \templatable {
                 'exempt' => !empty($o->exempt),
                 'note' => format_string((string)$o->note),
                 'editurl' => (new \moodle_url('/local/llmchat/admin/quotas.php', ['userid' => $o->userid]))->out(false),
-                'deleteurl' => (new \moodle_url('/local/llmchat/admin/quotas.php',
-                    ['delete' => $o->userid, 'sesskey' => sesskey()]))->out(false),
+                'deleteurl' => (new \moodle_url(
+                    '/local/llmchat/admin/quotas.php',
+                    ['delete' => $o->userid, 'sesskey' => sesskey()]
+                ))->out(false),
             ];
         }
         return [

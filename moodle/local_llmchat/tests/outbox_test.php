@@ -130,8 +130,10 @@ final class outbox_test extends \advanced_testcase {
         $this->transport->routes['POST /ingest/documents'] = fake_transport::json(['needs_blob' => [$sha]]);
         outbox::enqueue((int)$course->id, (int)$folder->cmid, outbox::UPSERT, 0);
         outbox::drain(api_client::from_config(), time());
-        $this->assertSame(['POST /ingest/courses', 'POST /ingest/documents', 'PUT /ingest/blobs/' . $sha],
-            $this->transport->sequence());
+        $this->assertSame(
+            ['POST /ingest/courses', 'POST /ingest/documents', 'PUT /ingest/blobs/' . $sha],
+            $this->transport->sequence()
+        );
         $this->assertSame('hello', $this->transport->requests[2]['body']);
     }
 

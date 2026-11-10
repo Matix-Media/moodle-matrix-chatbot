@@ -118,8 +118,15 @@ final class outbox {
      */
     public static function due(int $now, int $limit): array {
         global $DB;
-        return array_values($DB->get_records_select(self::TABLE, 'nextattempt <= :now AND attempts < :max',
-            ['now' => $now, 'max' => self::max_attempts()], 'courseid, cmid, id', '*', 0, $limit));
+        return array_values($DB->get_records_select(
+            self::TABLE,
+            'nextattempt <= :now AND attempts < :max',
+            ['now' => $now, 'max' => self::max_attempts()],
+            'courseid, cmid, id',
+            '*',
+            0,
+            $limit
+        ));
     }
 
     /**
@@ -159,8 +166,12 @@ final class outbox {
      * @param incremental|null $pusher
      * @return array{pushed: int, failed: int, paused: bool}
      */
-    public static function drain(api_client $client, ?int $now = null, int $limit = 200,
-            ?incremental $pusher = null): array {
+    public static function drain(
+        api_client $client,
+        ?int $now = null,
+        int $limit = 200,
+        ?incremental $pusher = null
+    ): array {
         $now = $now ?? time();
         $pusher = $pusher ?? new incremental($client);
         $pushed = $failed = 0;
@@ -226,8 +237,15 @@ final class outbox {
      */
     public static function failed_rows(int $limit = 50): array {
         global $DB;
-        return array_values($DB->get_records_select(self::TABLE, 'attempts > 0', null,
-            'attempts DESC, courseid, cmid', '*', 0, $limit));
+        return array_values($DB->get_records_select(
+            self::TABLE,
+            'attempts > 0',
+            null,
+            'attempts DESC, courseid, cmid',
+            '*',
+            0,
+            $limit
+        ));
     }
 
     /**
@@ -235,8 +253,10 @@ final class outbox {
      */
     public static function retry_exhausted(): void {
         global $DB;
-        $DB->execute('UPDATE {' . self::TABLE . '} SET attempts = 0, nextattempt = :now WHERE attempts >= :max',
-            ['now' => time(), 'max' => self::max_attempts()]);
+        $DB->execute(
+            'UPDATE {' . self::TABLE . '} SET attempts = 0, nextattempt = :now WHERE attempts >= :max',
+            ['now' => time(), 'max' => self::max_attempts()]
+        );
     }
 
     /**

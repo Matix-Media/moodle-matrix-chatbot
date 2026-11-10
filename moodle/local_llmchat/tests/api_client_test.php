@@ -79,8 +79,10 @@ final class api_client_test extends \advanced_testcase {
             'PUT /ingest/blobs/' . str_repeat('a', 64),
             'GET /api/usage',
         ], $t->sequence());
-        $this->assertSame(['sync_id' => 'sid', 'chunk_no' => 1, 'of' => 2, 'entries' => []],
-            $t->bodies('POST', '/ingest/manifest')[0]);
+        $this->assertSame(
+            ['sync_id' => 'sid', 'chunk_no' => 1, 'of' => 2, 'entries' => []],
+            $t->bodies('POST', '/ingest/manifest')[0]
+        );
         $this->assertStringEndsWith('?period=day&by=user', end($t->requests)['url']);
         $blob = $t->requests[6];
         $this->assertSame('bytes', $blob['body']);

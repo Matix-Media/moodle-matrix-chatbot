@@ -22,8 +22,6 @@
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * Create a module; the data generator replaces an empty intro with default text, so an
  * explicitly empty intro is blanked afterwards.

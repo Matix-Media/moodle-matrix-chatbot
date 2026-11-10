@@ -34,8 +34,14 @@ function local_llmchat_extend_navigation_course(navigation_node $navigation, std
         return;
     }
     $url = new moodle_url('/local/llmchat/chat.php', ['courseid' => $course->id]);
-    $navigation->add(get_string('chat', 'local_llmchat'), $url, navigation_node::TYPE_SETTING, null,
-        'local_llmchat', new pix_icon('t/message', ''));
+    $navigation->add(
+        get_string('chat', 'local_llmchat'),
+        $url,
+        navigation_node::TYPE_SETTING,
+        null,
+        'local_llmchat',
+        new pix_icon('t/message', '')
+    );
 }
 
 /**

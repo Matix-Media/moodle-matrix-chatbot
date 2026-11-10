@@ -63,8 +63,10 @@ final class observer_test extends \advanced_testcase {
      */
     private function rows(): array {
         global $DB;
-        return array_values(array_map(fn($r) => [(int)$r->courseid, (int)$r->cmid, $r->action],
-            $DB->get_records('local_llmchat_outbox', null, 'courseid, cmid')));
+        return array_values(array_map(
+            fn($r) => [(int)$r->courseid, (int)$r->cmid, $r->action],
+            $DB->get_records('local_llmchat_outbox', null, 'courseid, cmid')
+        ));
     }
 
     public function test_module_created_and_updated_enqueue_one_deduplicated_upsert(): void {
@@ -85,7 +87,9 @@ final class observer_test extends \advanced_testcase {
         $this->clear();
         course_delete_module($page->cmid);
         $this->assertSame([[(int)$course->id, (int)$page->cmid, 'delete']], array_values(array_filter(
-            $this->rows(), fn($r) => $r[1] === (int)$page->cmid)));
+            $this->rows(),
+            fn($r) => $r[1] === (int)$page->cmid
+        )));
     }
 
     public function test_course_update_enqueues_course_row(): void {

@@ -50,8 +50,12 @@ if ($action !== '') {
                 unset_config('authfailedat', 'local_llmchat');
                 redirect($url, get_string('status:connectionok', 'local_llmchat'), null, \core\output\notification::NOTIFY_SUCCESS);
             } catch (api_exception $e) {
-                redirect($url, get_string('status:connectionfailed', 'local_llmchat', $e->getMessage()), null,
-                    \core\output\notification::NOTIFY_ERROR);
+                redirect(
+                    $url,
+                    get_string('status:connectionfailed', 'local_llmchat', $e->getMessage()),
+                    null,
+                    \core\output\notification::NOTIFY_ERROR
+                );
             }
             break;
         case 'run':
@@ -86,6 +90,8 @@ echo $OUTPUT->heading(get_string('syncstatus', 'local_llmchat'));
 if (!$client) {
     echo $OUTPUT->notification(get_string('error:notconfigured', 'local_llmchat'), 'warning');
 }
-echo $OUTPUT->render_from_template('local_llmchat/status_page',
-    (new \local_llmchat\output\status_page($client))->export_for_template($OUTPUT));
+echo $OUTPUT->render_from_template(
+    'local_llmchat/status_page',
+    (new \local_llmchat\output\status_page($client))->export_for_template($OUTPUT)
+);
 echo $OUTPUT->footer();

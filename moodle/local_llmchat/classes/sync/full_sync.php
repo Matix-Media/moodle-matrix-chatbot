@@ -182,8 +182,12 @@ class full_sync extends pusher {
         if ($bundle) {
             $this->client->push_courses([$bundle['course']]);
         }
-        $answer = $this->client->push_manifest($syncid, $chunkno, $of,
-            array_map(fn($d) => $d->manifest_entry(), $documents));
+        $answer = $this->client->push_manifest(
+            $syncid,
+            $chunkno,
+            $of,
+            array_map(fn($d) => $d->manifest_entry(), $documents)
+        );
         $need = array_fill_keys($answer['need'] ?? [], true);
         $needed = array_values(array_filter($documents, fn($d) => isset($need[$d->id()])));
         $needblobs = $answer['need_blobs'] ?? [];
