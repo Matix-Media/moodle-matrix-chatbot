@@ -1,0 +1,91 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+{{!
+    @template local_llmchat/status_page
+
+    Sync status: API connection, full sync progress, outbox.
+
+    Example context (json):
+    {
+        "api": {"configured": true, "ok": true, "rows": [{"label": "documents", "value": "12"}], "error": ""},
+        "hassync": true,
+        "sync": {"syncid": "abc", "state": "running", "progress": "1 / 2", "documents": 3, "blobs": 1,
+                 "started": "now", "modified": "now", "finished": "–", "lasterror": ""},
+        "outbox": {"pending": 1, "failing": 0, "exhausted": 0},
+        "hasfailed": false, "failed": [], "authfailed": "", "sesskey": "x", "actionurl": "/local/llmchat/admin/sync.php"
+    }
+}}
+<div class="local-llmchat-status">
+    {{#authfailed}}
+    <div class="alert alert-danger">{{#str}} status:authfailedsince, local_llmchat, {{authfailed}} {{/str}}</div>
+    {{/authfailed}}
+
+    <h3>{{#str}} status:api, local_llmchat {{/str}}</h3>
+    <form method="post" action="{{actionurl}}" class="d-inline">
+        <input type="hidden" name="sesskey" value="{{sesskey}}">
+        <button class="btn btn-secondary" name="action" value="test">{{#str}} testconnection, local_llmchat {{/str}}</button>
+        <button class="btn btn-primary" name="action" value="run">{{#str}} runfullsync, local_llmchat {{/str}}</button>
+        <button class="btn btn-danger" name="action" value="reimport">{{#str}} reimport, local_llmchat {{/str}}</button>
+    </form>
+    {{#api.configured}}
+        {{#api.ok}}
+        <table class="table table-sm mt-3 generaltable">
+            <tbody>
+            {{#api.rows}}<tr><th scope="row">{{label}}</th><td>{{value}}</td></tr>{{/api.rows}}
+            </tbody>
+        </table>
+        {{/api.ok}}
+        {{^api.ok}}<div class="alert alert-danger mt-3">{{api.error}}</div>{{/api.ok}}
+    {{/api.configured}}
+
+    <h3 class="mt-4">{{#str}} status:fullsync, local_llmchat {{/str}}</h3>
+    {{#hassync}}
+    <table class="table table-sm generaltable">
+        <tbody>
+            <tr><th scope="row">{{#str}} status:syncid, local_llmchat {{/str}}</th><td>{{sync.syncid}}</td></tr>
+            <tr><th scope="row">{{#str}} status:state, local_llmchat {{/str}}</th><td>{{sync.state}}</td></tr>
+            <tr><th scope="row">{{#str}} status:progress, local_llmchat {{/str}}</th><td>{{sync.progress}}</td></tr>
+            <tr><th scope="row">{{#str}} status:documents, local_llmchat {{/str}}</th><td>{{sync.documents}}</td></tr>
+            <tr><th scope="row">{{#str}} status:blobs, local_llmchat {{/str}}</th><td>{{sync.blobs}}</td></tr>
+            <tr><th scope="row">{{#str}} status:started, local_llmchat {{/str}}</th><td>{{sync.started}}</td></tr>
+            <tr><th scope="row">{{#str}} status:finished, local_llmchat {{/str}}</th><td>{{sync.finished}}</td></tr>
+            {{#sync.lasterror}}<tr><th scope="row">{{#str}} status:lasterror, local_llmchat {{/str}}</th><td>{{sync.lasterror}}</td></tr>{{/sync.lasterror}}
+        </tbody>
+    </table>
+    {{/hassync}}
+    {{^hassync}}<p>{{#str}} status:nosync, local_llmchat {{/str}}</p>{{/hassync}}
+
+    <h3 class="mt-4">{{#str}} status:outbox, local_llmchat {{/str}}</h3>
+    <p>{{#str}} status:outboxcounts, local_llmchat, {"pending": {{outbox.pending}}, "failing": {{outbox.failing}}, "exhausted": {{outbox.exhausted}} } {{/str}}</p>
+    {{#hasfailed}}
+    <form method="post" action="{{actionurl}}">
+        <input type="hidden" name="sesskey" value="{{sesskey}}">
+        <button class="btn btn-secondary btn-sm mb-2" name="action" value="retry">{{#str}} status:retryexhausted, local_llmchat {{/str}}</button>
+    </form>
+    <table class="table table-sm generaltable">
+        <thead><tr>
+            <th scope="col">{{#str}} course {{/str}}</th><th scope="col">cmid</th>
+            <th scope="col">{{#str}} status:action, local_llmchat {{/str}}</th>
+            <th scope="col">{{#str}} status:attempts, local_llmchat {{/str}}</th>
+            <th scope="col">{{#str}} status:nextattempt, local_llmchat {{/str}}</th>
+            <th scope="col">{{#str}} status:lasterror, local_llmchat {{/str}}</th>
+        </tr></thead>
+        <tbody>
+        {{#failed}}<tr><td>{{courseid}}</td><td>{{cmid}}</td><td>{{action}}</td><td>{{attempts}}</td><td>{{nextattempt}}</td><td>{{lasterror}}</td></tr>{{/failed}}
+        </tbody>
+    </table>
+    {{/hasfailed}}
+</div>

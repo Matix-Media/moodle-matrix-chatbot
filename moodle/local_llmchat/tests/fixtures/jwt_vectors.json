@@ -1,0 +1,87 @@
+{
+  "description": "Shared chat-token vectors. key = HKDF-SHA256(ikm=UTF-8(secret), salt=empty, info='chat-token', L=32); token = HS256 JWT over compact JSON (no spaces, unescaped unicode and slashes) of header then claims, base64url without padding.",
+  "vectors": [
+    {
+      "secret": "mlc_s3cr3t-0123456789abcdefghijklmnopqrstuvwxyzABCDEF",
+      "info": "chat-token",
+      "salt": "",
+      "hash": "sha256",
+      "derived_key_hex": "991c5540fccdbbb694ee61e85f81b43baa6c1dd7fcb69179d4c3c51fdc83b025",
+      "header": {
+        "alg": "HS256",
+        "typ": "JWT"
+      },
+      "claims": {
+        "iss": "https://moodle.example.org",
+        "sub": "42",
+        "site_id": "site-1",
+        "name": "Max Mustermann",
+        "lang": "de",
+        "caps": [
+          "read",
+          "interact"
+        ],
+        "courses": [
+          2,
+          5
+        ],
+        "roles": {
+          "2": [
+            "student"
+          ],
+          "5": [
+            "editingteacher"
+          ]
+        },
+        "cmids": [
+          10,
+          11,
+          57
+        ],
+        "quota": {
+          "day": 50000,
+          "month": null,
+          "exempt": false
+        },
+        "jti": "0123456789abcdef0123456789abcdef",
+        "iat": 1700000000,
+        "exp": 1700000600
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL21vb2RsZS5leGFtcGxlLm9yZyIsInN1YiI6IjQyIiwic2l0ZV9pZCI6InNpdGUtMSIsIm5hbWUiOiJNYXggTXVzdGVybWFubiIsImxhbmciOiJkZSIsImNhcHMiOlsicmVhZCIsImludGVyYWN0Il0sImNvdXJzZXMiOlsyLDVdLCJyb2xlcyI6eyIyIjpbInN0dWRlbnQiXSwiNSI6WyJlZGl0aW5ndGVhY2hlciJdfSwiY21pZHMiOlsxMCwxMSw1N10sInF1b3RhIjp7ImRheSI6NTAwMDAsIm1vbnRoIjpudWxsLCJleGVtcHQiOmZhbHNlfSwianRpIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDYwMH0.2o8soOa4avxBhUcfFBiECX7FBHbClsbb7w_W-eix9mc"
+    },
+    {
+      "secret": "Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx5",
+      "info": "chat-token",
+      "salt": "",
+      "hash": "sha256",
+      "derived_key_hex": "9babdea000c547d9f160c724dc7f1a94ac5b909b004b3ca7d2757a7d788402cc",
+      "header": {
+        "alg": "HS256",
+        "typ": "JWT"
+      },
+      "claims": {
+        "iss": "https://lms.schule.de/moodle",
+        "sub": "7",
+        "site_id": 3,
+        "name": "Jürgen Ä. Öztürk",
+        "lang": "en",
+        "caps": [
+          "read",
+          "interact"
+        ],
+        "courses": [],
+        "roles": {},
+        "cmids": [],
+        "quota": {
+          "day": null,
+          "month": null,
+          "exempt": true
+        },
+        "jti": "ffffffffffffffffffffffffffffffff",
+        "iat": 1800000000,
+        "exp": 1800000300
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2xtcy5zY2h1bGUuZGUvbW9vZGxlIiwic3ViIjoiNyIsInNpdGVfaWQiOjMsIm5hbWUiOiJKw7xyZ2VuIMOELiDDlnp0w7xyayIsImxhbmciOiJlbiIsImNhcHMiOlsicmVhZCIsImludGVyYWN0Il0sImNvdXJzZXMiOltdLCJyb2xlcyI6e30sImNtaWRzIjpbXSwicXVvdGEiOnsiZGF5IjpudWxsLCJtb250aCI6bnVsbCwiZXhlbXB0Ijp0cnVlfSwianRpIjoiZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmYiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDMwMH0.0jMHWJPd1JfKlUnhzILdnLBVDv34C6lIFUJ5Yf2_noA"
+    }
+  ]
+}

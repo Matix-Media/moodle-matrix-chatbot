@@ -1,0 +1,57 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/chat_page
+
+    Chat page shell; local_llmchat/chat fills it.
+
+    Example context (json):
+    {
+        "rootid": "local-llmchat-root",
+        "courseid": 2,
+        "coursename": "Netzwerke",
+        "hascourse": true
+    }
+}}
+<div id="{{rootid}}" class="local-llmchat d-flex flex-column flex-md-row" data-courseid="{{courseid}}">
+    <aside class="local-llmchat-sidebar border-right border-end pr-md-3 pe-md-3 mb-3 mb-md-0" data-region="sidebar">
+        <button type="button" class="btn btn-primary w-100 mb-2" data-action="new-conversation">
+            {{#str}} newconversation, local_llmchat {{/str}}
+        </button>
+        <ul class="list-unstyled local-llmchat-conversations" data-region="conversations" aria-label="{{#str}} conversations, local_llmchat {{/str}}"></ul>
+    </aside>
+    <section class="local-llmchat-main flex-grow-1 pl-md-3 ps-md-3 d-flex flex-column">
+        <div class="alert alert-warning d-none" role="status" data-region="offline">
+            {{#str}} offline, local_llmchat {{/str}}
+        </div>
+        <div class="alert alert-danger d-none" role="alert" data-region="error"></div>
+        <div class="small text-muted mb-2" data-region="quota" aria-live="polite"></div>
+        {{#hascourse}}
+        <div class="small text-muted mb-2">{{#str}} coursecontext, local_llmchat, {{coursename}} {{/str}}</div>
+        {{/hascourse}}
+        <div class="local-llmchat-messages flex-grow-1 mb-3" data-region="messages" aria-live="polite"></div>
+        <form class="local-llmchat-composer d-flex gap-2" data-region="composer">
+            <label class="sr-only visually-hidden" for="{{rootid}}-input">{{#str}} message, local_llmchat {{/str}}</label>
+            <textarea id="{{rootid}}-input" class="form-control" rows="2" data-region="input"
+                placeholder="{{#str}} placeholder, local_llmchat {{/str}}"></textarea>
+            <div class="d-flex flex-column gap-1">
+                <button type="submit" class="btn btn-primary" data-action="send">{{#str}} send, local_llmchat {{/str}}</button>
+                <button type="button" class="btn btn-outline-secondary d-none" data-action="cancel">{{#str}} cancel, local_llmchat {{/str}}</button>
+            </div>
+        </form>
+    </section>
+</div>

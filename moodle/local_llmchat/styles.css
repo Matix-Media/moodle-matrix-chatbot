@@ -1,0 +1,69 @@
+.local-llmchat {
+    min-height: 60vh;
+}
+
+.local-llmchat-sidebar {
+    flex: 0 0 16rem;
+    max-width: 100%;
+}
+
+.local-llmchat-messages {
+    overflow-y: auto;
+    max-height: 65vh;
+}
+
+.local-llmchat-msg {
+    max-width: 52rem;
+}
+
+.local-llmchat-user .local-llmchat-text {
+    background: #e9f2ff;
+    border-radius: .5rem;
+    padding: .5rem .75rem;
+    white-space: pre-wrap;
+}
+
+.local-llmchat-assistant .local-llmchat-text {
+    padding: .25rem 0;
+}
+
+.local-llmchat-tool summary,
+.local-llmchat-thinking summary {
+    cursor: pointer;
+}
+
+.local-llmchat-tool pre {
+    white-space: pre-wrap;
+    font-size: .75rem;
+}
+
+.local-llmchat-thinking-text {
+    white-space: pre-wrap;
+    border-left: 3px solid #dee2e6;
+    padding-left: .5rem;
+}
+
+.local-llmchat-interaction {
+    border: 1px solid #dee2e6;
+    border-radius: .5rem;
+    padding: .75rem;
+    margin-top: .5rem;
+}
+
+.local-llmchat-answered {
+    opacity: .7;
+}
+
+.local-llmchat-cite {
+    font-size: .8em;
+    vertical-align: super;
+    text-decoration: none;
+}
+
+.local-llmchat .gap-1 {
+    gap: .25rem;
+}
+
+.local-llmchat .gap-2 {
+    gap: .5rem;
+}

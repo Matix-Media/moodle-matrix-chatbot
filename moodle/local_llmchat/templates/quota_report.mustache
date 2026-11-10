@@ -1,0 +1,80 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+{{!
+    @template local_llmchat/quota_report
+
+    Chat quotas: site limits, overrides and usage.
+
+    Example context (json):
+    {
+        "site": {"sitedaily": "unlimited", "sitemonthly": "1.000.000", "userdaily": "10.000", "usermonthly": "100.000",
+                 "perturn": "60.000"},
+        "hasoverrides": true,
+        "overrides": [{"userid": 3, "fullname": "Uta Nutzer", "day": "site default", "month": "unlimited",
+                       "exempt": true, "note": "Lehrkraft", "editurl": "#", "deleteurl": "#"}],
+        "usage": [{"period": "day", "rows": [{"user": "Uta Nutzer", "tokens": "4.321", "estimated": true}],
+                   "error": "", "sitetotal": "9.999"}]
+    }
+}}
+<div class="local-llmchat-quotas">
+    <h3>{{#str}} quota:sitelimits, local_llmchat {{/str}}</h3>
+    <table class="table table-sm generaltable">
+        <tbody>
+            <tr><th scope="row">{{#str}} settings:site_tokens_per_day, local_llmchat {{/str}}</th><td>{{site.sitedaily}}</td></tr>
+            <tr><th scope="row">{{#str}} settings:site_tokens_per_month, local_llmchat {{/str}}</th><td>{{site.sitemonthly}}</td></tr>
+            <tr><th scope="row">{{#str}} settings:user_tokens_per_day, local_llmchat {{/str}}</th><td>{{site.userdaily}}</td></tr>
+            <tr><th scope="row">{{#str}} settings:user_tokens_per_month, local_llmchat {{/str}}</th><td>{{site.usermonthly}}</td></tr>
+            <tr><th scope="row">{{#str}} settings:max_tokens_per_turn, local_llmchat {{/str}}</th><td>{{site.perturn}}</td></tr>
+        </tbody>
+    </table>
+
+    <h3 class="mt-4">{{#str}} quota:overrides, local_llmchat {{/str}}</h3>
+    {{#hasoverrides}}
+    <table class="table table-sm generaltable">
+        <thead><tr>
+            <th scope="col">{{#str}} user {{/str}}</th>
+            <th scope="col">{{#str}} quota:tokensperday, local_llmchat {{/str}}</th>
+            <th scope="col">{{#str}} quota:tokenspermonth, local_llmchat {{/str}}</th>
+            <th scope="col">{{#str}} quota:exempt, local_llmchat {{/str}}</th>
+            <th scope="col">{{#str}} quota:note, local_llmchat {{/str}}</th>
+            <th scope="col"></th>
+        </tr></thead>
+        <tbody>
+        {{#overrides}}
+            <tr>
+                <td>{{fullname}}</td><td>{{day}}</td><td>{{month}}</td>
+                <td>{{#exempt}}{{#str}} yes {{/str}}{{/exempt}}{{^exempt}}{{#str}} no {{/str}}{{/exempt}}</td>
+                <td>{{note}}</td>
+                <td><a href="{{editurl}}">{{#str}} edit {{/str}}</a> · <a href="{{deleteurl}}">{{#str}} delete {{/str}}</a></td>
+            </tr>
+        {{/overrides}}
+        </tbody>
+    </table>
+    {{/hasoverrides}}
+    {{^hasoverrides}}<p>{{#str}} quota:nooverrides, local_llmchat {{/str}}</p>{{/hasoverrides}}
+
+    {{#usage}}
+    <h3 class="mt-4">{{#str}} quota:usage, local_llmchat, {{period}} {{/str}}</h3>
+    {{#error}}<div class="alert alert-warning">{{error}}</div>{{/error}}
+    <p>{{#str}} quota:sitetotal, local_llmchat, {{sitetotal}} {{/str}}</p>
+    <table class="table table-sm generaltable">
+        <thead><tr><th scope="col">{{#str}} user {{/str}}</th><th scope="col">{{#str}} quota:tokens, local_llmchat {{/str}}</th></tr></thead>
+        <tbody>
+        {{#rows}}<tr><td>{{user}}</td><td>{{tokens}}{{#estimated}} <span class="badge badge-secondary bg-secondary">{{#str}} quota:estimated, local_llmchat {{/str}}</span>{{/estimated}}</td></tr>{{/rows}}
+        </tbody>
+    </table>
+    {{/usage}}
+</div>
