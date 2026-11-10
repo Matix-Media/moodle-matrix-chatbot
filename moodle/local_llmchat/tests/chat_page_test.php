@@ -41,7 +41,7 @@ final class chat_page_test extends \advanced_testcase {
     private const TEMPLATES = [
         'chat_page', 'message_user', 'message_assistant', 'thinking', 'tool_call', 'answer_footer', 'notice',
         'conversation_list', 'interaction_question', 'interaction_confirm', 'interaction_choice',
-        'interaction_freetext', 'interaction_answered', 'status_page', 'quota_report',
+        'interaction_freetext', 'interaction_answered', 'quota_panel', 'status_page', 'quota_report',
     ];
 
     /**
@@ -102,6 +102,59 @@ final class chat_page_test extends \advanced_testcase {
             $this->assertStringStartsWith('fa-', $map["local_llmchat:$icon"]);
             $this->assertFileExists(__DIR__ . "/../pix/$icon.svg");
         }
+    }
+
+    /**
+     * The chat page rendered from its own example context, as a DOM.
+     *
+     * @return \DOMXPath
+     */
+    private function chat_page_dom(): \DOMXPath {
+        global $PAGE;
+        $source = file_get_contents(__DIR__ . '/../templates/chat_page.mustache');
+        preg_match_all('/{{!([\s\S]*?)}}/', $source, $blocks);
+        preg_match('/Example context \(json\):([\s\S]*)/', $blocks[1][1], $m);
+        $html = $PAGE->get_renderer('core')->render_from_template('local_llmchat/chat_page', json_decode($m[1], true));
+        $dom = new \DOMDocument();
+        libxml_use_internal_errors(true);
+        $dom->loadHTML('<?xml encoding="utf-8"?>' . $html);
+        libxml_clear_errors();
+        return new \DOMXPath($dom);
+    }
+
+    public function test_header_has_only_toggle_title_and_token_ring(): void {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xpath = $this->chat_page_dom();
+        $header = $xpath->query('//*[contains(@class, "local-llmchat-header")]')->item(0);
+        $this->assertNotNull($header);
+        $this->assertSame(
+            0,
+            $xpath->query('.//*[contains(@class, "local-llmchat-avatar")]', $header)->length,
+            'no assistant icon in the header'
+        );
+        $this->assertSame(0, $xpath->query('.//a', $header)->length, 'no course link in the header');
+        $this->assertSame(1, $xpath->query('.//h2', $header)->length);
+        $buttons = $xpath->query('.//button', $header);
+        $actions = [];
+        foreach ($buttons as $button) {
+            $actions[] = $button->getAttribute('data-action');
+        }
+        $this->assertSame(['toggle', 'quota-toggle'], $actions);
+    }
+
+    public function test_token_ring_controls_a_details_panel(): void {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xpath = $this->chat_page_dom();
+        $button = $xpath->query('//button[@data-action="quota-toggle"]')->item(0);
+        $this->assertSame('false', $button->getAttribute('aria-expanded'));
+        $panelid = $button->getAttribute('aria-controls');
+        $panel = $xpath->query('//*[@id="' . $panelid . '"]')->item(0);
+        $this->assertNotNull($panel, 'aria-controls points at the panel');
+        $this->assertSame('quota-panel', $panel->getAttribute('data-region'));
+        $this->assertSame(1, $xpath->query('.//*[local-name()="svg"]//*[@data-region="quota-ring"]', $button)->length);
+        $this->assertNotSame('', trim($xpath->query('.//*[contains(@class, "sr-only")]', $button)->item(0)->textContent));
     }
 
     public function test_every_template_renders_its_example_context(): void {

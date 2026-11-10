@@ -38,17 +38,23 @@ import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
 
 const STRING_KEYS = [
     'cancelled', 'copied', 'error', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
-    'quota:remainingmonth', 'ratelimited:burst', 'ratelimited:site', 'ratelimited:user', 'reconnected', 'resume',
+    'quota:remainingmonth', 'quota:thismonth', 'quota:today', 'quota:usedof', 'ratelimited:burst', 'ratelimited:site',
+    'ratelimited:user', 'reconnected', 'resume',
     'turninterrupted', 'unknowninteraction', 'untitled',
 ];
 
 const SEQ_STORAGE_KEY = 'local_llmchat_lastseq';
 
+/** Circumference of the token ring (r = 15 in a 36-unit viewBox). */
+const RING_CIRCUMFERENCE = 2 * Math.PI * 15;
+
 /** Space kept below the chat card. */
 const BOTTOM_GAP = 16;
 
 /** Moodle's floating page controls (help button, drawer toggles) that may sit over the card. */
-const FLOATING_CONTROLS = '.btn-footer-popover, .drawer-toggles .drawer-toggler, [data-region="footer-container-popover"] .btn';
+const FLOATING_CONTROLS = [
+    '.btn-footer-popover', '.drawer-toggles .drawer-toggler', '[data-region="footer-container-popover"] .btn',
+].join(', ');
 
 /** Server frame type => controller method (frame, replay). */
 const FRAME_HANDLERS = {
@@ -145,8 +151,8 @@ class ChatController {
         this.userpicture = config.userpicture || '';
         this.str = strings;
         this.regions = {};
-        ['messages', 'empty', 'conversations', 'status', 'quota', 'quota-text', 'quota-bar', 'input', 'composer', 'panel',
-            'sidebar'].forEach((name) => {
+        ['messages', 'empty', 'conversations', 'status', 'quota', 'quota-button', 'quota-ring', 'quota-percent', 'quota-panel',
+            'input', 'composer', 'panel', 'sidebar'].forEach((name) => {
             this.regions[name] = root.querySelector(`[data-region="${name}"]`);
         });
         this.sendButton = root.querySelector('[data-action="send"]');
@@ -211,6 +217,18 @@ class ChatController {
             this.stickToBottom = m.scrollTop + m.clientHeight >= m.scrollHeight - 48;
         });
         this.root.addEventListener('click', (e) => this.onClick(e));
+        // The token panel closes on Escape and on any click outside it.
+        document.addEventListener('click', (e) => {
+            if (!this.regions.quota.contains(e.target)) {
+                this.toggleQuotaPanel(false);
+            }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.regions['quota-panel'].classList.contains('show')) {
+                this.toggleQuotaPanel(false);
+                this.regions['quota-button'].focus();
+            }
+        });
         window.addEventListener('resize', () => this.fitHeight());
     }
 
@@ -231,6 +249,8 @@ class ChatController {
                 const open = panel.classList.toggle('show');
                 target.setAttribute('aria-expanded', open ? 'true' : 'false');
             }
+        } else if (action === 'quota-toggle') {
+            this.toggleQuotaPanel(!this.regions['quota-panel'].classList.contains('show'));
         } else if (action === 'suggest') {
             this.regions.input.value = target.dataset.text;
             this.submit();
@@ -241,6 +261,16 @@ class ChatController {
             this.closeSidebarOnMobile();
             this.openConversation(null);
         }
+    }
+
+    /**
+     * Open or close the token budget panel behind the ring.
+     *
+     * @param {boolean} open
+     */
+    toggleQuotaPanel(open) {
+        this.regions['quota-panel'].classList.toggle('show', open);
+        this.regions['quota-button'].setAttribute('aria-expanded', open ? 'true' : 'false');
     }
 
     /**
@@ -867,42 +897,51 @@ class ChatController {
         const scope = ['burst', 'user', 'site'].includes(frame.scope) ? frame.scope : 'user';
         await this.showStatus('warning', fill(this.str[`ratelimited:${scope}`], formatTime(frame.resets_at)));
         if (frame.used !== undefined && frame.limit !== undefined) {
-            this.onQuota({'used_today': frame.used, 'limit_today': frame.limit});
+            await this.onQuota({'used_today': frame.used, 'limit_today': frame.limit, 'resets_at': frame.resets_at});
         }
     }
 
     /**
-     * Remaining budget in the header: text plus a progress bar that turns amber, then red.
+     * Token budget: a small ring in the header (fullest window), a tooltip, and a details panel.
      *
      * @param {Object} frame quota{used_today, limit_today, used_month, limit_month, resets_at, exempt?}
      */
-    onQuota(frame) {
-        const {'used_today': usedToday, 'limit_today': limitToday, 'used_month': usedMonth, 'limit_month': limitMonth} = frame;
-        const quota = this.regions.quota;
-        const bar = this.regions['quota-bar'];
-        quota.classList.remove('d-none');
-        if (frame.exempt) {
-            this.regions['quota-text'].textContent = this.str['quota:exemptuser'];
-            bar.parentElement.classList.add('d-none');
-            return;
+    async onQuota(frame) {
+        const {'used_today': usedToday, 'limit_today': limitToday, 'used_month': usedMonth, 'limit_month': limitMonth,
+            'resets_at': resetsAt} = frame;
+        const windows = [
+            [this.str['quota:today'], this.str['quota:remaining'], usedToday, limitToday],
+            [this.str['quota:thismonth'], this.str['quota:remainingmonth'], usedMonth, limitMonth],
+        ].filter(([, , , limit]) => limit !== undefined && limit !== null && limit > 0);
+        const rows = windows.map(([label, , used, limit]) => {
+            const percent = Math.min(100, Math.round(((used || 0) / limit) * 100));
+            return {
+                label, percent, warning: percent >= 80 && percent < 100, danger: percent >= 100,
+                usedof: fill(this.str['quota:usedof'], {used: formatNumber(used || 0), limit: formatNumber(limit)}),
+            };
+        });
+        const exempt = Boolean(frame.exempt);
+        const percent = exempt ? 0 : Math.max(0, ...rows.map((r) => r.percent));
+        const ring = this.regions['quota-ring'];
+        ring.setAttribute('stroke-dasharray', `${(percent / 100) * RING_CIRCUMFERENCE} ${RING_CIRCUMFERENCE}`);
+        // The number inside tells the ring apart from a loading spinner.
+        const label = exempt ? '∞' : `${percent}%`;
+        this.regions['quota-percent'].textContent = label;
+        this.regions['quota-percent'].classList.toggle('local-llmchat-ringlabel-long', label.length > 3);
+        let state = '';
+        if (rows.some((r) => r.danger)) {
+            state = 'danger';
+        } else if (rows.some((r) => r.warning)) {
+            state = 'warning';
         }
-        const parts = [];
-        if (limitToday !== undefined && limitToday !== null) {
-            parts.push(fill(this.str['quota:remaining'], {used: formatNumber(usedToday), limit: formatNumber(limitToday)}));
-        }
-        if (limitMonth !== undefined && limitMonth !== null) {
-            parts.push(fill(this.str['quota:remainingmonth'], {used: formatNumber(usedMonth), limit: formatNumber(limitMonth)}));
-        }
-        // One compact line in the header; the full breakdown is in the tooltip.
-        this.regions['quota-text'].textContent = parts[0] || '';
-        quota.title = parts.join(' · ');
-        const ratio = Math.max(limitToday ? usedToday / limitToday : 0, limitMonth ? usedMonth / limitMonth : 0);
-        const percent = Math.min(100, Math.round(ratio * 100));
-        bar.parentElement.classList.toggle('d-none', !limitToday && !limitMonth);
-        bar.style.width = `${percent}%`;
-        bar.setAttribute('aria-valuenow', String(percent));
-        bar.classList.toggle('bg-warning', percent >= 80 && percent < 100);
-        bar.classList.toggle('bg-danger', percent >= 100);
+        this.regions.quota.dataset.state = state;
+        this.regions['quota-button'].title = exempt ? this.str['quota:exemptuser']
+            : windows.map(([, text, used, limit]) => fill(text, {used: formatNumber(used || 0), limit: formatNumber(limit)}))
+                .join(' · ');
+        await renderInto(this.regions['quota-panel'], 'local_llmchat/quota_panel', {
+            exempt, rows, hasresets: Boolean(resetsAt) && !exempt, resets: formatTime(resetsAt),
+        });
+        this.regions.quota.classList.toggle('invisible', !exempt && rows.length === 0);
     }
 
     /**

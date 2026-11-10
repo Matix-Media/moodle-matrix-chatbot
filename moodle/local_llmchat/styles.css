@@ -79,23 +79,81 @@
 }
 
 .local-llmchat-header {
-    gap: .5rem;
-    min-height: 4.25rem;
+    min-height: 3.5rem;
 }
 
+/* Token budget: a small ring; details open in a panel below it. */
 .local-llmchat-quota {
-    width: 15rem;
-    max-width: 100%;
+    position: relative;
+    flex-shrink: 0;
+    margin-left: .5rem;
 }
 
-.local-llmchat-quota [data-region="quota-text"] {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+.local-llmchat .local-llmchat-quotabtn {
+    position: relative;
+    color: inherit;
+}
+
+.local-llmchat-ring {
+    width: 2.25rem;
+    height: 2.25rem;
+    transform: rotate(-90deg);
+}
+
+.local-llmchat-ringlabel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .5625rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em;
+}
+
+.local-llmchat-ringlabel-long {
+    font-size: .5rem;
+}
+
+.local-llmchat-ring circle {
+    fill: none;
+    stroke-width: 3;
+}
+
+.local-llmchat-ring-track {
+    stroke: var(--llmchat-border);
+}
+
+.local-llmchat-ring-bar {
+    stroke: var(--llmchat-accent);
+    stroke-linecap: round;
+    transition: stroke-dasharray .3s ease-in-out;
+}
+
+.local-llmchat-quota[data-state="warning"] .local-llmchat-ring-bar {
+    stroke: var(--bs-warning, var(--warning, #f0ad4e));
+}
+
+.local-llmchat-quota[data-state="danger"] .local-llmchat-ring-bar {
+    stroke: var(--bs-danger, var(--danger, #ca3120));
+}
+
+.local-llmchat .local-llmchat-quotapanel {
+    right: 0;
+    left: auto;
+    width: 17rem;
+    max-width: calc(100vw - 2rem);
+    padding: .75rem 1rem;
+}
+
+.local-llmchat-quotarow + .local-llmchat-quotarow {
+    margin-top: .625rem;
 }
 
 .local-llmchat-progress {
     height: .375rem;
+    margin-top: .25rem;
 }
 
 /* Message column. */
@@ -349,6 +407,14 @@
     padding: 2rem 1rem;
 }
 
+.local-llmchat-emptytitle {
+    margin: 1rem 0 .5rem;
+}
+
+.local-llmchat-intro {
+    margin-bottom: 1rem;
+}
+
 .local-llmchat-suggestions {
     gap: .5rem;
 }
@@ -385,6 +451,11 @@
     box-shadow: 0 0 0 .2rem var(--llmchat-accent-soft);
 }
 
+/* The hint lines up with the text inside the rounded field (its padding plus its border). */
+.local-llmchat-hint {
+    padding-left: calc(1rem + 1px);
+}
+
 .local-llmchat .local-llmchat-input,
 .local-llmchat .local-llmchat-input:focus {
     min-height: 2.5rem;
@@ -396,7 +467,9 @@
     resize: none;
 }
 
-.local-llmchat-iconbtn {
+/* Icon-only buttons. Scoped under .local-llmchat because the theme's .btn padding loads later and
+   would otherwise squeeze the icon off-centre. */
+.local-llmchat .local-llmchat-iconbtn {
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
@@ -404,13 +477,18 @@
     width: 2.5rem;
     height: 2.5rem;
     padding: 0;
+    line-height: 1;
 }
 
-.local-llmchat-iconbtn .icon {
+.local-llmchat .local-llmchat-iconbtn .icon {
+    width: 1rem;
+    height: 1rem;
     margin: 0;
+    font-size: 1rem;
+    line-height: 1;
 }
 
-.local-llmchat-iconbtn-sm {
+.local-llmchat .local-llmchat-iconbtn-sm {
     width: 2rem;
     height: 2rem;
 }
@@ -424,8 +502,28 @@
         max-width: 88%;
     }
 
-    .local-llmchat-quota {
-        width: 100%;
+    /* Compact empty state so the suggestions fit above the composer. */
+    .local-llmchat-empty {
+        padding: .5rem 0;
+    }
+
+    .local-llmchat-empty .local-llmchat-avatar-lg {
+        width: 2.75rem;
+        height: 2.75rem;
+    }
+
+    .local-llmchat-empty .local-llmchat-avatar-lg .icon {
+        font-size: 1.25rem;
+    }
+
+    .local-llmchat-emptytitle {
+        margin-top: .5rem;
+        font-size: 1.125rem;
+    }
+
+    .local-llmchat-intro {
+        margin-bottom: .75rem;
+        font-size: .875rem;
     }
 
 }
