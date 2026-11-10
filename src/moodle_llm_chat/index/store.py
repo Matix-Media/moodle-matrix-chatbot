@@ -50,6 +50,7 @@ from moodle_llm_chat.index.models import (
     Document,
     DocumentIn,
     DocumentKind,
+    Job,
     Segment,
     SegmentIn,
     Site,
@@ -154,6 +155,16 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     lookup TEXT NOT NULL, key TEXT NOT NULL, vector BLOB NOT NULL, created_at INTEGER NOT NULL,
     PRIMARY KEY (lookup, key)
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL, doc_id TEXT NOT NULL, stage TEXT NOT NULL,
+    state TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL,
+    next_attempt_at INTEGER NOT NULL, enqueued_at INTEGER NOT NULL,
+    started_at INTEGER, finished_at INTEGER, last_error TEXT,
+    UNIQUE (site_id, doc_id, stage)
+);
+CREATE INDEX IF NOT EXISTS jobs_due ON jobs(stage, state, priority, next_attempt_at);
 
 CREATE TABLE IF NOT EXISTS ocr_cache (
     lookup TEXT NOT NULL, model_tag TEXT NOT NULL, sealed BLOB NOT NULL,
@@ -923,6 +934,16 @@ class Store:
             and self.blob_path(sha256).exists()
         )
 
+    def documents_with_blob(self, site_id: str, sha256: str) -> list[str]:
+        return [
+            r[0]
+            for r in self.connection.execute(
+                "SELECT doc_id FROM documents WHERE site_id=? AND blob_sha256=? "
+                "AND tombstoned_at IS NULL ORDER BY doc_id",
+                (site_id, sha256),
+            )
+        ]
+
     def blob_referenced(self, site_id: str, sha256: str) -> bool:
         """Whether a live document of ``site_id`` points at this blob."""
         return (
@@ -949,6 +970,24 @@ class Store:
         while chunk := source.read(1024 * 1024):
             writer.write(chunk)
         writer.commit()
+
+    def delete_orphan_blobs(self) -> list[str]:
+        """Delete blobs no live document references; their keys are shredded too."""
+        orphans = [
+            r[0]
+            for r in self.connection.execute(
+                "SELECT sha256 FROM blobs WHERE sha256 NOT IN (SELECT blob_sha256 FROM documents "
+                "WHERE blob_sha256 IS NOT NULL AND tombstoned_at IS NULL) ORDER BY sha256"
+            )
+        ]
+        for sha in orphans:
+            self.blob_path(sha).unlink(missing_ok=True)
+            with self.connection as con:
+                con.execute("DELETE FROM blobs WHERE sha256=?", (sha,))
+            self.ring.forget(self, Scope.BLOB, sha)
+        if orphans:
+            log.info("store.orphan_blobs_deleted", count=len(orphans))
+        return orphans
 
     def read_blob(self, sha256: str) -> bytes:
         if not self.blob_exists(sha256):
@@ -1184,11 +1223,19 @@ class Store:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def chunks_without_vectors(self, *, limit: int) -> list[Chunk]:
-        rows = self.connection.execute(
+    def chunks_without_vectors(
+        self, *, limit: int, exclude_ids: Collection[int] = ()
+    ) -> list[Chunk]:
+        sql = (
             "SELECT c.* FROM chunks c LEFT JOIN chunk_vectors v ON v.chunk_id = c.chunk_id "
-            "WHERE v.chunk_id IS NULL ORDER BY c.chunk_id LIMIT ?",
-            (limit,),
+            "WHERE v.chunk_id IS NULL"
+        )
+        params: list[Any] = []
+        if exclude_ids:
+            sql += f" AND c.chunk_id NOT IN ({_marks(exclude_ids)})"
+            params += list(exclude_ids)
+        rows = self.connection.execute(
+            sql + " ORDER BY c.chunk_id LIMIT ?", [*params, limit]
         ).fetchall()
         return [self._to_chunk(r) for r in rows]
 
@@ -1258,6 +1305,154 @@ class Store:
                     int(time.time()),
                 ),
             )
+
+    # ------------------------------------------------------------------ #
+    # Jobs (the processing pipeline's persisted queue)
+    # ------------------------------------------------------------------ #
+
+    def enqueue_job(
+        self,
+        site_id: str,
+        doc_id: str,
+        stage: str,
+        *,
+        priority: int = 0,
+        now: int | None = None,
+    ) -> None:
+        """Queue ``stage`` for a document. Re-enqueueing resets attempts.
+
+        While already queued, the more urgent (lower) priority wins; a finished job
+        is re-armed with the new priority.
+        """
+        stamp = _now(now)
+        with self.connection as con:
+            con.execute(
+                "INSERT INTO jobs (site_id, doc_id, stage, state, priority, attempts, "
+                "next_attempt_at, enqueued_at) VALUES (?,?,?,'queued',?,0,?,?) "
+                "ON CONFLICT(site_id, doc_id, stage) DO UPDATE SET "
+                "priority = CASE WHEN jobs.state='queued' "
+                "  THEN min(jobs.priority, excluded.priority) ELSE excluded.priority END, "
+                "state='queued', attempts=0, next_attempt_at=excluded.next_attempt_at, "
+                "enqueued_at=CASE WHEN jobs.state='queued' THEN jobs.enqueued_at "
+                "  ELSE excluded.enqueued_at END, "
+                "last_error=NULL, finished_at=NULL",
+                (site_id, doc_id, stage, priority, stamp, stamp),
+            )
+
+    def claim_jobs(self, stage: str, *, limit: int, now: int | None = None) -> list[Job]:
+        if limit <= 0:
+            return []
+        stamp = _now(now)
+        con = self.connection
+        with con:
+            rows = con.execute(
+                "SELECT * FROM jobs WHERE stage=? AND state='queued' AND next_attempt_at<=? "
+                "ORDER BY priority, next_attempt_at, id LIMIT ?",
+                (stage, stamp, limit),
+            ).fetchall()
+            if rows:
+                ids = [r["id"] for r in rows]
+                con.execute(
+                    f"UPDATE jobs SET state='running', started_at=? WHERE id IN ({_marks(ids)})",
+                    [stamp, *ids],
+                )
+        return [self._to_job(r) for r in rows]
+
+    def finish_job(
+        self, job_id: int, *, state: str, error: str | None = None, now: int | None = None
+    ) -> None:
+        if state not in ("done", "skipped", "failed", "waiting"):
+            raise StoreError(f"invalid final job state {state!r}")
+        with self.connection as con:
+            con.execute(
+                "UPDATE jobs SET state=?, finished_at=?, last_error=? WHERE id=?",
+                (state, _now(now), error, job_id),
+            )
+
+    def retry_job(
+        self,
+        job_id: int,
+        *,
+        delay_s: float,
+        error: str,
+        max_attempts: int,
+        now: int | None = None,
+    ) -> bool:
+        """Schedule another attempt; returns ``False`` once attempts are exhausted."""
+        stamp = _now(now)
+        row = self.connection.execute("SELECT attempts FROM jobs WHERE id=?", (job_id,)).fetchone()
+        attempts = int(row[0]) + 1 if row else max_attempts
+        with self.connection as con:
+            if attempts >= max_attempts:
+                con.execute(
+                    "UPDATE jobs SET state='failed', attempts=?, finished_at=?, last_error=? "
+                    "WHERE id=?",
+                    (attempts, stamp, error, job_id),
+                )
+                return False
+            con.execute(
+                "UPDATE jobs SET state='queued', attempts=?, next_attempt_at=?, last_error=? "
+                "WHERE id=?",
+                (attempts, stamp + int(delay_s), error, job_id),
+            )
+        return True
+
+    def reset_running_jobs(self) -> int:
+        """Crash recovery: anything 'running' at startup never finished."""
+        with self.connection as con:
+            n = con.execute("UPDATE jobs SET state='queued' WHERE state='running'").rowcount
+        return int(n or 0)
+
+    def has_due_jobs(self, *, now: int | None = None) -> bool:
+        return (
+            self.connection.execute(
+                "SELECT 1 FROM jobs WHERE state IN ('queued','running') "
+                "AND (state='running' OR next_attempt_at<=?) LIMIT 1",
+                (_now(now),),
+            ).fetchone()
+            is not None
+        )
+
+    def next_job_due_at(self) -> int | None:
+        row = self.connection.execute(
+            "SELECT min(next_attempt_at) FROM jobs WHERE state='queued'"
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
+    def job_counts(self, *, now: int | None = None) -> dict[str, dict[str, int]]:
+        stamp = _now(now)
+        out: dict[str, dict[str, int]] = {}
+        for r in self.connection.execute(
+            "SELECT stage, state, count(*) AS n, min(enqueued_at) AS oldest "
+            "FROM jobs GROUP BY stage, state"
+        ):
+            entry = out.setdefault(r["stage"], {})
+            entry[r["state"]] = int(r["n"])
+            if r["state"] == "queued":
+                entry["oldest_queued_age_s"] = stamp - int(r["oldest"])
+        return out
+
+    def failed_jobs(self, *, stage: str | None = None) -> list[Job]:
+        sql = "SELECT * FROM jobs WHERE state='failed'"
+        params: list[Any] = []
+        if stage:
+            sql += " AND stage=?"
+            params.append(stage)
+        return [self._to_job(r) for r in self.connection.execute(sql + " ORDER BY id", params)]
+
+    @staticmethod
+    def _to_job(row: Any) -> Job:
+        return Job(
+            id=row["id"],
+            site_id=row["site_id"],
+            doc_id=row["doc_id"],
+            stage=row["stage"],
+            state=row["state"],
+            priority=row["priority"],
+            attempts=row["attempts"],
+            next_attempt_at=row["next_attempt_at"],
+            last_error=row["last_error"],
+        )
 
     # ------------------------------------------------------------------ #
     # Status

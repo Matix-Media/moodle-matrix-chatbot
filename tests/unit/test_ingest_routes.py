@@ -146,12 +146,19 @@ class TestDocuments:
     def test_changed_documents_are_announced_to_the_pipeline(
         self, app_client: TestClient, secrets: dict[str, str]
     ) -> None:
-        seen: list[tuple[str, list[str]]] = []
+        seen: list[tuple[str, list[str], bool]] = []
         app_client.app.state.document_listeners.append(  # type: ignore[attr-defined]
-            lambda site, ids: seen.append((site, ids))
+            lambda site, ids, bulk: seen.append((site, ids, bulk))
         )
         app_client.post("/ingest/documents", json=_docs(doc()), headers=_auth(secrets["a"]))
-        assert seen == [("site-a", ["2:10:intro"])]
+        assert seen == [("site-a", ["2:10:intro"], False)]
+
+    def test_documents_are_queued_for_processing(
+        self, app_client: TestClient, secrets: dict[str, str]
+    ) -> None:
+        app_client.post("/ingest/documents", json=_docs(doc()), headers=_auth(secrets["a"]))
+        status = app_client.get("/ingest/status", headers=_auth(secrets["a"])).json()
+        assert status["pipeline"]["stages"]["extract"]["queued"] == 1
 
 
 class TestCourses:

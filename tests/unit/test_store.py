@@ -316,3 +316,27 @@ class TestReopen:
 def ring_master(ring: KeyRing) -> bytes:
     """Recover the master bytes for a 'fresh process' reopen."""
     return ring._master
+
+
+class TestOrphanCleanup:
+    def test_unreferenced_blobs_are_deleted_and_their_keys_shredded(self, store: Store) -> None:
+        keep, drop = b"keep me", b"drop me"
+        keep_sha, drop_sha = (hashlib.sha256(x).hexdigest() for x in (keep, drop))
+        store.upsert_documents(SITE, [file_doc("2:1:a", keep_sha), file_doc("2:2:b", drop_sha)])
+        store.put_blob(io.BytesIO(keep), expected_sha256=keep_sha)
+        store.put_blob(io.BytesIO(drop), expected_sha256=drop_sha)
+        store.tombstone_documents(SITE, ["2:2:b"])
+        assert store.delete_orphan_blobs() == [drop_sha]
+        assert store.blob_exists(keep_sha)
+        assert not store.blob_exists(drop_sha)
+        assert not store.blob_path(drop_sha).exists()
+        assert store.wrapped_key("blob", drop_sha) is None
+
+    def test_blob_shared_by_another_site_is_kept(self, store: Store) -> None:
+        data = b"shared"
+        sha = hashlib.sha256(data).hexdigest()
+        store.upsert_documents(SITE, [file_doc("2:1:a", sha)])
+        store.upsert_documents(OTHER, [file_doc("2:1:a", sha)])
+        store.put_blob(io.BytesIO(data), expected_sha256=sha)
+        store.tombstone_documents(SITE, ["2:1:a"])
+        assert store.delete_orphan_blobs() == []

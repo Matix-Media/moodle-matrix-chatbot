@@ -172,3 +172,15 @@ class SyncResult(BaseModel):
     mode: str
     tombstoned: list[str]
     courses_tombstoned: list[int]
+
+
+class Job(BaseModel):
+    id: int
+    site_id: str
+    doc_id: str
+    stage: str
+    state: str
+    priority: int
+    attempts: int
+    next_attempt_at: int
+    last_error: str | None

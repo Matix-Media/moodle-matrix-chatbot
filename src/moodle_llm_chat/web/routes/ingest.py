@@ -81,9 +81,11 @@ async def manifest(body: Manifest, site: SiteDep, store: StoreDep) -> dict[str, 
 @router.post("/sync/finish")
 async def sync_finish(body: SyncRef, site: SiteDep, store: StoreDep) -> SyncResult:
     try:
-        return store.finish_sync(site.site_id, body.sync_id)
+        result = store.finish_sync(site.site_id, body.sync_id)
     except SyncStateError as exc:
         raise _conflict(exc) from exc
+    store.delete_orphan_blobs()
+    return result
 
 
 @router.post("/courses")
@@ -106,7 +108,7 @@ async def documents(
     needs_blob = store.missing_blobs(d.file.sha256 for d in body.documents if d.file)
     if changed:
         for listener in request.app.state.document_listeners:
-            listener(site.site_id, changed)
+            listener(site.site_id, changed, body.sync_id is not None)
     return {"changed": changed, "needs_blob": needs_blob}
 
 
