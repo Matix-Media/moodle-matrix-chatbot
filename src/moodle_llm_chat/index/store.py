@@ -166,6 +166,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_due ON jobs(stage, state, priority, next_attempt_at);
 
+CREATE TABLE IF NOT EXISTS used_jtis (
+    site_id TEXT NOT NULL, jti TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    PRIMARY KEY (site_id, jti)
+);
+
 CREATE TABLE IF NOT EXISTS ocr_cache (
     lookup TEXT NOT NULL, model_tag TEXT NOT NULL, sealed BLOB NOT NULL,
     created_at INTEGER NOT NULL, PRIMARY KEY (lookup, model_tag)
@@ -460,6 +465,19 @@ class Store:
     def touch_site(self, site_id: str, *, now: int | None = None) -> None:
         with self.connection as con:
             con.execute("UPDATE sites SET last_seen_at=? WHERE site_id=?", (_now(now), site_id))
+
+    def consume_jti(
+        self, site_id: str, jti: str, expires_at: int, *, now: int | None = None
+    ) -> bool:
+        """Record a chat token id as used; ``False`` if it was used before (replay)."""
+        stamp = _now(now)
+        with self.connection as con:
+            con.execute("DELETE FROM used_jtis WHERE expires_at < ?", (stamp - 300,))
+            cur = con.execute(
+                "INSERT OR IGNORE INTO used_jtis (site_id, jti, expires_at) VALUES (?,?,?)",
+                (site_id, jti, expires_at),
+            )
+        return bool(cur.rowcount)
 
     def site(self, site_id: str) -> Site:
         return self._to_site(self._site_row(site_id))
