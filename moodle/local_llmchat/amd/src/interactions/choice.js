@@ -21,36 +21,25 @@
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-import {el, lock, questionText} from 'local_llmchat/interactions/dom';
+import {renderNode, questionText} from 'local_llmchat/render';
 
 /**
  * Render.
  *
  * @param {Object} payload {question, items: [{id, label, description?}]}
- * @param {Function} submit
- * @param {Object} strings
- * @returns {HTMLElement}
+ * @param {Function} submit (response, summary) => void
+ * @returns {Promise<HTMLElement>}
  */
-export const render = (payload, submit, strings) => {
-    const items = Array.isArray(payload.items) ? payload.items : [];
-    const box = el('div', {className: 'local-llmchat-interaction local-llmchat-choice'});
-    box.appendChild(el('p', {className: 'fw-bold mb-2', text: questionText(payload)}));
-    const list = el('div', {className: 'list-group'});
-    items.forEach((item) => {
-        const button = el('button', {type: 'button', className: 'list-group-item list-group-item-action',
-            'aria-label': `${strings.select}: ${item.label}`}, [
-            el('div', {className: 'fw-bold', text: String(item.label ?? item.id)}),
-        ]);
-        if (item.description) {
-            button.appendChild(el('div', {className: 'small text-muted', text: String(item.description)}));
-        }
-        button.addEventListener('click', () => {
-            lock(box);
-            button.classList.add('active');
-            submit({id: String(item.id)});
-        });
-        list.appendChild(button);
+export const render = async(payload, submit) => {
+    const items = (Array.isArray(payload.items) ? payload.items : []).map((item) => ({
+        id: String(item.id),
+        label: String(item.label ?? item.id),
+        description: item.description ? String(item.description) : '',
+    }));
+    const node = await renderNode('interaction_choice', {question: questionText(payload), items});
+    node.querySelectorAll('[data-action="choose"]').forEach((button) => {
+        const item = items.find((i) => i.id === button.dataset.id);
+        button.addEventListener('click', () => submit({id: item.id}, item.label));
     });
-    box.appendChild(list);
-    return box;
+    return node;
 };

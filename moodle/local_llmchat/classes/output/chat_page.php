@@ -47,14 +47,27 @@ class chat_page implements \renderable, \templatable {
     }
 
     /**
-     * Config for local_llmchat/chat init().
+     * The current user's picture as theme HTML (no link, decorative).
+     *
+     * @param \renderer_base $output
+     * @return string
+     */
+    private function user_picture(\renderer_base $output): string {
+        global $USER;
+        return $output->user_picture($USER, ['size' => 35, 'link' => false, 'visibletoscreenreaders' => false]);
+    }
+
+    /**
+     * Config for local_llmchat/chat init(). Contains no profile data beyond the avatar markup.
      *
      * @return array
      */
     public function js_config(): array {
+        global $OUTPUT;
         return [
             'courseid' => $this->courseid,
             'rootid' => 'local-llmchat-root',
+            'userpicture' => $this->user_picture($OUTPUT),
         ];
     }
 
@@ -65,11 +78,21 @@ class chat_page implements \renderable, \templatable {
      * @return array
      */
     public function export_for_template(\renderer_base $output): array {
+        $hascourse = $this->courseid > 0;
+        $suggestions = [];
+        foreach (['suggestion1', 'suggestion2', 'suggestion3'] as $key) {
+            $suggestions[] = ['text' => get_string($key, 'local_llmchat')];
+        }
         return [
             'rootid' => 'local-llmchat-root',
             'courseid' => $this->courseid,
             'coursename' => $this->coursename,
-            'hascourse' => $this->courseid > 0,
+            'courseurl' => $hascourse ? (new \moodle_url('/course/view.php', ['id' => $this->courseid]))->out(false) : '',
+            'hascourse' => $hascourse,
+            'intro' => $hascourse ? get_string('emptyintrocourse', 'local_llmchat', $this->coursename)
+                : get_string('emptyintro', 'local_llmchat'),
+            'suggestions' => $suggestions,
+            'userpicture' => $this->user_picture($output),
         ];
     }
 }

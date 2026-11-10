@@ -71,15 +71,16 @@ const inline = (text, citations) => {
     });
     out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     out = out.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
-    out = out.replace(/\[(\d{1,3})\]/g, (m, n) => {
+    out = out.replace(/\s*\[(\d{1,3})\]/g, (m, n) => {
         const cite = citations.get(Number(n));
         const href = cite && cite.url ? safeUrl(cite.url) : null;
         if (!href) {
             return m;
         }
         const title = escapeHtml([cite.title, cite.page ? `S. ${cite.page}` : ''].filter(Boolean).join(' · '));
-        return `<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
-            ` title="${title}">[${n}]</a>`;
+        const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
+        return `&nbsp;<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
+            ` title="${title}">${hidden('[')}${n}${hidden(']')}</a>`;
     });
     return out.replace(/\uE000(\d+)\uE000/g, (m, i) => `<code>${codes[Number(i)]}</code>`);
 };

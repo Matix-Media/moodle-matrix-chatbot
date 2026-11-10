@@ -14,7 +14,7 @@
 // along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Renderer for kind "question": free text plus optional options (single or multi select).
+ * Renderer for kind "question": options as buttons (checkboxes when multi-select) plus free text.
  * Response: {text, selected: [option…]}.
  *
  * @module     local_llmchat/interactions/question
@@ -22,57 +22,38 @@
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-import {el, lock, questionText} from 'local_llmchat/interactions/dom';
+import {renderNode, uniqid, questionText} from 'local_llmchat/render';
 
 /**
  * Render.
  *
  * @param {Object} payload {question, options?, multi_select?}
- * @param {Function} submit (response) => void
- * @param {Object} strings
- * @returns {HTMLElement}
+ * @param {Function} submit (response, summary) => void
+ * @returns {Promise<HTMLElement>}
  */
-export const render = (payload, submit, strings) => {
+export const render = async(payload, submit) => {
+    const {'multi_select': multiSelect} = payload;
     const options = Array.isArray(payload.options) ? payload.options.map(String) : [];
-    const multi = Boolean(payload.multi_select || payload.multiSelect);
-    const box = el('div', {className: 'local-llmchat-interaction local-llmchat-question'});
-    box.appendChild(el('p', {className: 'fw-bold mb-2', text: questionText(payload)}));
-    const done = (response) => {
-        lock(box);
-        submit(response);
-    };
-    const checked = [];
-    if (options.length) {
-        const row = el('div', {className: 'd-flex flex-wrap gap-2 mb-2'});
-        options.forEach((option, i) => {
-            if (multi) {
-                const id = `llmchat-opt-${Date.now()}-${i}`;
-                const input = el('input', {type: 'checkbox', className: 'form-check-input', id, value: option});
-                checked.push(input);
-                row.appendChild(el('div', {className: 'form-check'}, [
-                    input, el('label', {className: 'form-check-label', 'for': id, text: option}),
-                ]));
-            } else {
-                const button = el('button', {type: 'button', className: 'btn btn-outline-primary btn-sm', text: option});
-                button.addEventListener('click', () => done({text: option, selected: [option]}));
-                row.appendChild(button);
-            }
-        });
-        box.appendChild(row);
-    }
-    const input = el('input', {type: 'text', className: 'form-control form-control-sm',
-        placeholder: options.length ? strings.other : strings.answer, 'aria-label': strings.answer});
-    const send = el('button', {type: 'submit', className: 'btn btn-primary btn-sm', text: strings.answer});
-    const form = el('form', {className: 'd-flex gap-2'}, [input, send]);
-    form.addEventListener('submit', (e) => {
+    const node = await renderNode('interaction_question', {
+        uniqid: uniqid('llmchat-q'),
+        question: questionText(payload),
+        hasoptions: options.length > 0,
+        multiselect: Boolean(multiSelect || payload.multiSelect),
+        options: options.map((value, index) => ({value, index})),
+    });
+    node.querySelectorAll('[data-action="option"]').forEach((button) => {
+        button.addEventListener('click', () => submit({text: button.dataset.value, selected: [button.dataset.value]},
+            button.dataset.value));
+    });
+    node.querySelector('[data-region="freeform"]').addEventListener('submit', (e) => {
         e.preventDefault();
-        const selected = checked.filter((c) => c.checked).map((c) => c.value);
-        const text = input.value.trim();
+        const selected = [...node.querySelectorAll('[data-region="option"]:checked')].map((c) => c.value);
+        const text = node.querySelector('[data-region="freetext"]').value.trim();
         if (!text && !selected.length) {
             return;
         }
-        done({text: text || selected.join(', '), selected});
+        const summary = text || selected.join(', ');
+        submit({text: summary, selected}, summary);
     });
-    box.appendChild(form);
-    return box;
+    return node;
 };

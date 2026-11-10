@@ -1,0 +1,39 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/conversation_list
+
+    Items of the conversation list (list-group); the active one is marked for screen readers.
+
+    Example context (json):
+    {
+        "hasconversations": true,
+        "conversations": [
+            {"id": "c1", "title": "Abgabe Subnetting-Projekt", "active": true},
+            {"id": "c2", "title": "OSPF vs. statisches Routing", "active": false}
+        ]
+    }
+}}
+{{#conversations}}
+<button type="button" class="list-group-item list-group-item-action d-flex align-items-center local-llmchat-conv{{#active}} active{{/active}}"
+    data-action="open-conversation" data-id="{{id}}"{{#active}} aria-current="true"{{/active}}>
+    <span class="flex-shrink-0">{{#pix}} conversation, local_llmchat {{/pix}}</span><span class="text-truncate">{{title}}</span>
+</button>
+{{/conversations}}
+{{^hasconversations}}
+<div class="list-group-item small text-muted">{{#str}} noconversations, local_llmchat {{/str}}</div>
+{{/hasconversations}}

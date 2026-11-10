@@ -32,6 +32,6 @@ const RENDERERS = {question, confirm, choice};
  * Renderer module for a kind.
  *
  * @param {string} kind
- * @returns {Object} module with render(payload, submit, strings)
+ * @returns {Object} module with async render(payload, submit, strings)
  */
 export const rendererFor = (kind) => RENDERERS[kind] || freetext;

@@ -14,37 +14,29 @@
 // along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Renderer for kind "confirm": yes/no with explanation. Response: {confirmed: bool}.
+ * Renderer for kind "confirm": yes / no with explanation. Response: {confirmed: bool}.
  *
  * @module     local_llmchat/interactions/confirm
  * @copyright  2026 Matix-Media
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-import {el, lock, questionText} from 'local_llmchat/interactions/dom';
+import {renderNode, questionText} from 'local_llmchat/render';
 
 /**
  * Render.
  *
  * @param {Object} payload {question|message, explanation?}
- * @param {Function} submit
- * @param {Object} strings
- * @returns {HTMLElement}
+ * @param {Function} submit (response, summary) => void
+ * @returns {Promise<HTMLElement>}
  */
-export const render = (payload, submit, strings) => {
-    const box = el('div', {className: 'local-llmchat-interaction local-llmchat-confirm'});
-    box.appendChild(el('p', {className: 'fw-bold mb-1', text: questionText(payload)}));
-    if (payload.explanation) {
-        box.appendChild(el('p', {className: 'small text-muted mb-2', text: String(payload.explanation)}));
-    }
-    const yes = el('button', {type: 'button', className: 'btn btn-primary btn-sm', text: strings.yes});
-    const no = el('button', {type: 'button', className: 'btn btn-outline-secondary btn-sm', text: strings.no});
-    const answer = (confirmed) => {
-        lock(box);
-        submit({confirmed});
-    };
-    yes.addEventListener('click', () => answer(true));
-    no.addEventListener('click', () => answer(false));
-    box.appendChild(el('div', {className: 'd-flex gap-2'}, [yes, no]));
-    return box;
+export const render = async(payload, submit) => {
+    const node = await renderNode('interaction_confirm', {
+        question: questionText(payload),
+        explanation: payload.explanation ? String(payload.explanation) : '',
+    });
+    node.querySelectorAll('[data-action="confirm"]').forEach((button) => {
+        button.addEventListener('click', () => submit({confirmed: button.dataset.value === '1'}, button.textContent.trim()));
+    });
+    return node;
 };

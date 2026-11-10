@@ -21,30 +21,28 @@
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-import {el, lock, questionText} from 'local_llmchat/interactions/dom';
+import {renderNode, uniqid, questionText} from 'local_llmchat/render';
 
 /**
  * Render.
  *
  * @param {Object} payload
- * @param {Function} submit
- * @param {Object} strings
- * @returns {HTMLElement}
+ * @param {Function} submit (response, summary) => void
+ * @param {Object} strings {unknowninteraction}
+ * @returns {Promise<HTMLElement>}
  */
-export const render = (payload, submit, strings) => {
-    const box = el('div', {className: 'local-llmchat-interaction local-llmchat-freetext'});
-    box.appendChild(el('p', {className: 'fw-bold mb-2', text: questionText(payload) || strings.unknowninteraction}));
-    const input = el('input', {type: 'text', className: 'form-control form-control-sm', 'aria-label': strings.answer});
-    const form = el('form', {className: 'd-flex gap-2'}, [
-        input, el('button', {type: 'submit', className: 'btn btn-primary btn-sm', text: strings.answer}),
-    ]);
-    form.addEventListener('submit', (e) => {
+export const render = async(payload, submit, strings) => {
+    const node = await renderNode('interaction_freetext', {
+        uniqid: uniqid('llmchat-f'),
+        question: questionText(payload) || strings.unknowninteraction,
+        hasoptions: false,
+    });
+    node.querySelector('[data-region="freeform"]').addEventListener('submit', (e) => {
         e.preventDefault();
-        if (input.value.trim()) {
-            lock(box);
-            submit({text: input.value.trim()});
+        const text = node.querySelector('[data-region="freetext"]').value.trim();
+        if (text) {
+            submit({text}, text);
         }
     });
-    box.appendChild(form);
-    return box;
+    return node;
 };

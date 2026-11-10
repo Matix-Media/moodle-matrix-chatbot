@@ -14,9 +14,13 @@
 // along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Course chat client: websocket streaming of tokens, thinking, tool cards and interactions,
- * reconnect with resume{last_seq}, "Fortsetzen" after an interrupted turn, quota and
- * rate-limit display. A fresh chat token is fetched before every send.
+ * Course chat client. Streams tokens, thinking, tool calls and interactions from the API
+ * websocket and renders them with local_llmchat templates (theme-overridable, theme icons).
+ * Reconnects with resume{last_seq}, offers "Continue" after an interrupted turn and shows the
+ * token budget. A fresh chat token is fetched before every send.
+ *
+ * Frames are handled strictly in order through a promise queue, because template rendering is
+ * asynchronous and a stream must never be reordered.
  *
  * @module     local_llmchat/chat
  * @copyright  2026 Matix-Media
@@ -24,20 +28,27 @@
  */
 
 import Ajax from 'core/ajax';
+import Log from 'core/log';
 import {getStrings} from 'core/str';
+import {add as addToast} from 'core/toast';
 import ReconnectingSocket from 'local_llmchat/socket';
-import {render as renderMarkdown} from 'local_llmchat/markdown';
+import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
-import {el} from 'local_llmchat/interactions/dom';
+import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
 
 const STRING_KEYS = [
-    'answer', 'assistant', 'budgetexhausted', 'cancelled', 'choice:select', 'confirm:no', 'confirm:yes', 'connecting',
-    'error', 'notaccessible', 'other', 'queuedmessage', 'quota:exemptuser', 'quota:remaining', 'quota:remainingmonth',
-    'ratelimited:burst', 'ratelimited:site', 'ratelimited:user', 'resume', 'sources', 'thinking', 'thoughts',
-    'tool:running', 'turninterrupted', 'unknowninteraction', 'untitled', 'you',
+    'cancelled', 'copied', 'error', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
+    'quota:remainingmonth', 'ratelimited:burst', 'ratelimited:site', 'ratelimited:user', 'reconnected', 'resume',
+    'turninterrupted', 'unknowninteraction', 'untitled',
 ];
 
 const SEQ_STORAGE_KEY = 'local_llmchat_lastseq';
+
+/** Space kept below the chat card. */
+const BOTTOM_GAP = 16;
+
+/** Moodle's floating page controls (help button, drawer toggles) that may sit over the card. */
+const FLOATING_CONTROLS = '.btn-footer-popover, .drawer-toggles .drawer-toggler, [data-region="footer-container-popover"] .btn';
 
 /** Server frame type => controller method (frame, replay). */
 const FRAME_HANDLERS = {
@@ -54,6 +65,20 @@ const FRAME_HANDLERS = {
     'rate_limited': 'onRateLimited',
     'quota': 'onQuota',
     'error': 'onError',
+};
+
+/** Tool name => pix icon, used when the API's tool metadata names no pix icon. */
+const TOOL_ICONS = {
+    'search_content': ['a/search', 'core'],
+    'search_text': ['a/search', 'core'],
+    'search_regex': ['a/search', 'core'],
+    'list_dir': ['i/folder', 'core'],
+    'stat_file': ['i/files', 'core'],
+    'read_file': ['i/files', 'core'],
+    'list_documents': ['i/calendar', 'core'],
+    'current_datetime': ['i/calendar', 'core'],
+    'current_user': ['i/user', 'core'],
+    'ask_user': ['i/question', 'core'],
 };
 
 /**
@@ -91,20 +116,37 @@ const formatTime = (value) => {
 
 const formatNumber = (n) => (typeof n === 'number' ? n.toLocaleString() : (n ?? '–'));
 
+/**
+ * Pix icon for a tool: an icon named by the API as "component:key" wins, then the name table.
+ *
+ * @param {string} name
+ * @param {Object} meta tool metadata from ready{tools}
+ * @returns {Array} [key, component]
+ */
+const toolIcon = (name, meta) => {
+    const named = String(meta.icon || '').match(/^([a-z0-9_]+):([a-z0-9_/-]+)$/);
+    if (named) {
+        return [named[2], named[1]];
+    }
+    return TOOL_ICONS[name] || ['tool', 'local_llmchat'];
+};
+
 class ChatController {
     /**
      * Constructor.
      *
      * @param {HTMLElement} root
-     * @param {Object} config {courseid}
+     * @param {Object} config {courseid, userpicture}
      * @param {Object} strings
      */
     constructor(root, config, strings) {
         this.root = root;
         this.courseid = Number(config.courseid) || 0;
+        this.userpicture = config.userpicture || '';
         this.str = strings;
         this.regions = {};
-        ['messages', 'conversations', 'offline', 'error', 'quota', 'input', 'composer'].forEach((name) => {
+        ['messages', 'empty', 'conversations', 'status', 'quota', 'quota-text', 'quota-bar', 'input', 'composer', 'panel',
+            'sidebar'].forEach((name) => {
             this.regions[name] = root.querySelector(`[data-region="${name}"]`);
         });
         this.sendButton = root.querySelector('[data-action="send"]');
@@ -115,48 +157,143 @@ class ChatController {
         this.turn = null;
         this.queued = null;
         this.pendingUserBubbles = new Map();
-        this.apiurl = '';
-        this.running = false;
+        this.queue = Promise.resolve();
+        this.offlineNotice = null;
+        this.wasOffline = false;
+        this.stickToBottom = true;
 
         this.socket = new ReconnectingSocket({
-            credentials: () => this.issueToken().then((t) => ({wsurl: t.wsurl, token: t.token})),
+            credentials: async() => {
+                const t = await this.issueToken();
+                return {wsurl: t.wsurl, token: t.token};
+            },
             onFrame: (frame) => this.handleFrame(frame, false),
-            onReady: (frame) => this.handleReady(frame),
-            onStatus: (online) => this.setOnline(online),
+            onReady: (frame) => this.enqueue(() => this.handleReady(frame)),
+            onStatus: (online) => this.enqueue(() => this.setOnline(online)),
         });
         this.bind();
+    }
+
+    /**
+     * Run work after everything queued before it.
+     *
+     * @param {Function} task () => (Promise|void)
+     * @returns {Promise}
+     */
+    enqueue(task) {
+        this.queue = this.queue.then(task).catch((e) => Log.error(e));
+        return this.queue;
     }
 
     /**
      * Wire DOM events.
      */
     bind() {
+        const input = this.regions.input;
         this.regions.composer.addEventListener('submit', (e) => {
             e.preventDefault();
             this.submit();
         });
-        this.regions.input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
                 e.preventDefault();
                 this.submit();
             }
         });
+        input.addEventListener('input', () => this.autosize());
         this.cancelButton.addEventListener('click', () => {
             if (this.conversationId) {
                 this.socket.send({type: 'cancel', 'conversation_id': this.conversationId});
             }
         });
-        this.root.querySelector('[data-action="new-conversation"]').addEventListener('click', () => {
-            this.openConversation(null);
+        this.regions.messages.addEventListener('scroll', () => {
+            const m = this.regions.messages;
+            this.stickToBottom = m.scrollTop + m.clientHeight >= m.scrollHeight - 48;
         });
+        this.root.addEventListener('click', (e) => this.onClick(e));
+        window.addEventListener('resize', () => this.fitHeight());
+    }
+
+    /**
+     * Delegated clicks: toggles, suggestions, conversation list, new conversation.
+     *
+     * @param {MouseEvent} e
+     */
+    onClick(e) {
+        const target = e.target.closest('[data-action]');
+        if (!target || !this.root.contains(target)) {
+            return;
+        }
+        const action = target.dataset.action;
+        if (action === 'toggle') {
+            const panel = document.getElementById(target.getAttribute('aria-controls'));
+            if (panel) {
+                const open = panel.classList.toggle('show');
+                target.setAttribute('aria-expanded', open ? 'true' : 'false');
+            }
+        } else if (action === 'suggest') {
+            this.regions.input.value = target.dataset.text;
+            this.submit();
+        } else if (action === 'open-conversation') {
+            this.closeSidebarOnMobile();
+            this.openConversation(target.dataset.id);
+        } else if (action === 'new-conversation') {
+            this.closeSidebarOnMobile();
+            this.openConversation(null);
+        }
+    }
+
+    /**
+     * Collapse the conversation list again after a pick on small screens.
+     */
+    closeSidebarOnMobile() {
+        this.regions.sidebar.classList.remove('show');
+        this.root.querySelectorAll(`[aria-controls="${this.regions.sidebar.id}"]`)
+            .forEach((b) => b.setAttribute('aria-expanded', 'false'));
     }
 
     /**
      * Start.
      */
     start() {
-        this.setOnline(false, true);
+        this.fitHeight();
         this.socket.connect();
+        this.refreshConversations();
+    }
+
+    /**
+     * Make the chat card fill the window below its top edge, with the composer always in view.
+     */
+    fitHeight() {
+        const panel = this.regions.panel;
+        const box = panel.getBoundingClientRect();
+        const top = box.top + window.scrollY;
+        // Keep the composer clear of floating controls that overlap the card horizontally.
+        let gap = BOTTOM_GAP;
+        document.querySelectorAll(FLOATING_CONTROLS).forEach((control) => {
+            const r = control.getBoundingClientRect();
+            const fixed = window.getComputedStyle(control).position === 'fixed' ||
+                window.getComputedStyle(control.offsetParent || control).position === 'fixed';
+            if (r.width && fixed && r.right > box.left && r.left < box.right) {
+                gap = Math.max(gap, window.innerHeight - r.top + 8);
+            }
+        });
+        const height = Math.max(440, window.innerHeight - top - gap);
+        panel.style.height = `${height}px`;
+        if (window.matchMedia('(min-width: 992px)').matches) {
+            this.regions.sidebar.style.height = `${height}px`;
+        } else {
+            this.regions.sidebar.style.height = '';
+        }
+    }
+
+    /**
+     * Grow the composer with its content, up to a limit.
+     */
+    autosize() {
+        const input = this.regions.input;
+        input.style.height = 'auto';
+        input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
     }
 
     /**
@@ -164,12 +301,10 @@ class ChatController {
      *
      * @returns {Promise<Object>} {token, expires, apiurl, wsurl}
      */
-    issueToken() {
-        return Ajax.call([{methodname: 'local_llmchat_issue_token', args: {courseid: this.courseid}}])[0]
-            .then((result) => {
-                this.apiurl = result.apiurl;
-                return result;
-            });
+    async issueToken() {
+        const result = await Ajax.call([{methodname: 'local_llmchat_issue_token', args: {courseid: this.courseid}}])[0];
+        this.apiurl = result.apiurl;
+        return result;
     }
 
     /**
@@ -197,15 +332,29 @@ class ChatController {
     }
 
     /**
-     * Online/offline banner.
+     * Online/offline notice in the status area; a toast once the connection is back.
      *
      * @param {boolean} online
-     * @param {boolean} [initial]
      */
-    setOnline(online, initial = false) {
-        this.regions.offline.classList.toggle('d-none', online || initial);
-        if (initial) {
-            this.regions.quota.textContent = this.str.connecting;
+    async setOnline(online) {
+        if (online) {
+            if (this.offlineNotice) {
+                this.offlineNotice.remove();
+                this.offlineNotice = null;
+            }
+            if (this.wasOffline) {
+                addToast(this.str.reconnected, {type: 'success'});
+                this.wasOffline = false;
+            }
+            return;
+        }
+        this.wasOffline = true;
+        if (!this.offlineNotice) {
+            this.offlineNotice = await renderNode('notice', {
+                type: 'warning', icon: 'offline', component: 'local_llmchat', message: this.str.offline, spinner: true,
+            });
+            this.offlineNotice.classList.add('mb-0', 'rounded-0', 'border-start-0', 'border-end-0');
+            this.regions.status.prepend(this.offlineNotice);
         }
     }
 
@@ -216,20 +365,14 @@ class ChatController {
      */
     handleReady(frame) {
         (frame.tools || []).forEach((tool) => this.tools.set(tool.name, tool));
-        if (this.regions.quota.textContent === this.str.connecting) {
-            this.regions.quota.textContent = '';
-        }
         if (this.conversationId) {
             this.socket.send({type: 'resume', 'conversation_id': this.conversationId,
                 'last_seq': this.lastSeq[this.conversationId] || 0});
         }
-        this.refreshConversations();
         if (this.queued) {
             const queued = this.queued;
             this.queued = null;
-            if (queued.note) {
-                queued.note.remove();
-            }
+            queued.note.textContent = '';
             this.dispatchSend(queued.text, queued.clientMsgId);
         }
     }
@@ -243,20 +386,23 @@ class ChatController {
             return;
         }
         this.regions.input.value = '';
+        this.autosize();
         const clientMsgId = uuid();
-        const bubble = this.addUserBubble(text);
-        this.pendingUserBubbles.set(clientMsgId, bubble);
-        if (!this.socket.isReady()) {
-            // Offline: keep at most one unsent message.
-            if (this.queued && this.queued.bubble) {
-                this.queued.bubble.remove();
+        this.enqueue(async() => {
+            const bubble = await this.addUserBubble(text);
+            this.pendingUserBubbles.set(clientMsgId, bubble);
+            if (!this.socket.isReady()) {
+                // Offline: keep at most one unsent message.
+                if (this.queued) {
+                    this.queued.bubble.remove();
+                }
+                const note = bubble.querySelector('[data-region="note"]');
+                note.textContent = this.str.queuedmessage;
+                this.queued = {text, clientMsgId, bubble, note};
+                return;
             }
-            const note = el('div', {className: 'small text-muted', text: this.str.queuedmessage});
-            bubble.appendChild(note);
-            this.queued = {text, clientMsgId, bubble, note};
-            return;
-        }
-        this.dispatchSend(text, clientMsgId);
+            this.dispatchSend(text, clientMsgId);
+        });
     }
 
     /**
@@ -265,52 +411,61 @@ class ChatController {
      * @param {string} text
      * @param {string} clientMsgId
      */
-    dispatchSend(text, clientMsgId) {
-        this.hideError();
-        this.issueToken().then((t) => {
-            const frame = {
+    async dispatchSend(text, clientMsgId) {
+        this.clearStatusErrors();
+        try {
+            const t = await this.issueToken();
+            const sent = this.socket.send({
                 type: 'send',
                 text,
                 token: t.token,
                 'client_msg_id': clientMsgId,
                 ...(this.conversationId ? {'conversation_id': this.conversationId} : {}),
                 ...(this.courseid ? {'course_id': this.courseid} : {}),
-            };
-            if (!this.socket.send(frame)) {
-                const bubble = this.pendingUserBubbles.get(clientMsgId);
-                this.queued = {text, clientMsgId, bubble, note: null};
-            } else {
+            });
+            if (sent) {
                 this.setRunning(true);
+            } else {
+                const bubble = this.pendingUserBubbles.get(clientMsgId);
+                const note = bubble.querySelector('[data-region="note"]');
+                note.textContent = this.str.queuedmessage;
+                this.queued = {text, clientMsgId, bubble, note};
             }
-            return t;
-        }).catch((e) => this.showError(e && e.message ? e.message : String(e)));
+        } catch (e) {
+            this.showStatus('error', e && e.message ? e.message : String(e));
+        }
     }
 
     /**
-     * Toggle running state (cancel button).
+     * Toggle running state: the send button becomes a stop button.
      *
      * @param {boolean} running
      */
     setRunning(running) {
         this.running = running;
         this.cancelButton.classList.toggle('d-none', !running);
+        this.sendButton.classList.toggle('d-none', running);
     }
 
     /**
-     * Handle one server frame.
+     * Handle one server frame (in order, after anything queued before).
      *
      * @param {Object} frame
      * @param {boolean} replay true when re-rendering stored history
+     * @returns {Promise}
      */
     handleFrame(frame, replay) {
-        if (!this.acceptFrame(frame, replay)) {
-            return;
-        }
-        const handler = FRAME_HANDLERS[frame.type];
-        if (handler) {
-            this[handler](frame, replay);
-        }
-        // Unknown types are ignored (forward compatibility).
+        return this.enqueue(async() => {
+            if (!this.acceptFrame(frame, replay)) {
+                return;
+            }
+            const handler = FRAME_HANDLERS[frame.type];
+            if (handler) {
+                await this[handler](frame, replay);
+                this.scroll();
+            }
+            // Unknown types are ignored (forward compatibility).
+        });
     }
 
     /**
@@ -342,50 +497,38 @@ class ChatController {
     }
 
     /**
-     * Citation list sent ahead of the final answer.
+     * Scroll to the newest message, unless the user scrolled up to read.
      *
-     * @param {Object} frame citations{citations}
+     * @param {boolean} [force]
      */
-    onCitations(frame) {
-        this.currentTurn(frame).citations = frame.citations || [];
-    }
-
-    /**
-     * Error frame; a cancelled turn is shown inline instead of as an error.
-     *
-     * @param {Object} frame error{code, message}
-     */
-    onError(frame) {
-        this.setRunning(false);
-        if (frame.code === 'cancelled') {
-            this.currentTurn(frame).body.appendChild(el('div', {className: 'small text-muted', text: this.str.cancelled}));
-        } else {
-            this.showError(frame.message || frame.code || '');
+    scroll(force = false) {
+        const m = this.regions.messages;
+        if (force || this.stickToBottom) {
+            m.scrollTop = m.scrollHeight;
         }
     }
 
     /**
-     * Scroll messages to the bottom.
+     * Append a node to the message list (hiding the empty state).
+     *
+     * @param {HTMLElement} node
      */
-    scroll() {
-        const m = this.regions.messages;
-        m.scrollTop = m.scrollHeight;
+    appendMessage(node) {
+        this.regions.empty.classList.add('d-none');
+        this.regions.messages.appendChild(node);
     }
 
     /**
      * Add a user bubble.
      *
      * @param {string} text
-     * @returns {HTMLElement}
+     * @returns {Promise<HTMLElement>}
      */
-    addUserBubble(text) {
-        const bubble = el('div', {className: 'local-llmchat-msg local-llmchat-user mb-3', 'data-role': 'user'}, [
-            el('div', {className: 'small text-muted', text: this.str.you}),
-            el('div', {className: 'local-llmchat-text', text}),
-        ]);
-        this.regions.messages.appendChild(bubble);
+    async addUserBubble(text) {
+        const bubble = await renderNode('message_user', {text, avatar: this.userpicture});
+        this.appendMessage(bubble);
         this.turn = null;
-        this.scroll();
+        this.scroll(true);
         return bubble;
     }
 
@@ -395,26 +538,28 @@ class ChatController {
      * @param {Object} frame
      * @param {boolean} replay
      */
-    onUserMessage(frame, replay) {
+    async onUserMessage(frame, replay) {
         const known = frame.client_msg_id && this.pendingUserBubbles.has(frame.client_msg_id);
         if (known) {
             this.pendingUserBubbles.delete(frame.client_msg_id);
         } else {
-            this.addUserBubble(String(frame.text ?? (frame.message && frame.message.text) ?? ''));
-        }
-        if (!replay) {
-            this.setRunning(true);
+            await this.addUserBubble(String(frame.text ?? (frame.message && frame.message.text) ?? ''));
         }
         this.turn = null;
+        if (!replay) {
+            // Open the assistant message right away so the typing indicator shows while waiting.
+            this.setRunning(true);
+            await this.currentTurn(frame);
+        }
     }
 
     /**
-     * The assistant bubble of the current turn (created on demand).
+     * The assistant message of the current turn (rendered on demand).
      *
      * @param {Object} frame
-     * @returns {Object}
+     * @returns {Promise<Object>}
      */
-    currentTurn(frame) {
+    async currentTurn(frame) {
         const turnId = frame.turn_id ?? null;
         if (this.turn && (turnId === null || this.turn.id === null || this.turn.id === turnId)) {
             if (this.turn.id === null) {
@@ -422,46 +567,87 @@ class ChatController {
             }
             return this.turn;
         }
-        const tools = el('div', {className: 'local-llmchat-tools'});
-        const text = el('div', {className: 'local-llmchat-text'});
-        const body = el('div', {className: 'local-llmchat-body'}, [tools, text]);
-        const bubble = el('div', {className: 'local-llmchat-msg local-llmchat-assistant mb-3', 'data-role': 'assistant'}, [
-            el('div', {className: 'small text-muted', text: this.str.assistant}), body,
-        ]);
-        this.regions.messages.appendChild(bubble);
-        this.turn = {id: turnId, bubble, body, tools, text, raw: '', thinking: null, cards: new Map(), citations: []};
+        const node = await renderNode('message_assistant');
+        this.appendMessage(node);
+        const region = (name) => node.querySelector(`[data-region="${name}"]`);
+        this.turn = {
+            id: turnId, node, body: region('body'), thinkingSlot: region('thinking'), tools: region('tools'),
+            text: region('text'), typing: region('typing'), raw: '', thinking: null, cards: new Map(), citations: [],
+        };
         return this.turn;
     }
 
     /**
-     * Reasoning delta (text only in show_thinking=full; otherwise an indicator).
+     * Hide the typing indicator once real content arrives.
      *
-     * @param {Object} frame
+     * @param {Object} turn
      */
-    onThinking(frame) {
-        const turn = this.currentTurn(frame);
-        if (!turn.thinking) {
-            const content = el('div', {className: 'small text-muted local-llmchat-thinking-text'});
-            const summary = el('summary', {className: 'small', text: this.str.thinking});
-            const details = el('details', {className: 'local-llmchat-thinking mb-2', open: ''}, [summary, content]);
-            turn.body.insertBefore(details, turn.tools);
-            turn.thinking = {details, summary, content};
-        }
-        if (frame.delta) {
-            turn.thinking.content.textContent += frame.delta;
-        }
-        this.scroll();
+    contentArrived(turn) {
+        turn.typing.classList.add('d-none');
     }
 
     /**
-     * Collapse the thinking block once the answer starts.
+     * Show the typing indicator again at the end of the turn (e.g. after an answer was sent).
+     *
+     * @param {Object} turn
+     */
+    showTyping(turn) {
+        turn.body.appendChild(turn.typing);
+        turn.typing.classList.remove('d-none');
+    }
+
+    /**
+     * Start a new text segment at the end of the turn (text after an interaction goes below it).
+     *
+     * @param {Object} turn
+     */
+    newTextSegment(turn) {
+        const text = document.createElement('div');
+        text.className = 'local-llmchat-text';
+        turn.body.insertBefore(text, turn.typing);
+        turn.text = text;
+        turn.raw = '';
+    }
+
+    /**
+     * Reasoning delta (text only when the API sends it; otherwise an indicator).
+     *
+     * @param {Object} frame
+     */
+    async onThinking(frame) {
+        const turn = await this.currentTurn(frame);
+        if (!turn.thinking) {
+            const node = await renderNode('thinking', {uniqid: uniqid('llmchat-thinking')});
+            turn.thinkingSlot.appendChild(node);
+            const q = (sel) => node.querySelector(sel);
+            turn.thinking = {
+                node, toggle: q('[data-action="toggle"]'), collapsible: q('[data-region="collapsible"]'),
+                text: q('[data-region="thinking-text"]'), spinner: q('[data-region="spinner"]'),
+                active: q('[data-region="label-active"]'), done: q('[data-region="label-done"]'),
+            };
+            this.contentArrived(turn);
+        }
+        if (frame.delta) {
+            turn.thinking.text.textContent += frame.delta;
+        }
+    }
+
+    /**
+     * Collapse the thinking block once the answer (or a question) starts.
      *
      * @param {Object} turn
      */
     collapseThinking(turn) {
-        if (turn.thinking && turn.thinking.details.open) {
-            turn.thinking.details.open = false;
-            turn.thinking.summary.textContent = this.str.thoughts;
+        const t = turn.thinking;
+        if (t && !t.spinner.classList.contains('d-none')) {
+            t.collapsible.classList.remove('show');
+            t.toggle.setAttribute('aria-expanded', 'false');
+            t.spinner.classList.add('d-none');
+            t.active.classList.add('d-none');
+            t.done.classList.remove('d-none');
+            if (!t.text.textContent.trim()) {
+                t.node.classList.add('d-none');
+            }
         }
     }
 
@@ -470,12 +656,12 @@ class ChatController {
      *
      * @param {Object} frame
      */
-    onToken(frame) {
-        const turn = this.currentTurn(frame);
+    async onToken(frame) {
+        const turn = await this.currentTurn(frame);
         this.collapseThinking(turn);
+        this.contentArrived(turn);
         turn.raw += frame.delta || '';
         turn.text.innerHTML = renderMarkdown(turn.raw, turn.citations);
-        this.scroll();
     }
 
     /**
@@ -483,8 +669,8 @@ class ChatController {
      *
      * @param {Object} frame tool_call{id, name, args}
      */
-    onToolCall(frame) {
-        const turn = this.currentTurn(frame);
+    async onToolCall(frame) {
+        const turn = await this.currentTurn(frame);
         const meta = this.tools.get(frame.name) || {};
         const args = frame.args || {};
         const firstArg = Object.values(args).find((v) => typeof v === 'string') || '';
@@ -492,18 +678,16 @@ class ChatController {
         if (meta.summary_template) {
             label = meta.summary_template.replace(/\{(\w+)\}/g, (m, k) => (args[k] !== undefined ? String(args[k]) : ''));
         } else {
-            label = `${meta.label || frame.name} ${firstArg ? `"${firstArg}"` : ''}`;
+            label = `${meta.label || frame.name}${firstArg ? ` „${firstArg}“` : ''}`;
         }
-        label = `${meta.icon ? meta.icon + ' ' : '🔧 '}${label}`.trim();
-        const status = el('span', {className: 'ml-2 ms-2 text-muted', text: this.str['tool:running']});
-        const summary = el('summary', {className: 'small'}, [el('span', {text: label}), status]);
-        const detail = el('div', {className: 'small local-llmchat-tool-detail'});
-        detail.appendChild(el('pre', {className: 'mb-1', text: JSON.stringify(args, null, 2)}));
-        const card = el('details', {className: 'local-llmchat-tool card card-body p-2 mb-2',
-            'data-tool': String(frame.name || '')}, [summary, detail]);
-        turn.tools.appendChild(card);
-        turn.cards.set(frame.id, {card, status, detail});
-        this.scroll();
+        const [icon, component] = toolIcon(frame.name, meta);
+        const node = await renderNode('tool_call', {
+            uniqid: uniqid('llmchat-tool'), icon, component, label, args: JSON.stringify(args, null, 2),
+        });
+        turn.tools.classList.remove('d-none');
+        turn.tools.appendChild(node);
+        turn.cards.set(frame.id, node);
+        this.contentArrived(turn);
     }
 
     /**
@@ -511,32 +695,32 @@ class ChatController {
      *
      * @param {Object} frame
      */
-    onToolProgress(frame) {
-        const entry = this.currentTurn(frame).cards.get(frame.id);
-        if (entry) {
-            const text = frame.message || frame.text || frame.summary || '';
-            if (text) {
-                entry.status.textContent = String(text);
-            }
+    async onToolProgress(frame) {
+        const card = (await this.currentTurn(frame)).cards.get(frame.id);
+        const text = frame.message || frame.text || frame.summary || '';
+        if (card && text) {
+            card.querySelector('[data-region="summary"]').textContent = String(text);
         }
     }
 
     /**
-     * Tool result.
+     * Tool result: spinner becomes a check mark, summary and citations go into the card.
      *
      * @param {Object} frame tool_result{id, summary, citations?, attachments?}
      */
-    onToolResult(frame) {
-        const entry = this.currentTurn(frame).cards.get(frame.id);
-        if (!entry) {
+    async onToolResult(frame) {
+        const card = (await this.currentTurn(frame)).cards.get(frame.id);
+        if (!card) {
             return;
         }
-        entry.status.textContent = frame.summary ? `→ ${frame.summary}` : '✓';
-        if (frame.summary) {
-            entry.detail.appendChild(el('div', {text: String(frame.summary)}));
-        }
+        card.querySelector('[data-region="spinner"]').classList.add('d-none');
+        card.querySelector('[data-region="done"]').classList.remove('d-none');
+        card.querySelector('[data-region="summary"]').textContent = frame.summary ? String(frame.summary) : '';
+        const detail = card.querySelector('[data-region="detail"]');
         (frame.citations || []).forEach((c) => {
-            entry.detail.appendChild(el('div', {className: 'text-muted', text: `[${c.index ?? '?'}] ${c.title || ''}`}));
+            const line = document.createElement('div');
+            line.textContent = `[${c.index ?? '?'}] ${c.title || ''}`;
+            detail.appendChild(line);
         });
     }
 
@@ -546,99 +730,128 @@ class ChatController {
      * @param {Object} frame question{interrupt_id, kind, payload}
      * @param {boolean} replay
      */
-    onQuestion(frame, replay) {
-        const turn = this.currentTurn(frame);
+    async onQuestion(frame, replay) {
+        const turn = await this.currentTurn(frame);
         this.collapseThinking(turn);
-        const existing = turn.body.querySelector(`[data-interrupt="${CSS.escape(String(frame.interrupt_id))}"]`);
-        if (existing) {
-            existing.remove();
-        }
+        this.contentArrived(turn);
+        const interruptId = String(frame.interrupt_id);
+        turn.body.querySelectorAll('[data-interrupt]').forEach((n) => {
+            if (n.dataset.interrupt === interruptId) {
+                n.remove();
+            }
+        });
         const renderer = rendererFor(frame.kind);
-        const strings = {
-            answer: this.str.answer, other: this.str.other, yes: this.str['confirm:yes'], no: this.str['confirm:no'],
-            select: this.str['choice:select'], unknowninteraction: this.str.unknowninteraction,
-        };
-        const node = renderer.render(frame.payload || {}, (response) => {
-            this.issueToken().then(() => this.socket.send({
-                type: 'answer', 'conversation_id': this.conversationId, 'interrupt_id': frame.interrupt_id, response,
-            })).catch((e) => this.showError(String(e && e.message ? e.message : e)));
-        }, strings);
-        node.setAttribute('data-interrupt', String(frame.interrupt_id));
+        const node = await renderer.render(frame.payload || {}, (response, summary) => {
+            this.answerInteraction(turn, node, interruptId, response, summary);
+        }, {unknowninteraction: this.str.unknowninteraction});
+        node.dataset.interrupt = interruptId;
         if (frame.error) {
-            node.insertBefore(el('div', {className: 'text-danger small', text: String(frame.error)}), node.firstChild);
+            const error = document.createElement('div');
+            error.className = 'text-danger small mb-2';
+            error.textContent = String(frame.error);
+            node.querySelector('.card-body')?.prepend(error);
         }
-        turn.body.appendChild(node);
-        // Text after the interaction (the resumed answer) goes below it, not above.
-        turn.text = el('div', {className: 'local-llmchat-text'});
-        turn.raw = '';
-        turn.body.appendChild(turn.text);
+        turn.body.insertBefore(node, turn.typing);
+        this.newTextSegment(turn);
         this.setRunning(false);
         if (!replay) {
-            node.querySelector('input, button')?.focus();
+            (node.querySelector('input[type="text"]') || node.querySelector('button'))?.focus({preventScroll: true});
         }
-        this.scroll();
     }
 
     /**
-     * Final answer with citations.
+     * Send an interaction answer and replace the prompt with a compact summary.
+     *
+     * @param {Object} turn
+     * @param {HTMLElement} node
+     * @param {string} interruptId
+     * @param {Object} response
+     * @param {string} summary
+     */
+    async answerInteraction(turn, node, interruptId, response, summary) {
+        try {
+            await this.issueToken();
+            this.socket.send({type: 'answer', 'conversation_id': this.conversationId, 'interrupt_id': interruptId, response});
+            const answered = await renderNode('interaction_answered', {answer: summary});
+            answered.dataset.interrupt = interruptId;
+            node.replaceWith(answered);
+            this.setRunning(true);
+            this.showTyping(turn);
+            this.scroll();
+        } catch (e) {
+            this.showStatus('error', String(e && e.message ? e.message : e));
+        }
+    }
+
+    /**
+     * Citation list sent ahead of the final answer.
+     *
+     * @param {Object} frame citations{citations}
+     */
+    async onCitations(frame) {
+        (await this.currentTurn(frame)).citations = frame.citations || [];
+    }
+
+    /**
+     * Final answer with sources and actions.
      *
      * @param {Object} frame final{text, citations}
      */
-    onFinal(frame) {
-        const turn = this.currentTurn(frame);
+    async onFinal(frame) {
+        const turn = await this.currentTurn(frame);
         this.collapseThinking(turn);
+        this.contentArrived(turn);
         turn.citations = frame.citations || turn.citations || [];
         turn.raw = frame.text ?? turn.raw;
         turn.text.innerHTML = renderMarkdown(turn.raw, turn.citations);
-        if (turn.citations.length) {
-            const list = el('ol', {className: 'small local-llmchat-sources mb-0'});
-            turn.citations.forEach((c) => {
-                const item = el('li', {value: String(c.index)});
-                const label = [c.title, c.course_name, c.page ? `S. ${c.page}` : ''].filter(Boolean).join(' · ');
-                if (c.url) {
-                    item.appendChild(el('a', {href: c.url, target: '_blank', rel: 'noopener', text: label}));
-                } else {
-                    item.textContent = label;
-                }
-                list.appendChild(item);
-            });
-            turn.body.appendChild(el('details', {className: 'mt-2'}, [
-                el('summary', {className: 'small', text: this.str.sources}), list,
-            ]));
-        }
-        if (frame.budget_exhausted || frame.truncated_by_budget) {
-            turn.body.appendChild(el('div', {className: 'small text-warning', text: this.str.budgetexhausted}));
-        }
+        const footer = await renderNode('answer_footer', {
+            budgetexhausted: Boolean(frame.budget_exhausted || frame.truncated_by_budget),
+            hascitations: turn.citations.length > 0,
+            citations: turn.citations.map((c) => ({
+                index: c.index,
+                title: c.title || c.url || '',
+                meta: [c.course_name, c.page ? `${this.str.page} ${c.page}` : ''].filter(Boolean).join(' · '),
+                url: c.url || '',
+                hasurl: Boolean(c.url),
+            })),
+        });
+        const raw = turn.raw;
+        footer.querySelector('[data-action="copy"]').addEventListener('click', async() => {
+            try {
+                await navigator.clipboard.writeText(raw);
+                addToast(this.str.copied);
+            } catch (e) {
+                Log.debug(e);
+            }
+        });
+        turn.body.insertBefore(footer, turn.typing);
         this.setRunning(false);
         this.turn = null;
         this.refreshConversations();
-        this.scroll();
     }
 
     /**
-     * The API restarted mid-turn: offer "Fortsetzen".
+     * The API restarted mid-turn: offer "Continue".
      *
      * @param {Object} frame turn_interrupted{turn_id}
-     * @param {boolean} replay
      */
-    onInterrupted(frame, replay) {
-        const turn = this.currentTurn(frame);
+    async onInterrupted(frame) {
+        const turn = await this.currentTurn(frame);
+        this.contentArrived(turn);
         this.setRunning(false);
-        const button = el('button', {type: 'button', className: 'btn btn-sm btn-primary ml-2 ms-2', text: this.str.resume});
-        const box = el('div', {className: 'alert alert-info py-1 px-2 mt-2 local-llmchat-interrupted'}, [
-            el('span', {text: this.str.turninterrupted}), button,
-        ]);
-        button.addEventListener('click', () => {
-            this.issueToken().then(() => {
-                if (this.socket.send({type: 'continue', 'conversation_id': this.conversationId, 'turn_id': frame.turn_id})) {
-                    box.remove();
-                    this.setRunning(true);
-                }
-                return null;
-            }).catch((e) => this.showError(String(e && e.message ? e.message : e)));
+        const notice = await renderNode('notice', {
+            type: 'info', icon: 'i/info', component: 'core', message: this.str.turninterrupted,
+            hasaction: true, actionlabel: this.str.resume,
         });
-        box.setAttribute('data-replayed', replay ? '1' : '0');
-        turn.body.appendChild(box);
+        notice.querySelector('[data-action="notice-action"]').addEventListener('click', async() => {
+            await this.issueToken();
+            if (this.socket.send({type: 'continue', 'conversation_id': this.conversationId, 'turn_id': frame.turn_id})) {
+                notice.remove();
+                this.setRunning(true);
+                this.showTyping(turn);
+            }
+        });
+        turn.body.insertBefore(notice, turn.typing);
     }
 
     /**
@@ -646,56 +859,96 @@ class ChatController {
      *
      * @param {Object} frame rate_limited{scope, used?, limit?, resets_at}
      */
-    onRateLimited(frame) {
+    async onRateLimited(frame) {
         this.setRunning(false);
-        const key = `ratelimited:${['burst', 'user', 'site'].includes(frame.scope) ? frame.scope : 'user'}`;
-        this.showError(fill(this.str[key], formatTime(frame.resets_at)), 'warning');
+        if (this.turn) {
+            this.contentArrived(this.turn);
+        }
+        const scope = ['burst', 'user', 'site'].includes(frame.scope) ? frame.scope : 'user';
+        await this.showStatus('warning', fill(this.str[`ratelimited:${scope}`], formatTime(frame.resets_at)));
         if (frame.used !== undefined && frame.limit !== undefined) {
-            this.regions.quota.textContent = fill(this.str['quota:remaining'],
-                {used: formatNumber(frame.used), limit: formatNumber(frame.limit)});
+            this.onQuota({'used_today': frame.used, 'limit_today': frame.limit});
         }
     }
 
     /**
-     * Remaining budget header.
+     * Remaining budget in the header: text plus a progress bar that turns amber, then red.
      *
      * @param {Object} frame quota{used_today, limit_today, used_month, limit_month, resets_at, exempt?}
      */
     onQuota(frame) {
+        const {'used_today': usedToday, 'limit_today': limitToday, 'used_month': usedMonth, 'limit_month': limitMonth} = frame;
+        const quota = this.regions.quota;
+        const bar = this.regions['quota-bar'];
+        quota.classList.remove('d-none');
         if (frame.exempt) {
-            this.regions.quota.textContent = this.str['quota:exemptuser'];
+            this.regions['quota-text'].textContent = this.str['quota:exemptuser'];
+            bar.parentElement.classList.add('d-none');
             return;
         }
         const parts = [];
-        if (frame.limit_today !== undefined && frame.limit_today !== null) {
-            parts.push(fill(this.str['quota:remaining'],
-                {used: formatNumber(frame.used_today), limit: formatNumber(frame.limit_today)}));
+        if (limitToday !== undefined && limitToday !== null) {
+            parts.push(fill(this.str['quota:remaining'], {used: formatNumber(usedToday), limit: formatNumber(limitToday)}));
         }
-        if (frame.limit_month !== undefined && frame.limit_month !== null) {
-            parts.push(fill(this.str['quota:remainingmonth'],
-                {used: formatNumber(frame.used_month), limit: formatNumber(frame.limit_month)}));
+        if (limitMonth !== undefined && limitMonth !== null) {
+            parts.push(fill(this.str['quota:remainingmonth'], {used: formatNumber(usedMonth), limit: formatNumber(limitMonth)}));
         }
-        this.regions.quota.textContent = parts.join(' · ');
+        // One compact line in the header; the full breakdown is in the tooltip.
+        this.regions['quota-text'].textContent = parts[0] || '';
+        quota.title = parts.join(' · ');
+        const ratio = Math.max(limitToday ? usedToday / limitToday : 0, limitMonth ? usedMonth / limitMonth : 0);
+        const percent = Math.min(100, Math.round(ratio * 100));
+        bar.parentElement.classList.toggle('d-none', !limitToday && !limitMonth);
+        bar.style.width = `${percent}%`;
+        bar.setAttribute('aria-valuenow', String(percent));
+        bar.classList.toggle('bg-warning', percent >= 80 && percent < 100);
+        bar.classList.toggle('bg-danger', percent >= 100);
     }
 
     /**
-     * Show an error banner.
+     * Error frame; a cancelled turn is shown inline instead of as an error.
      *
-     * @param {string} message
-     * @param {string} [level]
+     * @param {Object} frame error{code, message}
      */
-    showError(message, level = 'danger') {
-        const box = this.regions.error;
-        box.className = `alert alert-${level}`;
-        box.textContent = level === 'danger' ? fill(this.str.error, message) : message;
+    async onError(frame) {
+        this.setRunning(false);
+        if (frame.code === 'cancelled') {
+            const turn = await this.currentTurn(frame);
+            this.contentArrived(turn);
+            const note = document.createElement('div');
+            note.className = 'small text-muted';
+            note.textContent = this.str.cancelled;
+            turn.body.insertBefore(note, turn.typing);
+        } else {
+            if (this.turn) {
+                this.contentArrived(this.turn);
+            }
+            await this.showStatus('error', fill(this.str.error, frame.message || frame.code || ''));
+        }
     }
 
     /**
-     * Hide the error banner.
+     * Show a dismissible core notification in the chat's status area.
+     *
+     * @param {string} type error|warning|info|success
+     * @param {string} message plain text
+     * @returns {Promise<void>}
      */
-    hideError() {
-        this.regions.error.className = 'alert alert-danger d-none';
-        this.regions.error.textContent = '';
+    async showStatus(type, message) {
+        const holder = document.createElement('div');
+        holder.dataset.statusType = type;
+        this.regions.status.appendChild(holder);
+        await renderInto(holder, `core/notification_${type}`, {
+            message: escapeHtml(message), closebutton: true, announce: true,
+            extraclasses: 'mb-0 rounded-0 border-start-0 border-end-0',
+        });
+    }
+
+    /**
+     * Remove error and warning notifications (before a new send).
+     */
+    clearStatusErrors() {
+        this.regions.status.querySelectorAll('[data-status-type]').forEach((n) => n.remove());
     }
 
     /**
@@ -704,38 +957,35 @@ class ChatController {
      * @param {string} path
      * @returns {Promise<Object>}
      */
-    apiGet(path) {
-        return this.issueToken().then((t) => fetch(`${t.apiurl}${path}`, {
+    async apiGet(path) {
+        const t = await this.issueToken();
+        const response = await fetch(`${t.apiurl}${path}`, {
             headers: {Authorization: `Bearer ${t.token}`, Accept: 'application/json'},
             credentials: 'omit',
-        })).then((response) => {
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            return response.json();
         });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return response.json();
     }
 
     /**
      * Reload the conversation list.
      */
-    refreshConversations() {
-        this.apiGet('/api/conversations').then((data) => {
+    async refreshConversations() {
+        try {
+            const data = await this.apiGet('/api/conversations');
             const items = Array.isArray(data) ? data : (data.conversations || data.items || []);
-            const list = this.regions.conversations;
-            list.innerHTML = '';
-            items.forEach((c) => {
-                const id = String(c.id);
-                const button = el('button', {type: 'button',
-                    className: `btn btn-link text-start w-100 p-1${id === this.conversationId ? ' fw-bold' : ''}`,
-                    text: c.title || this.str.untitled});
-                button.addEventListener('click', () => this.openConversation(id));
-                list.appendChild(el('li', {}, [button]));
+            await renderInto(this.regions.conversations, 'local_llmchat/conversation_list', {
+                hasconversations: items.length > 0,
+                conversations: items.map((c) => ({
+                    id: String(c.id), title: c.title || this.str.untitled, active: String(c.id) === this.conversationId,
+                })),
             });
-            return data;
-        }).catch(() => {
+        } catch (e) {
             // The list is a convenience; the chat works without it.
-        });
+            Log.debug(e);
+        }
     }
 
     /**
@@ -744,53 +994,64 @@ class ChatController {
      * @param {string|null} id
      */
     openConversation(id) {
-        this.conversationId = id;
-        this.turn = null;
-        this.regions.messages.innerHTML = '';
-        this.hideError();
-        this.setRunning(false);
+        this.enqueue(async() => {
+            this.conversationId = id;
+            this.turn = null;
+            this.regions.messages.replaceChildren(this.regions.empty);
+            this.regions.empty.classList.toggle('d-none', Boolean(id));
+            this.clearStatusErrors();
+            this.setRunning(false);
+            this.regions.input.focus();
+        });
+        this.refreshConversations();
         if (!id) {
-            this.refreshConversations();
             return;
         }
-        this.apiGet(`/api/conversations/${encodeURIComponent(id)}`).then((data) => {
+        this.enqueue(async() => {
+            let data;
+            try {
+                data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+            } catch (e) {
+                await this.showStatus('error', fill(this.str.error, e && e.message ? e.message : String(e)));
+                return;
+            }
             if (this.conversationId !== id) {
-                return data;
+                return;
             }
             const events = data.events || [];
-            if (events.length) {
-                events.forEach((frame) => this.handleFrame(Object.assign({'conversation_id': id}, frame), true));
-            } else {
+            events.forEach((frame) => this.handleFrame(Object.assign({'conversation_id': id}, frame), true));
+            if (!events.length) {
                 (data.messages || []).forEach((m) => {
-                    if (m.role === 'user') {
-                        this.addUserBubble(String(m.text ?? m.content ?? ''));
-                    } else if (m.role === 'assistant') {
-                        this.onFinal({text: String(m.text ?? m.content ?? ''), citations: m.citations || []});
-                    }
+                    const text = String(m.text ?? m.content ?? '');
+                    this.handleFrame(m.role === 'user' ? {type: 'user_message', text} : {type: 'final', text,
+                        citations: m.citations || []}, true);
                 });
             }
-            this.setRunning(false);
-            // Anything newer than history (a running turn, a pending question) arrives via resume.
-            this.socket.send({type: 'resume', 'conversation_id': id, 'last_seq': this.lastSeq[id] || 0});
-            this.refreshConversations();
-            return data;
-        }).catch((e) => this.showError(String(e && e.message ? e.message : e)));
+            this.enqueue(() => {
+                this.setRunning(false);
+                // Anything newer than history (a running turn, a pending question) arrives via resume.
+                this.socket.send({type: 'resume', 'conversation_id': id, 'last_seq': this.lastSeq[id] || 0});
+                this.scroll(true);
+            });
+        });
     }
 }
 
 /**
  * Initialise the chat page.
  *
- * @param {Object} config {courseid, rootid}
+ * @param {Object} config {courseid, rootid, userpicture}
  */
 export const init = async(config) => {
     const root = document.getElementById(config.rootid);
     if (!root) {
         return;
     }
-    const values = await getStrings(STRING_KEYS.map((key) => ({key, component: 'local_llmchat'})));
+    const requests = STRING_KEYS.map((key) => ({key, component: 'local_llmchat'}));
+    requests.push({key: 'page', component: 'core'});
+    const values = await getStrings(requests);
     const strings = {};
-    STRING_KEYS.forEach((key, i) => {
+    requests.forEach(({key}, i) => {
         strings[key] = values[i];
     });
     const controller = new ChatController(root, config, strings);

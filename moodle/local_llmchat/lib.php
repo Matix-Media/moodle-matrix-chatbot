@@ -68,3 +68,19 @@ function local_llmchat_connection_updated(): void {
     unset_config('authfailedat', 'local_llmchat');
     \local_llmchat\quota\policy::queue_push();
 }
+
+/**
+ * FontAwesome icons for the plugin's own pix keys (pix/*.svg are the fallbacks).
+ *
+ * @return array
+ */
+function local_llmchat_get_fontawesome_icon_map(): array {
+    return [
+        'local_llmchat:assistant' => 'fa-wand-magic-sparkles',
+        'local_llmchat:thinking' => 'fa-regular fa-lightbulb',
+        'local_llmchat:tool' => 'fa-screwdriver-wrench',
+        'local_llmchat:conversation' => 'fa-regular fa-comment',
+        'local_llmchat:offline' => 'fa-plug-circle-xmark',
+        'local_llmchat:send' => 'fa-paper-plane',
+    ];
+}
