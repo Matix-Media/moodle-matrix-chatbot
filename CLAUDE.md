@@ -14,10 +14,11 @@ pip install -e ".[dev]"
 ruff check .
 ruff format --check .
 mypy
-pytest --cov=moodle_llm_chat --cov-report=term-missing
+pytest -m "not integration and not e2e" --cov=moodle_llm_chat --cov-report=term-missing
+pytest -m integration
 ```
 
-Run all four check commands yourself before pushing — not a subset, and not just
+Run all of these check commands yourself before pushing — not a subset, and not just
 on the files you touched. This repo's CI has failed repeatedly on the same
 handful of avoidable issues; this section exists so they get caught locally
 instead of in a CI run.
@@ -42,7 +43,7 @@ instead of in a CI run.
    just your changed files — run `ruff format --check .` over the *whole tree*
    after any merge from `master`, and fix whatever it flags regardless of who
    wrote it. (This has happened: a merge brought in one line in
-   `src/bsbot/matrix/bot.py` (a file that no longer exists) that failed `ruff format --check` despite passing
+   a file that failed `ruff format --check` despite passing
    `ruff check`, and it was not caught until CI ran.)
 
 3. **`mypy` only type-checks `src/moodle_llm_chat`** (`packages = ["moodle_llm_chat"]` in
@@ -71,6 +72,23 @@ instead of in a CI run.
    as an `ImportError` in `test_extract.py::TestXls`. Neither is a real code
    problem — it's a missing dev dependency, install the extra above.
 
+6. **Two pytest tiers, two CI jobs.** `tests/unit` is hermetic and fast;
+   `tests/integration` runs the whole app in-process (marked `integration`
+   automatically by `tests/integration/conftest.py`). Shared doubles live in
+   `tests/support/` — import them from there, never from another test module or a
+   `conftest.py`. A test that waits on the websocket must fail on an `error` frame
+   (`support.harness.ws_until` does) or a failed turn hangs the run.
+
+7. **Provider SDKs do not all use `httpx`.** `respx` mocks `httpx` (Ollama, our own
+   clients); the OpenAI and Anthropic SDKs use `httpx2` — inject an
+   `httpx2.MockTransport` client instead (see `test_provider_wire.py`). An unmocked
+   call shows up as a connect timeout, not a respx error.
+
+8. **The Moodle plugin** (`moodle/local_llmchat/`) is checked by the `moodle-plugin`
+   CI job (moodle-plugin-ci: phplint, phpcs, phpdoc, validate, savepoints, mustache,
+   grunt, phpunit). `tests/fixtures/jwt_vectors.json` must stay byte-identical to the
+   plugin's copy — change both together.
+
 ## Quick pre-push checklist
 
 ```bash
@@ -78,7 +96,8 @@ pip install -e ".[dev]"       # once, or after dependency changes
 ruff check .
 ruff format --check .         # a separate check from the line above — see #1
 mypy
-pytest --cov=moodle_llm_chat --cov-report=term-missing
+pytest -m "not integration and not e2e" --cov=moodle_llm_chat --cov-report=term-missing
+pytest -m integration
 ```
 
-All four must be clean before pushing.
+All must be clean before pushing.

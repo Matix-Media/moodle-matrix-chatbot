@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import structlog
 from fastapi import FastAPI
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 from moodle_llm_chat import __version__
@@ -43,7 +44,20 @@ DocumentListener = Callable[[str, list[str], bool], None]
 BlobListener = Callable[[str, str], None]
 
 
-def build_embedder(settings: Settings, store: Store) -> CachingEmbedder | None:
+def build_embedder(
+    settings: Settings, store: Store, override: Embeddings | None = None
+) -> CachingEmbedder | None:
+    if override is not None:
+        return CachingEmbedder(
+            query_api=override,
+            document_api=override,
+            cache=store,
+            provider="override",
+            model="override",
+            dim=settings.embedding.dim,
+            rpm=0,
+            items_per_minute=0,
+        )
     try:
         cfg = settings.require_embedding()
     except ConfigError as exc:
@@ -91,6 +105,7 @@ def create_app(
     ring: KeyRing | None = None,
     start_workers: bool = True,
     chat_model: BaseChatModel | None = None,
+    embeddings: Embeddings | None = None,
     access: AccessChecker | None = None,
 ) -> FastAPI:
     """Build the app.
@@ -113,7 +128,7 @@ def create_app(
             app.state.store = store
             app.state.ring = key_ring
             async with httpx.AsyncClient() as http:
-                embedder = build_embedder(settings, store)
+                embedder = build_embedder(settings, store, embeddings)
                 quota = QuotaService(store, settings.quota, timezone=settings.agent.timezone)
                 app.state.quota = quota
                 pipeline = Pipeline(
