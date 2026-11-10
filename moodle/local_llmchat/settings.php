@@ -115,7 +115,8 @@ if ($hassiteconfig) {
             get_string("settings:$name", 'local_llmchat'),
             get_string('settings:limit_desc', 'local_llmchat'),
             0,
-            PARAM_INT
+            PARAM_INT,
+            12
         );
         $setting->set_updatedcallback('local_llmchat_policy_updated');
         $settings->add($setting);
