@@ -1,4 +1,4 @@
-"""Verifies spec 011 AC-7..AC-9 — YouTube transcripts.
+"""YouTube transcripts.
 
 Verified live against a real corpus video (youtube.com/watch?v=AuqTOZq1sZw) before
 writing this: no API key needed, German transcript fetched successfully.
@@ -6,7 +6,7 @@ writing this: no API key needed, German transcript fetched successfully.
 
 from __future__ import annotations
 
-from bsbot.ingest.youtube import extract_video_id, fetch_transcript
+from moodle_llm_chat.ingest.youtube import extract_video_id, fetch_transcript
 
 
 class TestVideoIdExtraction:

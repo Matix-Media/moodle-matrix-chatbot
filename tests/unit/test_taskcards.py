@@ -1,4 +1,4 @@
-"""Verifies spec 011 AC-10..AC-13 — TaskCards boards.
+"""TaskCards boards.
 
 The whole mechanism here was reverse-engineered from a real browser network trace
 against itech-bs14.taskcards.app (2026-08-21), not guessed: loading a board URL
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bsbot.ingest.taskcards import (
+from moodle_llm_chat.ingest.taskcards import (
     board_id_from_url,
     is_taskcards_url,
     render_board_text,
@@ -154,7 +154,7 @@ class TestFetchBoardSequence:
         import httpx
         import respx
 
-        from bsbot.ingest.taskcards import fetch_board
+        from moodle_llm_chat.ingest.taskcards import fetch_board
 
         host = "example.taskcards.app"
         board_id = "abc-123"
@@ -187,7 +187,7 @@ class TestFetchBoardSequence:
         import httpx
         import respx
 
-        from bsbot.ingest.taskcards import fetch_board
+        from moodle_llm_chat.ingest.taskcards import fetch_board
 
         host = "example.taskcards.app"
         with respx.mock:
@@ -213,7 +213,7 @@ class TestFetchBoardSequence:
         import httpx
         import respx
 
-        from bsbot.ingest.taskcards import fetch_board
+        from moodle_llm_chat.ingest.taskcards import fetch_board
 
         host = "example.taskcards.app"
         with respx.mock:

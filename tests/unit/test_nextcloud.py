@@ -1,10 +1,14 @@
-"""Verifies spec 005 AC-13..AC-17 — Nextcloud public share handling."""
+"""Nextcloud public share handling."""
 
 from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.nextcloud import ShareUnsupported, is_nextcloud_share, share_download_url
+from moodle_llm_chat.ingest.nextcloud import (
+    ShareUnsupported,
+    is_nextcloud_share,
+    share_download_url,
+)
 
 
 class TestRecognition:

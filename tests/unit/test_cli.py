@@ -1,68 +1,42 @@
-"""CLI behaviour that matters when things are misconfigured.
-
-`doctor` is the command you reach for when the configuration is broken, so it is
-exactly the command that must never answer with a traceback.
-"""
+"""CLI entry points."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from bsbot.cli import app
+from moodle_llm_chat.cli import app
 
 runner = CliRunner()
 
 
-@pytest.fixture
-def env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
-    return tmp_path / ".env"
+class TestDoctor:
+    def test_reports_unconfigured_subsystems_without_failing(self) -> None:
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0, result.output
+        assert "chat model" in result.output
+        assert "not configured" in result.output
+        assert "MLC_LLM__PROVIDER" in result.output
+
+    def test_reports_configured_provider_and_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLC_LLM__PROVIDER", "ollama")
+        monkeypatch.setenv("MLC_LLM__MODEL", "qwen3")
+        monkeypatch.setenv("MLC_LLM__THINKING", "medium")
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0, result.output
+        assert "ollama" in result.output
+        assert "qwen3" in result.output
+        assert "medium" in result.output
+
+    def test_never_prints_secrets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLC_LLM__PROVIDER", "gemini")
+        monkeypatch.setenv("MLC_LLM__MODEL", "gemini-x")
+        monkeypatch.setenv("MLC_LLM__API_KEY", "very-secret-value")
+        result = runner.invoke(app, ["doctor"])
+        assert "very-secret-value" not in result.output
 
 
-def test_doctor_reports_a_malformed_url_instead_of_crashing(env_file: Path) -> None:
-    """Regression: a homeserver without a scheme raised a pydantic ValidationError
-    traceback, burying the one line the user needed."""
-    env_file.write_text(
-        "BSBOT_MATRIX__HOMESERVER=matrix.org\n"
-        "BSBOT_MATRIX__USER_ID=@bot:matrix.org\n"
-        "BSBOT_MATRIX__PASSWORD=pw\n"
-    )
-    result = runner.invoke(app, ["doctor"])
-
-    assert result.exit_code == 1
-    assert "Traceback" not in result.output
-    assert "BSBOT_MATRIX__HOMESERVER" in result.output
-    assert "https://" in result.output
-
-
-def test_doctor_lists_configured_subsystems(env_file: Path) -> None:
-    env_file.write_text(
-        "BSBOT_MOODLE__BASE_URL=https://moodle.example.de\nBSBOT_MOODLE__TOKEN=abc\n"
-    )
-    result = runner.invoke(app, ["doctor"])
-
+def test_version() -> None:
+    result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "moodle" in result.output
-    assert "gemini" in result.output
-
-
-def test_doctor_on_empty_config_still_succeeds(env_file: Path) -> None:
-    env_file.write_text("")
-    result = runner.invoke(app, ["doctor"])
-    assert result.exit_code == 0
-    assert "not configured" in result.output
-
-
-def test_bench_rejects_a_malformed_as_of_date(env_file: Path) -> None:
-    """specs/012-benchmarks.md AC-16: fails fast on a bad --as-of, before touching
-    Gemini config at all, so this needs no credentials to exercise."""
-    env_file.write_text("")
-    result = runner.invoke(
-        app, ["bench", "--golden", "config/golden_questions.example.yaml", "--as-of", "2026-13-40"]
-    )
-    assert result.exit_code == 1
-    assert "Traceback" not in result.output
-    assert "--as-of" in result.output
+    assert "0.2.0" in result.output

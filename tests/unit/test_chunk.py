@@ -1,10 +1,10 @@
-"""Verifies spec 006 AC-13..AC-19 — chunking."""
+"""chunking."""
 
 from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.chunk import Segment, chunk_segments
+from moodle_llm_chat.ingest.chunk import Segment, chunk_segments
 
 HEADER = ["LF05IT", "Lernfeld 5", "Skript"]
 

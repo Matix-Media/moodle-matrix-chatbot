@@ -1,4 +1,4 @@
-"""Verifies spec 011 AC-1..AC-2 — HackMD notes.
+"""HackMD notes.
 
 Appending .md to a note URL returns raw Markdown, confirmed against HackMD's own
 docs. Both URL shapes tested here (bare id, @user/id) are real, found on the live
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.hackmd import HackmdUnsupported, hackmd_markdown_url, is_hackmd_note
+from moodle_llm_chat.ingest.hackmd import HackmdUnsupported, hackmd_markdown_url, is_hackmd_note
 
 
 class TestRecognition:

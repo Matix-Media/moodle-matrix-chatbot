@@ -26,4 +26,4 @@ jobs:
       - name: Typecheck
         run: mypy
       - name: Test
-        run: pytest --cov=bsbot --cov-report=term-missing
+        run: pytest --cov=moodle_llm_chat --cov-report=term-missing

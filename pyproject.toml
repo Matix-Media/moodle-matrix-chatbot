@@ -1,17 +1,16 @@
 [project]
-name = "bsbot"
-version = "0.1.0"
-description = "Matrix chatbot answering Berufsschule questions from Moodle content"
+name = "moodle-llm-chat"
+version = "0.2.0"
+description = "Agentic course assistant for Moodle: ingest API, retrieval tools and streaming chat"
 requires-python = ">=3.13"
+readme = "README.md"
 dependencies = [
-    "matrix-nio[e2e]==0.26.0",
     "httpx>=0.27",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "typer>=0.12",
     "structlog>=24.1",
     "sqlite-vec>=0.1.9",
-    "google-genai>=2.0",
     "pymupdf>=1.24",
     "python-docx>=1.1",
     "python-pptx>=0.6",
@@ -22,27 +21,28 @@ dependencies = [
     "youtube-transcript-api>=1.0",
     "markdownify>=1.0",
     "tiktoken>=0.7",
-    # zoneinfo's fallback IANA database — python:slim images have no system
-    # tzdata, so ZoneInfo("Europe/Berlin") would otherwise fail at runtime.
+    # zoneinfo's fallback IANA database — python:slim images have no system tzdata.
     "tzdata>=2024.1",
-    # Internal HTTP API for the Nuxt web chat frontend (spec 014) — `bsbot
-    # serve-api`. Core functionality like the Matrix bot, not an opt-in extra
-    # like `pii` below: there is no toggle that makes bsbot.web unused.
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # Agent loop and provider adapters.
+    "langchain>=1.2",
+    "langchain-core>=1.2",
+    "langgraph>=1.0",
+    "langchain-google-genai>=3.0",
+    "langchain-openai>=1.0",
+    "langchain-ollama>=1.0",
+    "langchain-anthropic>=1.0",
+    # Security: encryption at rest and chat tokens.
+    "sqlcipher3>=0.6.5",
+    "cryptography>=43",
+    "pyjwt>=2.9",
 ]
 
 [project.scripts]
-bsbot = "bsbot.cli:app"
+moodle-llm-chat = "moodle_llm_chat.cli:app"
 
 [project.optional-dependencies]
-# Only needed when BSBOT_PII__ENABLED=true — kept out of the base install and
-# out of `dev` so the common case pays no cost for it. After installing, also
-# run `python -m spacy download de_core_news_md` (or the model named by
-# BSBOT_PII__SPACY_MODEL).
-pii = [
-    "spacy>=3.7,<4.0",
-]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
@@ -59,7 +59,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bsbot"]
+packages = ["src/moodle_llm_chat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,7 +68,8 @@ asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 markers = [
     "live: hits real external services; deselected by default (run with -m live)",
-    "eval: retrieval quality evaluation; needs an indexed corpus",
+    "integration: real components wired in-process (tests/integration)",
+    "e2e: full docker topology with Moodle + plugin + API (tests/e2e)",
 ]
 
 [tool.ruff]
@@ -87,7 +88,7 @@ ignore = [
 [tool.mypy]
 python_version = "3.13"
 mypy_path = "src"
-packages = ["bsbot"]
+packages = ["moodle_llm_chat"]
 warn_unused_ignores = true
 disallow_untyped_defs = true
 ignore_missing_imports = true

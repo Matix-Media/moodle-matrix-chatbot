@@ -1,5 +1,10 @@
 # Project instructions
 
+`moodle_llm_chat` is an agentic course assistant for Moodle: a FastAPI service the
+`local_llmchat` Moodle plugin pushes content to and whose websocket chat the plugin
+embeds. Tests are the specification — there is no `specs/` directory any more. Write
+the failing test first, then the code.
+
 ## Before every push: reproduce CI locally
 
 CI (`.github/workflows/ci.yml`) runs exactly this, in this order:
@@ -9,7 +14,7 @@ pip install -e ".[dev]"
 ruff check .
 ruff format --check .
 mypy
-pytest --cov=bsbot --cov-report=term-missing
+pytest --cov=moodle_llm_chat --cov-report=term-missing
 ```
 
 Run all four check commands yourself before pushing — not a subset, and not just
@@ -37,13 +42,13 @@ instead of in a CI run.
    just your changed files — run `ruff format --check .` over the *whole tree*
    after any merge from `master`, and fix whatever it flags regardless of who
    wrote it. (This has happened: a merge brought in one line in
-   `src/bsbot/matrix/bot.py` that failed `ruff format --check` despite passing
+   `src/bsbot/matrix/bot.py` (a file that no longer exists) that failed `ruff format --check` despite passing
    `ruff check`, and it was not caught until CI ran.)
 
-3. **`mypy` only type-checks `src/bsbot`** (`packages = ["bsbot"]` in
+3. **`mypy` only type-checks `src/moodle_llm_chat`** (`packages = ["moodle_llm_chat"]` in
    `pyproject.toml`), invoked bare in CI — running `mypy` locally with no
    arguments reproduces this exactly. Tests under `tests/` are not
-   type-checked. Every function in `src/bsbot/**` needs full type annotations
+   type-checked. Every function in `src/moodle_llm_chat/**` needs full type annotations
    (`disallow_untyped_defs = true` — see `[tool.mypy]`); a missing return type
    or an untyped parameter on an otherwise-correct new function fails CI.
 
@@ -61,8 +66,8 @@ instead of in a CI run.
    pip install -e ".[dev]"
    ```
 
-   Missing `respx` shows up as an `ImportError` collecting `test_fetcher.py`,
-   `test_matrix_oauth.py`, or `test_moodle_client.py`; missing `xlwt` shows up
+   Missing `respx` shows up as an `ImportError` collecting the adapter tests
+   (`test_taskcards.py` and friends); missing `xlwt` shows up
    as an `ImportError` in `test_extract.py::TestXls`. Neither is a real code
    problem — it's a missing dev dependency, install the extra above.
 
@@ -73,7 +78,7 @@ pip install -e ".[dev]"       # once, or after dependency changes
 ruff check .
 ruff format --check .         # a separate check from the line above — see #1
 mypy
-pytest --cov=bsbot --cov-report=term-missing
+pytest --cov=moodle_llm_chat --cov-report=term-missing
 ```
 
 All four must be clean before pushing.
