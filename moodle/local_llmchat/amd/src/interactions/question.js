@@ -50,7 +50,7 @@ export const render = (payload, submit, strings) => {
                 const input = el('input', {type: 'checkbox', className: 'form-check-input', id, value: option});
                 checked.push(input);
                 row.appendChild(el('div', {className: 'form-check'}, [
-                    input, el('label', {className: 'form-check-label', for: id, text: option}),
+                    input, el('label', {className: 'form-check-label', 'for': id, text: option}),
                 ]));
             } else {
                 const button = el('button', {type: 'button', className: 'btn btn-outline-primary btn-sm', text: option});

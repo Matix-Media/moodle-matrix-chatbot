@@ -59,10 +59,11 @@ export const safeUrl = (url) => {
  * @returns {string}
  */
 const inline = (text, citations) => {
+    // Code spans are parked behind private-use placeholders while the other rules run.
     const codes = [];
     let out = text.replace(/`([^`]+)`/g, (m, code) => {
         codes.push(code);
-        return `\u0000${codes.length - 1}\u0000`;
+        return `\uE000${codes.length - 1}\uE000`;
     });
     out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (m, label, url) => {
         const href = safeUrl(url.replace(/&amp;/g, '&'));
@@ -80,7 +81,7 @@ const inline = (text, citations) => {
         return `<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
             ` title="${title}">[${n}]</a>`;
     });
-    return out.replace(/\u0000(\d+)\u0000/g, (m, i) => `<code>${codes[Number(i)]}</code>`);
+    return out.replace(/\uE000(\d+)\uE000/g, (m, i) => `<code>${codes[Number(i)]}</code>`);
 };
 
 /**

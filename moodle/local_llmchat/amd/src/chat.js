@@ -39,6 +39,23 @@ const STRING_KEYS = [
 
 const SEQ_STORAGE_KEY = 'local_llmchat_lastseq';
 
+/** Server frame type => controller method (frame, replay). */
+const FRAME_HANDLERS = {
+    'user_message': 'onUserMessage',
+    'thinking': 'onThinking',
+    'token': 'onToken',
+    'tool_call': 'onToolCall',
+    'tool_progress': 'onToolProgress',
+    'tool_result': 'onToolResult',
+    'question': 'onQuestion',
+    'citations': 'onCitations',
+    'final': 'onFinal',
+    'turn_interrupted': 'onInterrupted',
+    'rate_limited': 'onRateLimited',
+    'quota': 'onQuota',
+    'error': 'onError',
+};
+
 /**
  * Fill a {$a} / {$a->x} placeholder string.
  *
@@ -126,7 +143,7 @@ class ChatController {
         });
         this.cancelButton.addEventListener('click', () => {
             if (this.conversationId) {
-                this.socket.send({type: 'cancel', conversation_id: this.conversationId});
+                this.socket.send({type: 'cancel', 'conversation_id': this.conversationId});
             }
         });
         this.root.querySelector('[data-action="new-conversation"]').addEventListener('click', () => {
@@ -203,8 +220,8 @@ class ChatController {
             this.regions.quota.textContent = '';
         }
         if (this.conversationId) {
-            this.socket.send({type: 'resume', conversation_id: this.conversationId,
-                last_seq: this.lastSeq[this.conversationId] || 0});
+            this.socket.send({type: 'resume', 'conversation_id': this.conversationId,
+                'last_seq': this.lastSeq[this.conversationId] || 0});
         }
         this.refreshConversations();
         if (this.queued) {
@@ -251,13 +268,14 @@ class ChatController {
     dispatchSend(text, clientMsgId) {
         this.hideError();
         this.issueToken().then((t) => {
-            const frame = {type: 'send', text, token: t.token, client_msg_id: clientMsgId};
-            if (this.conversationId) {
-                frame.conversation_id = this.conversationId;
-            }
-            if (this.courseid) {
-                frame.course_id = this.courseid;
-            }
+            const frame = {
+                type: 'send',
+                text,
+                token: t.token,
+                'client_msg_id': clientMsgId,
+                ...(this.conversationId ? {'conversation_id': this.conversationId} : {}),
+                ...(this.courseid ? {'course_id': this.courseid} : {}),
+            };
             if (!this.socket.send(frame)) {
                 const bubble = this.pendingUserBubbles.get(clientMsgId);
                 this.queued = {text, clientMsgId, bubble, note: null};
@@ -285,71 +303,64 @@ class ChatController {
      * @param {boolean} replay true when re-rendering stored history
      */
     handleFrame(frame, replay) {
+        if (!this.acceptFrame(frame, replay)) {
+            return;
+        }
+        const handler = FRAME_HANDLERS[frame.type];
+        if (handler) {
+            this[handler](frame, replay);
+        }
+        // Unknown types are ignored (forward compatibility).
+    }
+
+    /**
+     * Adopt the conversation id of a new conversation, drop frames of other conversations and
+     * frames already seen (resume replays everything after last_seq; duplicates are skipped).
+     *
+     * @param {Object} frame
+     * @param {boolean} replay
+     * @returns {boolean} whether the frame should be rendered
+     */
+    acceptFrame(frame, replay) {
         if (frame.conversation_id && !this.conversationId && !replay) {
             this.conversationId = String(frame.conversation_id);
             this.refreshConversations();
         }
         const convId = frame.conversation_id ? String(frame.conversation_id) : this.conversationId;
         if (convId && convId !== this.conversationId) {
-            return;
+            return false;
         }
         if (typeof frame.seq === 'number' && convId) {
             const last = this.lastSeq[convId] || 0;
             if (!replay && frame.seq <= last) {
-                return;
+                return false;
             }
             this.lastSeq[convId] = Math.max(last, frame.seq);
             this.saveSeqs();
         }
-        switch (frame.type) {
-            case 'user_message':
-                this.onUserMessage(frame, replay);
-                break;
-            case 'thinking':
-                this.onThinking(frame);
-                break;
-            case 'token':
-                this.onToken(frame);
-                break;
-            case 'tool_call':
-                this.onToolCall(frame);
-                break;
-            case 'tool_progress':
-                this.onToolProgress(frame);
-                break;
-            case 'tool_result':
-                this.onToolResult(frame);
-                break;
-            case 'question':
-                this.onQuestion(frame, replay);
-                break;
-            case 'citations':
-                this.currentTurn(frame).citations = frame.citations || [];
-                break;
-            case 'final':
-                this.onFinal(frame);
-                break;
-            case 'turn_interrupted':
-                this.onInterrupted(frame, replay);
-                break;
-            case 'rate_limited':
-                this.onRateLimited(frame);
-                break;
-            case 'quota':
-                this.onQuota(frame);
-                break;
-            case 'error':
-                this.setRunning(false);
-                if (frame.code === 'cancelled') {
-                    this.currentTurn(frame).body.appendChild(el('div', {className: 'small text-muted',
-                        text: this.str.cancelled}));
-                } else {
-                    this.showError(frame.message || frame.code || '');
-                }
-                break;
-            default:
-                // Unknown types are ignored (forward compatibility).
-                break;
+        return true;
+    }
+
+    /**
+     * Citation list sent ahead of the final answer.
+     *
+     * @param {Object} frame citations{citations}
+     */
+    onCitations(frame) {
+        this.currentTurn(frame).citations = frame.citations || [];
+    }
+
+    /**
+     * Error frame; a cancelled turn is shown inline instead of as an error.
+     *
+     * @param {Object} frame error{code, message}
+     */
+    onError(frame) {
+        this.setRunning(false);
+        if (frame.code === 'cancelled') {
+            this.currentTurn(frame).body.appendChild(el('div', {className: 'small text-muted', text: this.str.cancelled}));
+        } else {
+            this.showError(frame.message || frame.code || '');
         }
     }
 
@@ -477,8 +488,12 @@ class ChatController {
         const meta = this.tools.get(frame.name) || {};
         const args = frame.args || {};
         const firstArg = Object.values(args).find((v) => typeof v === 'string') || '';
-        let label = meta.summary_template ? meta.summary_template.replace(/\{(\w+)\}/g,
-            (m, k) => (args[k] !== undefined ? String(args[k]) : '')) : `${meta.label || frame.name} ${firstArg ? `"${firstArg}"` : ''}`;
+        let label;
+        if (meta.summary_template) {
+            label = meta.summary_template.replace(/\{(\w+)\}/g, (m, k) => (args[k] !== undefined ? String(args[k]) : ''));
+        } else {
+            label = `${meta.label || frame.name} ${firstArg ? `"${firstArg}"` : ''}`;
+        }
         label = `${meta.icon ? meta.icon + ' ' : '🔧 '}${label}`.trim();
         const status = el('span', {className: 'ml-2 ms-2 text-muted', text: this.str['tool:running']});
         const summary = el('summary', {className: 'small'}, [el('span', {text: label}), status]);
@@ -545,7 +560,7 @@ class ChatController {
         };
         const node = renderer.render(frame.payload || {}, (response) => {
             this.issueToken().then(() => this.socket.send({
-                type: 'answer', conversation_id: this.conversationId, interrupt_id: frame.interrupt_id, response,
+                type: 'answer', 'conversation_id': this.conversationId, 'interrupt_id': frame.interrupt_id, response,
             })).catch((e) => this.showError(String(e && e.message ? e.message : e)));
         }, strings);
         node.setAttribute('data-interrupt', String(frame.interrupt_id));
@@ -615,7 +630,7 @@ class ChatController {
         ]);
         button.addEventListener('click', () => {
             this.issueToken().then(() => {
-                if (this.socket.send({type: 'continue', conversation_id: this.conversationId, turn_id: frame.turn_id})) {
+                if (this.socket.send({type: 'continue', 'conversation_id': this.conversationId, 'turn_id': frame.turn_id})) {
                     box.remove();
                     this.setRunning(true);
                 }
@@ -744,7 +759,7 @@ class ChatController {
             }
             const events = data.events || [];
             if (events.length) {
-                events.forEach((frame) => this.handleFrame(Object.assign({conversation_id: id}, frame), true));
+                events.forEach((frame) => this.handleFrame(Object.assign({'conversation_id': id}, frame), true));
             } else {
                 (data.messages || []).forEach((m) => {
                     if (m.role === 'user') {
@@ -756,7 +771,7 @@ class ChatController {
             }
             this.setRunning(false);
             // Anything newer than history (a running turn, a pending question) arrives via resume.
-            this.socket.send({type: 'resume', conversation_id: id, last_seq: this.lastSeq[id] || 0});
+            this.socket.send({type: 'resume', 'conversation_id': id, 'last_seq': this.lastSeq[id] || 0});
             this.refreshConversations();
             return data;
         }).catch((e) => this.showError(String(e && e.message ? e.message : e)));
