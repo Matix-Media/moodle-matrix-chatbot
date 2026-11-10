@@ -1,0 +1,106 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/chat_page
+
+    Chat page shell; local_llmchat/chat fills it. Everything inside the card is replaced or appended
+    by the client through the other local_llmchat templates.
+
+    Example context (json):
+    {
+        "rootid": "local-llmchat-root",
+        "courseid": 2,
+        "hascourse": true,
+        "intro": "Ask about LF7 Vernetzte Systeme: material, deadlines and activities.",
+        "suggestions": [{"text": "What is due this week?"}, {"text": "Summarise the latest material"}],
+        "userpicture": "<img src=\"https://moodle.example/pix/u/f2.png\" class=\"userpicture\" alt=\"\">"
+    }
+}}
+<div id="{{rootid}}" class="local-llmchat" data-region="llmchat" data-courseid="{{courseid}}">
+    <div class="local-llmchat-layout">
+        <div class="local-llmchat-sidecol collapse d-lg-block" id="{{rootid}}-sidebar" data-region="sidebar">
+            <nav class="card local-llmchat-sidebar" aria-labelledby="{{rootid}}-conversations">
+                <div class="card-header bg-transparent d-flex align-items-center">
+                    <h2 class="h6 mb-0 flex-grow-1" id="{{rootid}}-conversations">{{#str}} conversations, local_llmchat {{/str}}</h2>
+                    <button type="button" class="btn btn-primary local-llmchat-iconbtn local-llmchat-iconbtn-sm" data-action="new-conversation"
+                        title="{{#str}} newconversation, local_llmchat {{/str}}">
+                        {{#pix}} t/add, core {{/pix}}<span class="sr-only visually-hidden">{{#str}} newconversation, local_llmchat {{/str}}</span>
+                    </button>
+                </div>
+                <div class="list-group list-group-flush local-llmchat-conversations" data-region="conversations">
+                    <div class="list-group-item small text-muted">{{#str}} noconversations, local_llmchat {{/str}}</div>
+                </div>
+            </nav>
+        </div>
+        <div class="local-llmchat-maincol">
+            <section class="card local-llmchat-panel" data-region="panel" aria-labelledby="{{rootid}}-title">
+                <div class="card-header bg-transparent d-flex align-items-center local-llmchat-header">
+                    <button type="button" class="btn btn-outline-secondary local-llmchat-iconbtn local-llmchat-iconbtn-sm d-lg-none me-2" data-action="toggle"
+                        aria-controls="{{rootid}}-sidebar" aria-expanded="false" title="{{#str}} conversations, local_llmchat {{/str}}">
+                        {{#pix}} conversation, local_llmchat {{/pix}}<span class="sr-only visually-hidden">{{#str}} conversations, local_llmchat {{/str}}</span>
+                    </button>
+                    <h2 class="h5 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title">{{#str}} chattitle, local_llmchat {{/str}}</h2>
+                    <div class="local-llmchat-quota invisible" data-region="quota">
+                        <button type="button" class="btn btn-link local-llmchat-iconbtn local-llmchat-quotabtn" data-action="quota-toggle"
+                            aria-expanded="false" aria-controls="{{rootid}}-quota" data-region="quota-button">
+                            <svg class="local-llmchat-ring" viewBox="0 0 36 36" aria-hidden="true" focusable="false">
+                                <circle class="local-llmchat-ring-track" cx="18" cy="18" r="15"></circle>
+                                <circle class="local-llmchat-ring-bar" cx="18" cy="18" r="15" stroke-dasharray="0 94.25" data-region="quota-ring"></circle>
+                            </svg>
+                            <span class="local-llmchat-ringlabel" data-region="quota-percent" aria-hidden="true"></span>
+                            <span class="sr-only visually-hidden">{{#str}} quota:open, local_llmchat {{/str}}</span>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-right dropdown-menu-end local-llmchat-quotapanel" id="{{rootid}}-quota"
+                            data-region="quota-panel" role="region" aria-label="{{#str}} quota:title, local_llmchat {{/str}}"></div>
+                    </div>
+                </div>
+                <div class="local-llmchat-status" data-region="status" aria-live="polite"></div>
+                <div class="card-body local-llmchat-messages" data-region="messages" tabindex="0"
+                    aria-label="{{#str}} messages, local_llmchat {{/str}}" aria-live="polite">
+                    <div class="local-llmchat-empty text-center" data-region="empty">
+                        <span class="local-llmchat-avatar local-llmchat-avatar-assistant local-llmchat-avatar-lg" aria-hidden="true">{{#pix}} assistant, local_llmchat {{/pix}}</span>
+                        <h3 class="h4 local-llmchat-emptytitle">{{#str}} emptytitle, local_llmchat {{/str}}</h3>
+                        <p class="text-muted local-llmchat-intro">{{intro}}</p>
+                        <div class="d-flex flex-wrap justify-content-center local-llmchat-suggestions">
+                            {{#suggestions}}
+                            <button type="button" class="btn btn-outline-secondary btn-sm rounded-pill" data-action="suggest" data-text="{{text}}">{{text}}</button>
+                            {{/suggestions}}
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer bg-transparent">
+                    <form class="local-llmchat-composer" data-region="composer">
+                        <label class="sr-only visually-hidden" for="{{rootid}}-input">{{#str}} message, local_llmchat {{/str}}</label>
+                        <div class="local-llmchat-inputwrap d-flex align-items-end">
+                            <textarea id="{{rootid}}-input" class="form-control local-llmchat-input" rows="1" data-region="input"
+                                placeholder="{{#str}} placeholder, local_llmchat {{/str}}" aria-describedby="{{rootid}}-hint"></textarea>
+                            <button type="submit" class="btn btn-primary ms-2 local-llmchat-iconbtn" data-action="send"
+                                title="{{#str}} send, local_llmchat {{/str}}">
+                                {{#pix}} send, local_llmchat {{/pix}}<span class="sr-only visually-hidden">{{#str}} send, local_llmchat {{/str}}</span>
+                            </button>
+                            <button type="button" class="btn btn-outline-danger ms-2 local-llmchat-iconbtn d-none" data-action="cancel"
+                                title="{{#str}} cancel, local_llmchat {{/str}}">
+                                {{#pix}} t/stop, core {{/pix}}<span class="sr-only visually-hidden">{{#str}} cancel, local_llmchat {{/str}}</span>
+                            </button>
+                        </div>
+                        <div class="small text-muted mt-1 local-llmchat-hint" id="{{rootid}}-hint">{{#str}} composerhint, local_llmchat {{/str}}</div>
+                    </form>
+                </div>
+            </section>
+        </div>
+    </div>
+</div>

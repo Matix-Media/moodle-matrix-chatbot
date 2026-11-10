@@ -1,0 +1,55 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/answer_footer
+
+    Under a final answer: budget note, numbered sources and the copy action.
+
+    Example context (json):
+    {
+        "budgetexhausted": true,
+        "hascitations": true,
+        "citations": [
+            {"index": 1, "title": "Abgabe Subnetting-Projekt", "meta": "LF7", "url": "https://moodle.example/mod/assign/view.php?id=3", "hasurl": true},
+            {"index": 2, "title": "Bewertungsraster.txt", "meta": "LF7 · S. 2", "url": "", "hasurl": false}
+        ]
+    }
+}}
+<div class="local-llmchat-answerfooter" data-region="footer">
+    {{#budgetexhausted}}
+    <div class="alert alert-warning small py-2 px-3 mb-2 d-flex align-items-center">{{#pix}} i/warning, core {{/pix}}<span>{{#str}} budgetexhausted, local_llmchat {{/str}}</span></div>
+    {{/budgetexhausted}}
+    {{#hascitations}}
+    <div class="local-llmchat-sources">
+        <h4 class="small text-muted text-uppercase mb-1 local-llmchat-label">{{#str}} sources, local_llmchat {{/str}}</h4>
+        <ol class="list-unstyled small mb-2">
+            {{#citations}}
+            <li class="d-flex align-items-baseline mb-1">
+                <span class="local-llmchat-citenum me-2">{{index}}</span>
+                <span class="local-llmchat-minw0">
+                    {{#hasurl}}<a href="{{url}}" target="_blank" rel="noopener">{{title}}</a>{{/hasurl}}{{^hasurl}}{{title}}{{/hasurl}}
+                    {{#meta}}<span class="text-muted"> · {{meta}}</span>{{/meta}}
+                </span>
+            </li>
+            {{/citations}}
+        </ol>
+    </div>
+    {{/hascitations}}
+    <div class="local-llmchat-actions">
+        <button type="button" class="btn btn-link btn-sm text-muted p-0" data-action="copy">{{#pix}} t/copy, core {{/pix}}{{#str}} copy, local_llmchat {{/str}}</button>
+    </div>
+</div>

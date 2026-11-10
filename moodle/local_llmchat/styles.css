@@ -1,0 +1,613 @@
+/* Course chat. Colours come from the theme (Bootstrap 4 variables in Moodle 4.5, --bs-* in 5.x). */
+.local-llmchat {
+    --llmchat-accent: var(--bs-primary, var(--primary, #0f6cbf));
+    --llmchat-accent-soft: color-mix(in srgb, var(--llmchat-accent) 10%, transparent);
+    --llmchat-accent-line: color-mix(in srgb, var(--llmchat-accent) 35%, transparent);
+    --llmchat-border: var(--bs-border-color, #dee2e6);
+    --llmchat-muted: var(--bs-secondary-color, #6a737b);
+    --llmchat-column: 48rem;
+}
+
+.local-llmchat .local-llmchat-minw0 {
+    min-width: 0;
+}
+
+/* Layout: sidebar column next to the chat on large screens, a collapsible block above it otherwise.
+   (Own flex layout instead of .row, whose negative gutters overflow Moodle's narrow page padding.) */
+.local-llmchat-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.local-llmchat-maincol {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.local-llmchat-sidecol > .local-llmchat-sidebar {
+    height: 100%;
+}
+
+@media (min-width: 992px) {
+    .local-llmchat-layout {
+        flex-direction: row;
+    }
+
+    .local-llmchat-sidecol {
+        flex: 0 0 16.5rem;
+        max-width: 16.5rem;
+    }
+}
+
+/* Cards: the sidebar column and the chat panel are sized by JS to fill the window. */
+.local-llmchat-panel,
+.local-llmchat-sidebar {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.local-llmchat-panel {
+    min-height: 27.5rem;
+}
+
+.local-llmchat-sidebar {
+    max-height: 22rem;
+}
+
+@media (min-width: 992px) {
+    .local-llmchat-sidebar {
+        max-height: none;
+    }
+}
+
+.local-llmchat-panel > .card-header,
+.local-llmchat-panel > .card-footer,
+.local-llmchat-sidebar > .card-header,
+.local-llmchat-status {
+    flex-shrink: 0;
+}
+
+.local-llmchat-conversations {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+.local-llmchat-conv {
+    font-size: .9375rem;
+}
+
+.local-llmchat-header {
+    min-height: 3.5rem;
+}
+
+/* Token budget: a small ring; details open in a panel below it. */
+.local-llmchat-quota {
+    position: relative;
+    flex-shrink: 0;
+    margin-left: .5rem;
+}
+
+.local-llmchat .local-llmchat-quotabtn {
+    position: relative;
+    color: inherit;
+}
+
+.local-llmchat-ring {
+    width: 2.25rem;
+    height: 2.25rem;
+    transform: rotate(-90deg);
+}
+
+.local-llmchat-ringlabel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .5625rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em;
+}
+
+.local-llmchat-ringlabel-long {
+    font-size: .5rem;
+}
+
+.local-llmchat-ring circle {
+    fill: none;
+    stroke-width: 3;
+}
+
+.local-llmchat-ring-track {
+    stroke: var(--llmchat-border);
+}
+
+.local-llmchat-ring-bar {
+    stroke: var(--llmchat-accent);
+    stroke-linecap: round;
+    transition: stroke-dasharray .3s ease-in-out;
+}
+
+.local-llmchat-quota[data-state="warning"] .local-llmchat-ring-bar {
+    stroke: var(--bs-warning, var(--warning, #f0ad4e));
+}
+
+.local-llmchat-quota[data-state="danger"] .local-llmchat-ring-bar {
+    stroke: var(--bs-danger, var(--danger, #ca3120));
+}
+
+.local-llmchat .local-llmchat-quotapanel {
+    right: 0;
+    left: auto;
+    width: 17rem;
+    max-width: calc(100vw - 2rem);
+    padding: .75rem 1rem;
+}
+
+.local-llmchat-quotarow + .local-llmchat-quotarow {
+    margin-top: .625rem;
+}
+
+.local-llmchat-progress {
+    height: .375rem;
+    margin-top: .25rem;
+}
+
+/* Message column. */
+.local-llmchat-messages {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 1.5rem;
+}
+
+.local-llmchat-msg {
+    width: 100%;
+    max-width: var(--llmchat-column);
+    margin: 0 auto 1.5rem;
+}
+
+.local-llmchat-usercol {
+    max-width: 80%;
+}
+
+.local-llmchat-bubble {
+    padding: .625rem 1rem;
+    border-radius: 1.125rem 1.125rem .375rem 1.125rem;
+    background: var(--llmchat-accent);
+    color: #fff;
+    overflow-wrap: anywhere;
+}
+
+/* Only the message itself keeps the user's line breaks, not the template's indentation. */
+.local-llmchat-bubble .local-llmchat-text {
+    white-space: pre-wrap;
+}
+
+.local-llmchat-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 50%;
+    overflow: hidden;
+}
+
+.local-llmchat-avatar img.userpicture,
+.local-llmchat-avatar .userinitials {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+}
+
+.local-llmchat-avatar-assistant {
+    background: var(--llmchat-accent-soft);
+    color: var(--llmchat-accent);
+}
+
+.local-llmchat-avatar .icon {
+    width: auto;
+    height: auto;
+    margin: 0;
+    font-size: 1rem;
+}
+
+.local-llmchat-avatar-lg {
+    width: 4rem;
+    height: 4rem;
+}
+
+.local-llmchat-avatar-lg .icon {
+    font-size: 1.75rem;
+}
+
+/* The assistant's first line sits level with the middle of its avatar. */
+.local-llmchat-body {
+    padding-top: .375rem;
+    overflow-wrap: anywhere;
+}
+
+.local-llmchat-text p,
+.local-llmchat-text ul,
+.local-llmchat-text ol,
+.local-llmchat-text pre {
+    margin-bottom: .75rem;
+}
+
+.local-llmchat-text > :last-child {
+    margin-bottom: 0;
+}
+
+.local-llmchat-text:empty {
+    display: none;
+}
+
+/* Thinking and tool cards. */
+.local-llmchat-thinking {
+    margin-bottom: .5rem;
+}
+
+.local-llmchat-thinking-text {
+    white-space: pre-wrap;
+}
+
+.local-llmchat .local-llmchat-toggle,
+.local-llmchat .local-llmchat-toggle:hover,
+.local-llmchat .local-llmchat-toggle:focus {
+    text-decoration: none;
+}
+
+.local-llmchat-chevron .icon {
+    margin-right: .25rem;
+    transition: transform .15s ease-in-out;
+}
+
+.local-llmchat-toggle[aria-expanded="false"] .local-llmchat-chevron .icon {
+    transform: rotate(-90deg);
+}
+
+.local-llmchat-tools {
+    margin-bottom: .75rem;
+}
+
+.local-llmchat-tool {
+    padding: .5rem .75rem;
+    font-size: .875rem;
+}
+
+.local-llmchat .local-llmchat-toolhead,
+.local-llmchat .local-llmchat-toolhead:hover {
+    font-size: inherit;
+    color: inherit;
+}
+
+.local-llmchat-toolhead .icon {
+    margin-right: 0;
+}
+
+.local-llmchat-toolicon .icon {
+    margin-right: .5rem;
+}
+
+.local-llmchat-toolsummary {
+    max-width: 45%;
+}
+
+.local-llmchat-args {
+    white-space: pre-wrap;
+}
+
+.local-llmchat-typing {
+    display: flex;
+    align-items: center;
+    height: 1.5rem;
+}
+
+.local-llmchat-typing .spinner-grow {
+    width: .5rem;
+    height: .5rem;
+    margin-right: .25rem;
+    color: var(--llmchat-muted);
+    animation-duration: 1.2s;
+}
+
+.local-llmchat-typing .spinner-grow:nth-child(2) {
+    animation-delay: .2s;
+}
+
+.local-llmchat-typing .spinner-grow:nth-child(3) {
+    animation-delay: .4s;
+}
+
+/* Interactions. */
+.local-llmchat-interaction {
+    margin: .25rem 0 .75rem;
+    border-color: var(--llmchat-accent-line);
+}
+
+.local-llmchat-question {
+    margin-bottom: .75rem;
+    font-weight: 600;
+}
+
+.local-llmchat-options {
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin-bottom: .75rem;
+}
+
+.local-llmchat-answered {
+    gap: .375rem;
+    margin: .25rem 0 .75rem;
+}
+
+.local-llmchat-answered .icon {
+    margin: 0;
+}
+
+/* Citations: [n] markers and the numbered source list share one chip style. */
+.local-llmchat-citenum {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 .3rem;
+    border-radius: 1rem;
+    background: var(--llmchat-accent-soft);
+    color: var(--llmchat-accent);
+    font-size: .6875rem;
+    font-weight: 600;
+    line-height: 1;
+    text-decoration: none;
+}
+
+.local-llmchat .local-llmchat-cite {
+    padding: .125rem .375rem;
+    border-radius: 1rem;
+    background: var(--llmchat-accent-soft);
+    color: var(--llmchat-accent);
+    font-size: .6875rem;
+    font-weight: 600;
+    line-height: 1;
+    text-decoration: none;
+    vertical-align: .125em;
+}
+
+.local-llmchat .local-llmchat-cite:hover,
+.local-llmchat .local-llmchat-cite:focus {
+    background: var(--llmchat-accent);
+    color: #fff;
+    text-decoration: none;
+}
+
+.local-llmchat-citenum {
+    flex-shrink: 0;
+}
+
+.local-llmchat-answerfooter {
+    margin-top: .75rem;
+}
+
+.local-llmchat-label {
+    font-size: .6875rem;
+    letter-spacing: .04em;
+}
+
+/* Empty state. */
+.local-llmchat-empty {
+    max-width: 34rem;
+    margin: auto;
+    padding: 2rem 1rem;
+}
+
+.local-llmchat-emptytitle {
+    margin: 1rem 0 .5rem;
+}
+
+.local-llmchat-intro {
+    margin-bottom: 1rem;
+}
+
+.local-llmchat-suggestions {
+    gap: .5rem;
+}
+
+/* Status area and notices. */
+.local-llmchat-status .alert {
+    margin-bottom: 0;
+}
+
+.local-llmchat-notice {
+    gap: .5rem;
+}
+
+.local-llmchat-notice .icon {
+    margin: 0;
+}
+
+/* Composer. */
+.local-llmchat-composer {
+    max-width: var(--llmchat-column);
+    margin: 0 auto;
+}
+
+.local-llmchat-inputwrap {
+    padding: .375rem .375rem .375rem 1rem;
+    border: 1px solid var(--llmchat-border);
+    border-radius: .75rem;
+    background: var(--bs-body-bg, #fff);
+    transition: border-color .15s ease-in-out, box-shadow .15s ease-in-out;
+}
+
+.local-llmchat-inputwrap:focus-within {
+    border-color: var(--llmchat-accent-line);
+    box-shadow: 0 0 0 .2rem var(--llmchat-accent-soft);
+}
+
+/* The hint lines up with the text inside the rounded field (its padding plus its border). */
+.local-llmchat-hint {
+    padding-left: calc(1rem + 1px);
+}
+
+.local-llmchat .local-llmchat-input,
+.local-llmchat .local-llmchat-input:focus {
+    min-height: 2.5rem;
+    max-height: 10rem;
+    padding: .5rem 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    resize: none;
+}
+
+/* Icon-only buttons. Scoped under .local-llmchat because the theme's .btn padding loads later and
+   would otherwise squeeze the icon off-centre. */
+.local-llmchat .local-llmchat-iconbtn {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    line-height: 1;
+}
+
+.local-llmchat .local-llmchat-iconbtn .icon {
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.local-llmchat .local-llmchat-iconbtn-sm {
+    width: 2rem;
+    height: 2rem;
+}
+
+@media (max-width: 575.98px) {
+    .local-llmchat-messages {
+        padding: 1rem .75rem;
+    }
+
+    .local-llmchat-usercol {
+        max-width: 88%;
+    }
+
+    /* Compact empty state so the suggestions fit above the composer. */
+    .local-llmchat-empty {
+        padding: .5rem 0;
+    }
+
+    .local-llmchat-empty .local-llmchat-avatar-lg {
+        width: 2.75rem;
+        height: 2.75rem;
+    }
+
+    .local-llmchat-empty .local-llmchat-avatar-lg .icon {
+        font-size: 1.25rem;
+    }
+
+    .local-llmchat-emptytitle {
+        margin-top: .5rem;
+        font-size: 1.125rem;
+    }
+
+    .local-llmchat-intro {
+        margin-bottom: .75rem;
+        font-size: .875rem;
+    }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .local-llmchat-chevron .icon,
+    .local-llmchat-inputwrap {
+        transition: none;
+    }
+}
+
+/* Expanded tool card: parameters as label/value rows, the result, raw data behind a toggle. */
+.local-llmchat-tooldetails {
+    margin-top: .5rem;
+    padding: .625rem .75rem;
+    border-radius: .5rem;
+    background: var(--llmchat-accent-soft);
+}
+
+.local-llmchat-params {
+    display: grid;
+    grid-template-columns: minmax(6rem, max-content) 1fr;
+    gap: .25rem 1rem;
+    margin-bottom: .5rem;
+}
+
+.local-llmchat-param {
+    display: contents;
+}
+
+.local-llmchat-params dt {
+    color: var(--llmchat-muted);
+    font-weight: 400;
+}
+
+.local-llmchat-params dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.local-llmchat-params code {
+    padding: .0625rem .25rem;
+    border-radius: .25rem;
+    background: var(--bs-body-bg, #fff);
+}
+
+.local-llmchat .local-llmchat-path {
+    flex-wrap: wrap;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-size: inherit;
+}
+
+.local-llmchat-chips {
+    gap: .25rem;
+}
+
+.local-llmchat-chips .badge {
+    font-weight: 500;
+}
+
+.local-llmchat-toolresult {
+    margin-bottom: .5rem;
+}
+
+.local-llmchat-toolresult:empty {
+    display: none;
+}
+
+@media (max-width: 575.98px) {
+    .local-llmchat-params {
+        grid-template-columns: 1fr;
+        gap: 0;
+    }
+
+    .local-llmchat-params dd {
+        margin-bottom: .375rem;
+    }
+}
+
+.local-llmchat-path a {
+    text-decoration: underline;
+    text-decoration-color: var(--llmchat-accent-line);
+    text-underline-offset: .15em;
+}
