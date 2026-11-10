@@ -83,6 +83,38 @@ class ErrorEvent(_Event):
     message: str
 
 
+class UserMessageEvent(_Event):
+    type: Literal["user_message"] = "user_message"
+    text: str
+    course_id: int | None = None
+
+
+class UserAnswerEvent(_Event):
+    type: Literal["user_answer"] = "user_answer"
+    interrupt_id: str
+    response: dict[str, Any]
+
+
+class TurnInterruptedEvent(_Event):
+    """The server stopped (restart, crash) while this turn ran; it can be continued."""
+
+    type: Literal["turn_interrupted"] = "turn_interrupted"
+
+
+class CancelledEvent(_Event):
+    type: Literal["cancelled"] = "cancelled"
+
+
+class QuotaEvent(_Event):
+    type: Literal["quota"] = "quota"
+    used_today: int
+    limit_today: int | None
+    used_month: int
+    limit_month: int | None
+    resets_at: int
+    exempt: bool
+
+
 AgentEvent = Annotated[
     ThinkingEvent
     | TokenEvent
@@ -91,7 +123,12 @@ AgentEvent = Annotated[
     | QuestionEvent
     | FinalEvent
     | UsageEvent
-    | ErrorEvent,
+    | ErrorEvent
+    | UserMessageEvent
+    | UserAnswerEvent
+    | TurnInterruptedEvent
+    | CancelledEvent
+    | QuotaEvent,
     Field(discriminator="type"),
 ]
 EVENT_ADAPTER: TypeAdapter[AgentEvent] = TypeAdapter(AgentEvent)

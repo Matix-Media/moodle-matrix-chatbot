@@ -247,7 +247,7 @@ class TestAskUser:
 class TestLimits:
     async def test_step_limit_forces_a_final_answer(self, world: Store) -> None:  # noqa: F811
         def step(messages: list[BaseMessage]) -> AIMessage:
-            if FORCE_ANSWER in str(messages[-1].content):
+            if any(FORCE_ANSWER in str(m.content) for m in messages):
                 return AIMessage(content="Bisher gefunden: nichts.")
             return call("current_datetime", {}, f"c{len(messages)}")
 
@@ -259,8 +259,48 @@ class TestLimits:
         assert isinstance(final, FinalEvent) and final.forced
         assert final.text == "Bisher gefunden: nichts."
 
+    async def test_step_limit_counts_model_calls(self, world: Store) -> None:  # noqa: F811
+        def step(messages: list[BaseMessage]) -> AIMessage:
+            if any(FORCE_ANSWER in str(m.content) for m in messages):
+                return AIMessage(content="fertig")
+            return call("current_datetime", {}, f"c{len(messages)}")
+
+        model = ScriptedModel(script=[step] * 10)
+        await collect(
+            runner(model, steps=3).run(ctx(world), thread_id="t", turn_id="u", message="x")
+        )
+        assert len(model.seen) == 4  # three steps with tools, then one forced answer
+
+    async def test_budget_wrap_up(self, world: Store) -> None:  # noqa: F811
+        spent = {"now": False}
+
+        def step(messages: list[BaseMessage]) -> AIMessage:
+            if any(FORCE_ANSWER in str(m.content) for m in messages):
+                return AIMessage(content="Kurzfassung.")
+            spent["now"] = True  # the first call used up the budget
+            return call("current_datetime", {}, "c1")
+
+        model = ScriptedModel(script=[step] * 5)
+        events = await collect(
+            runner(model).run(
+                ctx(world),
+                thread_id="t",
+                turn_id="u",
+                message="x",
+                budget_spent=lambda: spent["now"],
+            )
+        )
+        final = events[-1]
+        assert isinstance(final, FinalEvent) and final.forced and final.text == "Kurzfassung."
+        assert len(model.seen) == 2
+
     async def test_empty_forced_answer_gets_a_fallback(self, world: Store) -> None:  # noqa: F811
-        model = ScriptedModel(script=[lambda m: call("current_datetime", {}, f"c{len(m)}")] * 10)
+        def step(messages: list[BaseMessage]) -> AIMessage:
+            if any(FORCE_ANSWER in str(m.content) for m in messages):
+                return AIMessage(content="")
+            return call("current_datetime", {}, f"c{len(messages)}")
+
+        model = ScriptedModel(script=[step] * 10)
         events = await collect(
             runner(model, steps=1).run(ctx(world), thread_id="t", turn_id="u", message="loop")
         )

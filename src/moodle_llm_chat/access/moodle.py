@@ -10,7 +10,7 @@ hidden or restricted a minute ago is not read. Decisions are cached briefly per
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import httpx
@@ -50,7 +50,7 @@ class MoodleAccessClient:
         self._failures: dict[str, int] = {}
         self._open_until: dict[str, float] = {}
 
-    async def check(self, site: Site, user_id: int, cmids: Collection[int]) -> set[int]:
+    async def check(self, site: Site, user_id: int, cmids: Iterable[int]) -> set[int]:
         """The subset of ``cmids`` the user may see right now."""
         wanted = set(cmids)
         if not wanted:

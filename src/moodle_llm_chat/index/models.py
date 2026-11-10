@@ -184,3 +184,21 @@ class Job(BaseModel):
     attempts: int
     next_attempt_at: int
     last_error: str | None
+
+
+class Conversation(BaseModel):
+    id: str
+    site_id: str
+    user_id: int
+    course_id: int | None
+    title: str
+    created_at: int
+    updated_at: int
+
+
+class Turn(BaseModel):
+    turn_id: str
+    conversation_id: str
+    state: str
+    created_at: int
+    finished_at: int | None

@@ -116,6 +116,8 @@ class Pipeline:
         external_fetch: ExternalFetch | None = None,
         embed_batch: int = 64,
         clock: Callable[[], float] = time.time,
+        ingest_gate: Callable[[str], bool] | None = None,
+        ingest_meter: Callable[[str, int], None] | None = None,
     ) -> None:
         self.store = store
         self.embedder = embedder
@@ -142,6 +144,8 @@ class Pipeline:
         self._embed_failing = False
         self._poisoned: dict[int, int] = {}
         self._embedding_paused = False
+        self._ingest_gate = ingest_gate
+        self._ingest_meter = ingest_meter
 
     # ------------------------------------------------------------------ #
     # Inputs
@@ -166,6 +170,15 @@ class Pipeline:
         for doc_id in self.store.documents_with_blob(site_id, sha256):
             self.store.enqueue_job(site_id, doc_id, "extract", now=self._now())
         self._wake["extract"].set()
+
+    def ingest_budget_changed(self) -> None:
+        """Re-evaluate per-site ingest budgets (e.g. a ceiling was raised or a day began)."""
+        self._wake["embed"].set()
+
+    def _gated_sites(self) -> list[str]:
+        if self._ingest_gate is None:
+            return []
+        return [s for s in self.store.sites_with_pending_vectors() if not self._ingest_gate(s)]
 
     def pause_embedding(self, paused: bool) -> None:
         """Used by ingest quotas: keep chunks pending instead of spending tokens."""
@@ -429,7 +442,9 @@ class Pipeline:
                 []
                 if self._embedding_paused
                 else self.store.chunks_without_vectors(
-                    limit=self._embed_batch, exclude_ids=self._poisoned_ids()
+                    limit=self._embed_batch,
+                    exclude_ids=self._poisoned_ids(),
+                    exclude_sites=self._gated_sites(),
                 )
             )
             if not batch:
@@ -457,6 +472,9 @@ class Pipeline:
                 except Exception:  # chunk replaced while we were waiting on the provider
                     continue
                 self._poisoned.pop(chunk.chunk_id, None)
+                if self._ingest_meter is not None:
+                    # Providers rarely report embedding usage: estimate ~4 chars/token.
+                    self._ingest_meter(chunk.site_id, max(1, len(chunk.text) // 4))
             if stored == 0:
                 # The provider is down or rejecting everything: back off, keep the work.
                 self._embed_failing = True

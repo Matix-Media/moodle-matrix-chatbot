@@ -10,6 +10,7 @@ import pytest
 from factories import doc, file_doc, read_disk
 
 from moodle_llm_chat.crypto.keys import KeyRing
+from moodle_llm_chat.index.db import DatabaseKeyError
 from moodle_llm_chat.index.models import ChunkIn, CourseIn, SegmentIn
 from moodle_llm_chat.index.store import Store, StoreError, SyncStateError
 
@@ -340,3 +341,40 @@ class TestOrphanCleanup:
         store.put_blob(io.BytesIO(data), expected_sha256=sha)
         store.tombstone_documents(SITE, ["2:1:a"])
         assert store.delete_orphan_blobs() == []
+
+
+class TestMaintenance:
+    def test_reset_extraction_all_and_failed_only(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:1:a"), doc("2:2:b")])
+        store.record_extraction(SITE, "2:1:a", extract_version=1)
+        store.record_extraction(SITE, "2:2:b", extract_version=1, skip_reason="fetch: 503")
+        assert store.reset_extraction(only_skipped=True) == 1
+        assert store.document(SITE, "2:2:b").needs_extraction
+        assert not store.document(SITE, "2:1:a").needs_extraction
+        assert store.reset_extraction() == 1  # b is already pending; a gets reset
+
+    def test_reembed_after_dimension_change(self, tmp_path: Path, ring: KeyRing) -> None:
+        with Store(tmp_path / "x.db", ring, embed_dim=3) as s:
+            s.upsert_documents(SITE, [doc()])
+            (cid,) = s.replace_content(SITE, "2:10:intro", [], [ChunkIn(ordinal=0, text="t")])
+            s.set_embedding(cid, [1.0, 0.0, 0.0])
+            s.cache_embedding("h" * 64, "k", [1.0, 0.0, 0.0])
+        with Store(tmp_path / "x.db", ring, embed_dim=5, reset_embeddings=True) as s:
+            assert s.pending_vector_count() == 1
+            assert s.cached_embedding("h" * 64, "k") is None
+        with Store(tmp_path / "x.db", ring, embed_dim=5) as s:
+            assert s.embed_dim == 5
+
+    def test_rotate_master_key(self, tmp_path: Path, ring: KeyRing) -> None:
+        import os
+
+        new = KeyRing(os.urandom(32))
+        with Store(tmp_path / "x.db", ring, embed_dim=3) as s:
+            secret = s.add_site(SITE, name="A", url="https://moodle.a.test")
+            s.upsert_documents(SITE, [doc()])
+            assert s.rotate_master_key(new) > 0
+        with Store(tmp_path / "x.db", new, embed_dim=3) as s:
+            assert s.authenticate_site(secret) is not None
+            assert s.document(SITE, "2:10:intro").text == "Willkommen im Kurs Netzwerke."
+        with pytest.raises(DatabaseKeyError), Store(tmp_path / "x.db", ring, embed_dim=3):
+            pass

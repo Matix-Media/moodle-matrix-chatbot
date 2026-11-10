@@ -373,3 +373,37 @@ class TestIsolationAndRecovery:
         status = p.status()
         assert status["stages"]["extract"]["queued"] == 1
         assert "pending_vectors" in status
+
+
+class TestIngestBudget:
+    async def test_gated_site_is_not_embedded_and_others_are(
+        self, store: Store, http: httpx.AsyncClient
+    ) -> None:
+        store.upsert_documents(S, [doc("2:1:a")])
+        store.upsert_documents("site-b", [doc("2:1:a")])
+        allowed = {S: False, "site-b": True}
+        metered: dict[str, int] = {}
+
+        p = await running(
+            make(
+                store,
+                http,
+                ingest_gate=lambda site: allowed[site],
+                ingest_meter=lambda site, n: metered.__setitem__(site, metered.get(site, 0) + n),
+            )
+        )
+        p.documents_changed(S, ["2:1:a"], bulk=False)
+        p.documents_changed("site-b", ["2:1:a"], bulk=False)
+        await p.idle(timeout=5, include_embeddings=False)
+        for _ in range(200):
+            if "site-b" in metered:
+                break
+            await asyncio.sleep(0.01)
+        assert store.pending_vector_count() == 1  # site-a's chunk waits
+        assert metered.get("site-b", 0) > 0 and S not in metered
+        allowed[S] = True
+        p.ingest_budget_changed()
+        await p.idle(timeout=5)
+        await p.stop()
+        assert store.pending_vector_count() == 0
+        assert metered[S] > 0

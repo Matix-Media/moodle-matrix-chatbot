@@ -19,6 +19,7 @@ from typing import Any
 
 import structlog
 from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, ModelRequest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -49,6 +50,7 @@ from moodle_llm_chat.config import ShowThinking
 
 log = structlog.get_logger(__name__)
 
+EMPTY_FALLBACK = "Dazu konnte ich leider keine Antwort formulieren."
 STEP_LIMIT_FALLBACK = (
     "Ich konnte die Frage mit der verfügbaren Anzahl an Arbeitsschritten nicht "
     "abschließend beantworten. Formuliere sie bitte genauer oder frag nach einem Teil davon."
@@ -74,6 +76,29 @@ def _usage(message: AIMessage) -> UsageEvent | None:
     )
 
 
+class _WrapUp(AgentMiddleware):
+    """Ends a turn gracefully: after ``max_steps`` model calls, or once the token
+    budget is spent, the next model call gets no tools and an instruction to answer
+    with what it has. History stays valid (no dangling tool calls)."""
+
+    def __init__(self, max_steps: int, budget_spent: Callable[[], bool] | None) -> None:
+        super().__init__()
+        self.max_steps = max_steps
+        self.budget_spent = budget_spent
+        self.calls = 0
+        self.forced = False
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Any) -> Any:
+        self.calls += 1
+        if self.calls > self.max_steps or (self.budget_spent is not None and self.budget_spent()):
+            self.forced = True
+            base = request.system_message.content if request.system_message else ""
+            request = request.override(
+                tools=[], system_message=SystemMessage(content=f"{base}\n\n{FORCE_ANSWER}")
+            )
+        return await handler(request)
+
+
 class AgentRunner:
     def __init__(
         self,
@@ -92,17 +117,21 @@ class AgentRunner:
         self.show_thinking = show_thinking
         self._estimate = estimate_tokens
 
-    def _graph(self, ctx: RunContext) -> Any:
+    def _graph(self, ctx: RunContext, wrap_up: _WrapUp) -> Any:
         return create_agent(
             self.model,
             self.registry.build(ctx),
             system_prompt=system_prompt(ctx.user, ctx.tree, ctx.now()),
             checkpointer=self.checkpointer,
+            middleware=[wrap_up],
         )
 
     def _config(self, thread_id: str) -> dict[str, Any]:
-        # Each step is a model call plus a tool call; +1 for the final answer.
-        return {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * self.max_steps + 1}
+        # The wrap-up middleware ends turns; the recursion limit is only a backstop.
+        return {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": 2 * self.max_steps + 6,
+        }
 
     async def run(
         self,
@@ -112,17 +141,30 @@ class AgentRunner:
         turn_id: str,
         message: str | None = None,
         resume: dict[str, Any] | None = None,
+        continue_turn: bool = False,
+        budget_spent: Callable[[], bool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """Run (or resume) a turn. ``resume`` maps interrupt ids to responses."""
-        if (message is None) == (resume is None):
-            raise ValueError("pass exactly one of message or resume")
-        graph = self._graph(ctx)
+        """Run, resume or continue a turn.
+
+        Exactly one of: ``message`` (a new user message), ``resume`` (interrupt id →
+        response, after a :class:`QuestionEvent`), or ``continue_turn`` (pick up an
+        interrupted turn from its last checkpoint after a restart).
+
+        ``budget_spent`` is polled before every model call; once it returns True the
+        turn is wrapped up with one final, tool-less answer.
+        """
+        if sum((message is not None, resume is not None, continue_turn)) != 1:
+            raise ValueError("pass exactly one of message, resume or continue_turn")
+        wrap_up = _WrapUp(self.max_steps, budget_spent)
+        graph = self._graph(ctx, wrap_up)
         config = self._config(thread_id)
-        payload: Any = (
-            {"messages": [HumanMessage(content=message)]}
-            if message is not None
-            else Command(resume=resume)
-        )
+        payload: Any
+        if message is not None:
+            payload = {"messages": [HumanMessage(content=message)]}
+        elif resume is not None:
+            payload = Command(resume=resume)
+        else:
+            payload = None  # continue from the last checkpoint
         interrupted = False
         thinking_announced: set[str] = set()
         try:
@@ -159,8 +201,13 @@ class AgentRunner:
         if final is None:
             yield ErrorEvent(turn_id=turn_id, code="no_answer", message="Keine Antwort erzeugt.")
             return
-        text = message_text(final)
-        yield FinalEvent(turn_id=turn_id, text=text, citations=ctx.citations.cited_in(text))
+        text = message_text(final) or (STEP_LIMIT_FALLBACK if wrap_up.forced else EMPTY_FALLBACK)
+        yield FinalEvent(
+            turn_id=turn_id,
+            text=text,
+            citations=ctx.citations.cited_in(text),
+            forced=wrap_up.forced,
+        )
 
     # ------------------------------------------------------------------ #
 

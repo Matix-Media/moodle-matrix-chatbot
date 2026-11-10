@@ -45,6 +45,7 @@ from moodle_llm_chat.index.db import open_encrypted
 from moodle_llm_chat.index.models import (
     Chunk,
     ChunkIn,
+    Conversation,
     Course,
     CourseIn,
     Document,
@@ -55,6 +56,7 @@ from moodle_llm_chat.index.models import (
     SegmentIn,
     Site,
     SyncResult,
+    Turn,
 )
 
 log = structlog.get_logger(__name__)
@@ -165,6 +167,52 @@ CREATE TABLE IF NOT EXISTS jobs (
     UNIQUE (site_id, doc_id, stage)
 );
 CREATE INDEX IF NOT EXISTS jobs_due ON jobs(stage, state, priority, next_attempt_at);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY, site_id TEXT NOT NULL, user_id INTEGER NOT NULL,
+    course_id INTEGER, sealed_title BLOB, sealed_citations BLOB,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS conversations_owner ON conversations(site_id, user_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS turns (
+    turn_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    client_msg_id TEXT, state TEXT NOT NULL,
+    created_at INTEGER NOT NULL, finished_at INTEGER,
+    UNIQUE (conversation_id, client_msg_id)
+);
+CREATE INDEX IF NOT EXISTS turns_state ON turns(state);
+
+CREATE TABLE IF NOT EXISTS turn_events (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL, turn_id TEXT NOT NULL, sealed BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS ckpt_storage (
+    thread_id TEXT NOT NULL, ns TEXT NOT NULL, checkpoint_id TEXT NOT NULL,
+    sealed BLOB NOT NULL, PRIMARY KEY (thread_id, ns, checkpoint_id)
+);
+CREATE TABLE IF NOT EXISTS ckpt_writes (
+    thread_id TEXT NOT NULL, ns TEXT NOT NULL, checkpoint_id TEXT NOT NULL,
+    task_id TEXT NOT NULL, idx INTEGER NOT NULL, sealed BLOB NOT NULL,
+    PRIMARY KEY (thread_id, ns, checkpoint_id, task_id, idx)
+);
+CREATE TABLE IF NOT EXISTS ckpt_blobs (
+    thread_id TEXT NOT NULL, ns TEXT NOT NULL, channel TEXT NOT NULL, version TEXT NOT NULL,
+    sealed BLOB NOT NULL, PRIMARY KEY (thread_id, ns, channel, version)
+);
+
+CREATE TABLE IF NOT EXISTS usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL, user_id INTEGER, conversation_id TEXT, turn_id TEXT,
+    purpose TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+    reasoning_tokens INTEGER NOT NULL, estimated INTEGER NOT NULL, ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_site_ts ON usage(site_id, purpose, ts);
+CREATE INDEX IF NOT EXISTS usage_user_ts ON usage(site_id, user_id, ts);
 
 CREATE TABLE IF NOT EXISTS used_jtis (
     site_id TEXT NOT NULL, jti TEXT NOT NULL, expires_at INTEGER NOT NULL,
@@ -283,8 +331,10 @@ class Store:
         *,
         embed_dim: int,
         blobs_dir: Path | None = None,
+        reset_embeddings: bool = False,
     ) -> None:
         self.path = Path(path)
+        self._reset_embeddings = reset_embeddings
         self.ring = ring
         self.embed_dim = embed_dim
         self.blobs_dir = blobs_dir or self.path.parent / "blobs"
@@ -319,7 +369,10 @@ class Store:
                     f"{SCHEMA_VERSION}. Upgrade rather than risk corrupting the index."
                 )
             stored_dim = meta.get("embed_dim")
-            if stored_dim is not None and int(stored_dim) != self.embed_dim:
+            if self._reset_embeddings:
+                con.execute("DELETE FROM chunk_vectors")
+                con.execute("DELETE FROM embedding_cache")
+            elif stored_dim is not None and int(stored_dim) != self.embed_dim:
                 raise StoreError(
                     f"the index was built with embedding dimension {stored_dim}, but "
                     f"{self.embed_dim} is configured. Run `moodle-llm-chat reembed` after "
@@ -1242,13 +1295,20 @@ class Store:
         return [r[0] for r in rows]
 
     def chunks_without_vectors(
-        self, *, limit: int, exclude_ids: Collection[int] = ()
+        self,
+        *,
+        limit: int,
+        exclude_ids: Collection[int] = (),
+        exclude_sites: Collection[str] = (),
     ) -> list[Chunk]:
         sql = (
             "SELECT c.* FROM chunks c LEFT JOIN chunk_vectors v ON v.chunk_id = c.chunk_id "
             "WHERE v.chunk_id IS NULL"
         )
         params: list[Any] = []
+        if exclude_sites:
+            sql += f" AND c.site_id NOT IN ({_marks(exclude_sites)})"
+            params += list(exclude_sites)
         if exclude_ids:
             sql += f" AND c.chunk_id NOT IN ({_marks(exclude_ids)})"
             params += list(exclude_ids)
@@ -1256,6 +1316,15 @@ class Store:
             sql + " ORDER BY c.chunk_id LIMIT ?", [*params, limit]
         ).fetchall()
         return [self._to_chunk(r) for r in rows]
+
+    def sites_with_pending_vectors(self) -> list[str]:
+        return [
+            r[0]
+            for r in self.connection.execute(
+                "SELECT DISTINCT c.site_id FROM chunks c LEFT JOIN chunk_vectors v "
+                "ON v.chunk_id = c.chunk_id WHERE v.chunk_id IS NULL"
+            )
+        ]
 
     def pending_vector_count(self) -> int:
         return int(
@@ -1273,6 +1342,46 @@ class Store:
                 "INSERT OR REPLACE INTO chunk_vectors (chunk_id, embedding) VALUES (?,?)",
                 (chunk_id, _pack(vector)),
             )
+
+    def reset_extraction(self, *, only_skipped: bool = False) -> int:
+        """Mark documents for re-processing; returns how many changed."""
+        sql = (
+            "UPDATE documents SET extract_version=NULL, skip_reason=NULL "
+            "WHERE tombstoned_at IS NULL AND extract_version IS NOT NULL"
+        )
+        if only_skipped:
+            sql += " AND skip_reason IS NOT NULL"
+        with self.connection as con:
+            n = con.execute(sql).rowcount
+        return int(n or 0)
+
+    def rotate_master_key(self, new_ring: KeyRing) -> int:
+        """Re-wrap every data key under ``new_ring`` and re-key the database file.
+
+        Payloads are not re-encrypted: their data keys do not change. Returns the
+        number of re-wrapped keys. The old master key no longer opens the store.
+        """
+        count = new_ring.rewrap_all(self, previous=self.ring)
+        self.connection.execute(f'PRAGMA rekey = "{new_ring.sqlcipher_pragma_value()}"')
+        self.ring = new_ring
+        self._lookup_key = new_ring.derive("lookup")
+        self._rehash_lookups()
+        return count
+
+    def _rehash_lookups(self) -> None:
+        """Keyed lookups derive from the master key, so they are recomputed on rotation."""
+        con = self.connection
+        with con:
+            for row in con.execute("SELECT site_id FROM sites").fetchall():
+                current = self.site_secret(row[0])
+                con.execute(
+                    "UPDATE sites SET secret_lookup=?, prev_secret_lookup=NULL, "
+                    "sealed_prev_secret=NULL, prev_valid_until=NULL WHERE site_id=?",
+                    (self._lookup(current), row[0]),
+                )
+            # Caches are cheap to rebuild and keyed by the old lookup key.
+            con.execute("DELETE FROM embedding_cache")
+            con.execute("DELETE FROM ocr_cache")
 
     def clear_embeddings(self) -> int:
         with self.connection as con:
@@ -1471,6 +1580,344 @@ class Store:
             next_attempt_at=row["next_attempt_at"],
             last_error=row["last_error"],
         )
+
+    # ------------------------------------------------------------------ #
+    # Conversations (sealed with the owner's chat key)
+    # ------------------------------------------------------------------ #
+
+    def chat_dek(self, site_id: str, user_id: int) -> bytes:
+        return self.ring.dek(self, Scope.CHAT, f"{site_id}:{user_id}")
+
+    def create_conversation(
+        self,
+        site_id: str,
+        user_id: int,
+        *,
+        course_id: int | None = None,
+        now: int | None = None,
+    ) -> str:
+        conv_id = secrets.token_urlsafe(12)
+        stamp = _now(now)
+        with self.connection as con:
+            con.execute(
+                "INSERT INTO conversations (id, site_id, user_id, course_id, created_at, "
+                "updated_at) VALUES (?,?,?,?,?,?)",
+                (conv_id, site_id, user_id, course_id, stamp, stamp),
+            )
+        return conv_id
+
+    def _conversation_row(self, site_id: str, user_id: int, conv_id: str) -> Any:
+        row = self.connection.execute(
+            "SELECT * FROM conversations WHERE id=? AND site_id=? AND user_id=? "
+            "AND archived_at IS NULL",
+            (conv_id, site_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise StoreError("no such conversation")
+        return row
+
+    def _to_conversation(self, row: Any) -> Conversation:
+        title = ""
+        if row["sealed_title"] is not None:
+            title = open_box(
+                self.chat_dek(row["site_id"], row["user_id"]),
+                bytes(row["sealed_title"]),
+                aad=aad("conversations", row["id"], "title"),
+            )
+        return Conversation(
+            id=row["id"],
+            site_id=row["site_id"],
+            user_id=row["user_id"],
+            course_id=row["course_id"],
+            title=title,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def conversation(self, site_id: str, user_id: int, conv_id: str) -> Conversation:
+        return self._to_conversation(self._conversation_row(site_id, user_id, conv_id))
+
+    def conversations(self, site_id: str, user_id: int, *, limit: int = 100) -> list[Conversation]:
+        rows = self.connection.execute(
+            "SELECT * FROM conversations WHERE site_id=? AND user_id=? AND archived_at IS NULL "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+            (site_id, user_id, limit),
+        ).fetchall()
+        return [self._to_conversation(r) for r in rows]
+
+    def set_conversation_title(self, site_id: str, user_id: int, conv_id: str, title: str) -> None:
+        self._conversation_row(site_id, user_id, conv_id)
+        sealed = seal(
+            self.chat_dek(site_id, user_id), title[:200], aad=aad("conversations", conv_id, "title")
+        )
+        with self.connection as con:
+            con.execute("UPDATE conversations SET sealed_title=? WHERE id=?", (sealed, conv_id))
+
+    def archive_conversation(
+        self, site_id: str, user_id: int, conv_id: str, *, now: int | None = None
+    ) -> None:
+        self._conversation_row(site_id, user_id, conv_id)
+        with self.connection as con:
+            con.execute("UPDATE conversations SET archived_at=? WHERE id=?", (_now(now), conv_id))
+
+    def save_citations(
+        self, site_id: str, user_id: int, conv_id: str, refs: list[dict[str, Any]]
+    ) -> None:
+        self._conversation_row(site_id, user_id, conv_id)
+        sealed = self._seal_json(
+            self.chat_dek(site_id, user_id), refs, bound_to=aad("conversations", conv_id, "cites")
+        )
+        with self.connection as con:
+            con.execute("UPDATE conversations SET sealed_citations=? WHERE id=?", (sealed, conv_id))
+
+    def citations(self, site_id: str, user_id: int, conv_id: str) -> list[dict[str, Any]]:
+        row = self._conversation_row(site_id, user_id, conv_id)
+        if row["sealed_citations"] is None:
+            return []
+        refs: list[dict[str, Any]] = self._open_json(
+            self.chat_dek(site_id, user_id),
+            row["sealed_citations"],
+            bound_to=aad("conversations", conv_id, "cites"),
+        )
+        return refs
+
+    def append_event(
+        self,
+        site_id: str,
+        user_id: int,
+        conv_id: str,
+        turn_id: str,
+        event: dict[str, Any],
+        *,
+        now: int | None = None,
+    ) -> int:
+        """Persist an event; returns its per-conversation sequence number."""
+        stamp = _now(now)
+        self._conversation_row(site_id, user_id, conv_id)
+        con = self.connection
+        with con:
+            seq = int(
+                con.execute(
+                    "SELECT coalesce(max(seq), 0) + 1 FROM turn_events WHERE conversation_id=?",
+                    (conv_id,),
+                ).fetchone()[0]
+            )
+            payload = dict(event, seq=seq)
+            con.execute(
+                "INSERT INTO turn_events (conversation_id, seq, turn_id, sealed, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    conv_id,
+                    seq,
+                    turn_id,
+                    self._seal_json(
+                        self.chat_dek(site_id, user_id),
+                        payload,
+                        bound_to=aad("turn_events", conv_id, seq),
+                    ),
+                    stamp,
+                ),
+            )
+            con.execute("UPDATE conversations SET updated_at=? WHERE id=?", (stamp, conv_id))
+        return seq
+
+    def events(
+        self, site_id: str, user_id: int, conv_id: str, *, after_seq: int = 0
+    ) -> list[tuple[int, dict[str, Any]]]:
+        self._conversation_row(site_id, user_id, conv_id)
+        dek = self.chat_dek(site_id, user_id)
+        rows = self.connection.execute(
+            "SELECT seq, sealed FROM turn_events WHERE conversation_id=? AND seq>? ORDER BY seq",
+            (conv_id, after_seq),
+        ).fetchall()
+        return [
+            (
+                r["seq"],
+                self._open_json(dek, r["sealed"], bound_to=aad("turn_events", conv_id, r["seq"])),
+            )
+            for r in rows
+        ]
+
+    def start_turn(
+        self,
+        site_id: str,
+        user_id: int,
+        conv_id: str,
+        turn_id: str,
+        *,
+        client_msg_id: str | None = None,
+        now: int | None = None,
+    ) -> None:
+        self._conversation_row(site_id, user_id, conv_id)
+        with self.connection as con:
+            con.execute(
+                "INSERT INTO turns (turn_id, conversation_id, client_msg_id, state, created_at) "
+                "VALUES (?,?,?,'running',?)",
+                (turn_id, conv_id, client_msg_id, _now(now)),
+            )
+
+    def turn_for_client_message(self, conv_id: str, client_msg_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT turn_id FROM turns WHERE conversation_id=? AND client_msg_id=?",
+            (conv_id, client_msg_id),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def running_turn(self, conv_id: str) -> str | None:
+        """The turn that blocks a new one: running, or waiting for the user's answer."""
+        row = self.connection.execute(
+            "SELECT turn_id FROM turns WHERE conversation_id=? AND state IN ('running','waiting') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (conv_id,),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def turn(self, conv_id: str, turn_id: str) -> Turn:
+        row = self.connection.execute(
+            "SELECT * FROM turns WHERE turn_id=? AND conversation_id=?", (turn_id, conv_id)
+        ).fetchone()
+        if row is None:
+            raise StoreError("no such turn")
+        return Turn(
+            turn_id=row["turn_id"],
+            conversation_id=row["conversation_id"],
+            state=row["state"],
+            created_at=row["created_at"],
+            finished_at=row["finished_at"],
+        )
+
+    def set_turn_state(self, turn_id: str, state: str, *, now: int | None = None) -> None:
+        finished = _now(now) if state in ("done", "failed", "cancelled", "interrupted") else None
+        with self.connection as con:
+            con.execute(
+                "UPDATE turns SET state=?, finished_at=? WHERE turn_id=?",
+                (state, finished, turn_id),
+            )
+
+    def interrupt_running_turns(self) -> list[tuple[str, int, str, str]]:
+        """Crash recovery: turns that were running when the process died."""
+        rows = self.connection.execute(
+            "SELECT t.turn_id, c.id, c.site_id, c.user_id FROM turns t "
+            "JOIN conversations c ON c.id = t.conversation_id WHERE t.state='running'"
+        ).fetchall()
+        for r in rows:
+            self.set_turn_state(r["turn_id"], "interrupted")
+        return [(r["site_id"], r["user_id"], r["id"], r["turn_id"]) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Usage metering and quota settings
+    # ------------------------------------------------------------------ #
+
+    def record_usage(
+        self,
+        site_id: str,
+        *,
+        user_id: int | None,
+        conversation_id: str | None,
+        turn_id: str | None,
+        purpose: str,
+        input_tokens: int,
+        output_tokens: int,
+        reasoning_tokens: int,
+        estimated: bool,
+        ts: int,
+    ) -> None:
+        with self.connection as con:
+            con.execute(
+                "INSERT INTO usage (site_id, user_id, conversation_id, turn_id, purpose, "
+                "input_tokens, output_tokens, reasoning_tokens, estimated, ts) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    site_id,
+                    user_id,
+                    conversation_id,
+                    turn_id,
+                    purpose,
+                    input_tokens,
+                    output_tokens,
+                    reasoning_tokens,
+                    int(estimated),
+                    ts,
+                ),
+            )
+
+    def usage_rows(
+        self,
+        site_id: str,
+        *,
+        since: int,
+        until: int,
+        purposes: Collection[str],
+        user_id: int | None = None,
+    ) -> list[Any]:
+        sql = (
+            "SELECT user_id, input_tokens, output_tokens, reasoning_tokens FROM usage "
+            f"WHERE site_id=? AND ts>=? AND ts<? AND purpose IN ({_marks(purposes)})"
+        )
+        params: list[Any] = [site_id, since, until, *purposes]
+        if user_id is not None:
+            sql += " AND user_id=?"
+            params.append(user_id)
+        return list(self.connection.execute(sql, params).fetchall())
+
+    def _site_json(self, site_id: str, column: str) -> dict[str, Any]:
+        row = self._site_row(site_id)
+        raw = row[column]
+        if not raw:
+            return {}
+        value: dict[str, Any] = self._open_json(
+            self._site_dek(site_id), raw, bound_to=aad("sites", site_id, column)
+        )
+        return value
+
+    def _set_site_json(self, site_id: str, column: str, value: dict[str, Any]) -> None:
+        self._site_row(site_id)
+        sealed = self._seal_json(
+            self._site_dek(site_id), value, bound_to=aad("sites", site_id, column)
+        )
+        with self.connection as con:
+            con.execute(f"UPDATE sites SET {column}=? WHERE site_id=?", (sealed, site_id))
+
+    def site_policy(self, site_id: str) -> dict[str, Any]:
+        return self._site_json(site_id, "policy")
+
+    def set_site_policy(self, site_id: str, policy: dict[str, Any]) -> None:
+        self._set_site_json(site_id, "policy", policy)
+
+    def site_ceilings(self, site_id: str) -> dict[str, Any]:
+        return self._site_json(site_id, "ceilings")
+
+    def set_site_ceilings(self, site_id: str, ceilings: dict[str, Any]) -> None:
+        self._set_site_json(site_id, "ceilings", ceilings)
+
+    # ------------------------------------------------------------------ #
+    # LangGraph checkpoint rows (sealed by agent.checkpoint)
+    # ------------------------------------------------------------------ #
+
+    def ckpt_rows(self, thread_id: str) -> tuple[list[Any], list[Any], list[Any]]:
+        con = self.connection
+        return (
+            con.execute("SELECT * FROM ckpt_storage WHERE thread_id=?", (thread_id,)).fetchall(),
+            con.execute("SELECT * FROM ckpt_writes WHERE thread_id=?", (thread_id,)).fetchall(),
+            con.execute("SELECT * FROM ckpt_blobs WHERE thread_id=?", (thread_id,)).fetchall(),
+        )
+
+    def ckpt_put(
+        self,
+        *,
+        storage: Sequence[tuple[str, str, str, bytes]] = (),
+        writes: Sequence[tuple[str, str, str, str, int, bytes]] = (),
+        blobs: Sequence[tuple[str, str, str, str, bytes]] = (),
+    ) -> None:
+        with self.connection as con:
+            con.executemany("INSERT OR REPLACE INTO ckpt_storage VALUES (?,?,?,?)", storage)
+            con.executemany("INSERT OR REPLACE INTO ckpt_writes VALUES (?,?,?,?,?,?)", writes)
+            con.executemany("INSERT OR REPLACE INTO ckpt_blobs VALUES (?,?,?,?,?)", blobs)
+
+    def ckpt_delete(self, thread_id: str) -> None:
+        with self.connection as con:
+            for table in ("ckpt_storage", "ckpt_writes", "ckpt_blobs"):
+                con.execute(f"DELETE FROM {table} WHERE thread_id=?", (thread_id,))
 
     # ------------------------------------------------------------------ #
     # Status

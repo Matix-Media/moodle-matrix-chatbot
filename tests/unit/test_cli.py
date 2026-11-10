@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -91,3 +93,48 @@ class TestSiteCommands:
         result = runner.invoke(app, ["site", "list"])
         assert result.exit_code == 1
         assert "master key" in result.output
+
+
+class TestOperatorCommands:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import base64
+        import os
+
+        monkeypatch.setenv("MLC_SECURITY__MASTER_KEY", base64.b64encode(os.urandom(32)).decode())
+        monkeypatch.setenv("MLC_EMBEDDING__DIM", "3")
+        runner.invoke(app, ["site", "add", "s", "--name", "S", "--url", "https://m.test"])
+
+    def test_site_limits_and_usage(self) -> None:
+        result = runner.invoke(app, ["site", "limits", "s", "--tokens-per-day", "5000"])
+        assert result.exit_code == 0, result.output
+        assert "5000" in result.output
+        usage = runner.invoke(app, ["usage", "--site", "s", "--period", "month"])
+        assert usage.exit_code == 0, usage.output
+
+    def test_status(self) -> None:
+        result = runner.invoke(app, ["status", "--site", "s"])
+        assert result.exit_code == 0, result.output
+        assert "documents" in result.output
+
+    def test_reprocess(self) -> None:
+        result = runner.invoke(app, ["reprocess", "--skipped-only"])
+        assert result.exit_code == 0, result.output
+        assert "0 documents" in result.output
+
+    def test_reembed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLC_EMBEDDING__DIM", "8")
+        assert runner.invoke(app, ["site", "list"]).exit_code == 1  # dimension changed
+        result = runner.invoke(app, ["reembed", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert runner.invoke(app, ["site", "list"]).exit_code == 0
+
+    def test_rotate_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        new_key = tmp_path / "new.key"
+        assert runner.invoke(app, ["gen-master-key", "--out", str(new_key)]).exit_code == 0
+        assert oct(new_key.stat().st_mode & 0o777) == "0o600"
+        result = runner.invoke(app, ["rotate-keys", "--new-master-key-file", str(new_key)])
+        assert result.exit_code == 0, result.output
+        monkeypatch.delenv("MLC_SECURITY__MASTER_KEY")
+        monkeypatch.setenv("MLC_SECURITY__MASTER_KEY_FILE", str(new_key))
+        assert "s\t" in runner.invoke(app, ["site", "list"]).output
