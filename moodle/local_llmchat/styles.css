@@ -605,3 +605,9 @@
         margin-bottom: .375rem;
     }
 }
+
+.local-llmchat-path a {
+    text-decoration: underline;
+    text-decoration-color: var(--llmchat-accent-line);
+    text-underline-offset: .15em;
+}

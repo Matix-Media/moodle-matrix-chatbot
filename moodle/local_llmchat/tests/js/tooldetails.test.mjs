@@ -16,7 +16,7 @@
 // Tests for local_llmchat/tooldetails. Run: node --test moodle/local_llmchat/tests/js/
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {describeCall, describeResult, STRING_KEYS} from '../../amd/src/tooldetails.js';
+import {describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
 
 // Strings as the page would load them (keys from STRING_KEYS → lang/en).
 const STR = {
@@ -47,7 +47,7 @@ test('known arguments get friendly labels in a stable order', () => {
 test('a path becomes breadcrumb segments with the last one marked', () => {
     const [param] = describeCall({path: '/LF7/Subnetting-Projekt/Material Projekt/Bewertungsraster.txt'}, opts).params;
     assert.equal(param.ispath, true);
-    assert.deepEqual(param.segments, [
+    assert.deepEqual(param.segments.map(({name, last}) => ({name, last})), [
         {name: 'LF7', last: false}, {name: 'Subnetting-Projekt', last: false},
         {name: 'Material Projekt', last: false}, {name: 'Bewertungsraster.txt', last: true},
     ]);
@@ -122,4 +122,31 @@ test('link attachments are listed like citations, other kinds are ignored', () =
 test('an empty result has nothing to show', () => {
     const result = describeResult({}, {strings: {page: 'Page'}, locale: 'de-DE'});
     assert.equal(result.hasresult, false);
+});
+
+test('a call lists the paths it shows so the page can link them', () => {
+    const call = describeCall({path: '/LF7/Subnetting-Projekt/Material Projekt', query: 'x'}, opts);
+    assert.deepEqual(call.paths, ['/LF7/Subnetting-Projekt/Material Projekt']);
+    const [, param] = call.params;
+    assert.equal(param.path, '/LF7/Subnetting-Projekt/Material Projekt');
+    assert.ok(param.segments.every((s) => s.hasurl === false && s.url === ''));
+    assert.deepEqual(describeCall({path: '/'}, opts).paths, []);
+    assert.deepEqual(describeCall({query: 'x'}, opts).paths, []);
+});
+
+test('resolved links are attached per segment; empty urls stay plain text', () => {
+    const segments = describeCall({path: '/LF7/Geheim/Lösung'}, opts).params[0].segments;
+    const linked = linkSegments(segments, [
+        {name: 'LF7', url: 'https://m/course/view.php?id=2'}, {name: 'Geheim', url: ''}, {name: 'Lösung', url: ''},
+    ]);
+    assert.deepEqual(linked.map((s) => [s.name, s.hasurl, s.url, s.last]), [
+        ['LF7', true, 'https://m/course/view.php?id=2', false], ['Geheim', false, '', false], ['Lösung', false, '', true],
+    ]);
+});
+
+test('links are only taken from http(s) urls and never from a mismatched answer', () => {
+    const segments = describeCall({path: '/LF7/A'}, opts).params[0].segments;
+    const linked = linkSegments(segments, [{name: 'LF7', url: 'javascript:alert(1)'}, {name: 'B', url: 'https://m/x'}]);
+    assert.deepEqual(linked.map((s) => s.hasurl), [false, false]);
+    assert.deepEqual(linkSegments(segments, undefined).map((s) => s.hasurl), [false, false]);
 });

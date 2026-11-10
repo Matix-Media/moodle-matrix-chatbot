@@ -122,7 +122,8 @@ const describeParam = (key, value, strings, locale) => {
         if (!names.length) {
             return row('text', {text: strings['toolval:root']});
         }
-        return row('path', {segments: names.map((name, i) => ({name, last: i === names.length - 1}))});
+        return row('path', {path: text,
+            segments: names.map((name, i) => ({name, last: i === names.length - 1, url: '', hasurl: false}))});
     }
     if (kind === 'code') {
         return row('code', {text});
@@ -143,7 +144,7 @@ const describeParam = (key, value, strings, locale) => {
  * @param {Object} options
  * @param {Object} options.strings loaded language strings
  * @param {string} options.locale BCP 47 locale for numbers and dates
- * @returns {Object} {hasparams, params, raw}
+ * @returns {Object} {hasparams, params, raw, paths} - paths: the full paths shown, for linking
  */
 export const describeCall = (args, {strings, locale}) => {
     const input = args && typeof args === 'object' ? args : {};
@@ -152,7 +153,8 @@ export const describeCall = (args, {strings, locale}) => {
         ...Object.keys(input).filter((key) => !KNOWN_ARGS.includes(key)),
     ];
     const params = keys.map((key) => describeParam(key, input[key], strings, locale)).filter(Boolean);
-    return {hasparams: params.length > 0, params, raw: JSON.stringify(input, null, 2)};
+    const paths = [...new Set(params.filter((p) => p.ispath).map((p) => p.path))];
+    return {hasparams: params.length > 0, params, raw: JSON.stringify(input, null, 2), paths};
 };
 
 /**
@@ -180,3 +182,19 @@ export const describeResult = (frame, {strings}) => {
     const summary = frame.summary ? String(frame.summary) : '';
     return {hasresult: Boolean(summary) || citations.length > 0, summary, hascitations: citations.length > 0, citations};
 };
+
+/**
+ * Attach the links the page resolved for a path (local_llmchat_resolve_paths) to its breadcrumb
+ * segments. A segment is linked only when the answer has an http(s) url for a segment of the
+ * same name at the same position; anything else stays plain text.
+ *
+ * @param {Array} segments [{name, last}]
+ * @param {Array|undefined} resolved [{name, url}] from the server, url '' when not accessible
+ * @returns {Array} [{name, last, url, hasurl}]
+ */
+export const linkSegments = (segments, resolved) => segments.map((segment, i) => {
+    const answer = Array.isArray(resolved) ? resolved[i] : null;
+    const same = answer && String(answer.name).toLowerCase() === String(segment.name).toLowerCase();
+    const url = same && /^https?:\/\//i.test(String(answer.url || '')) ? String(answer.url) : '';
+    return Object.assign({}, segment, {url, hasurl: url !== ''});
+});

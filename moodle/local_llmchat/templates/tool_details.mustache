@@ -27,7 +27,7 @@
         "hasparams": true,
         "params": [
             {"label": "Search for", "istext": true, "text": "Abgabe Subnetting-Projekt"},
-            {"label": "Location", "ispath": true, "segments": [{"name": "LF7", "last": false}, {"name": "Material Projekt", "last": true}]},
+            {"label": "Location", "ispath": true, "path": "/LF7/Material Projekt", "segments": [{"name": "LF7", "last": false, "hasurl": false}, {"name": "Material Projekt", "last": true, "hasurl": false}]},
             {"label": "Courses", "ischips": true, "chips": [{"text": "529"}, {"text": "530"}]},
             {"label": "Pattern", "iscode": true, "text": "\\b/2[4-9]"}
         ],
@@ -45,9 +45,7 @@
                 {{#istext}}{{text}}{{/istext}}
                 {{#iscode}}<code>{{text}}</code>{{/iscode}}
                 {{#ispath}}
-                <ol class="breadcrumb local-llmchat-path">
-                    {{#segments}}<li class="breadcrumb-item{{#last}} active{{/last}}">{{name}}</li>{{/segments}}
-                </ol>
+                <div data-region="path" data-path="{{path}}">{{> local_llmchat/path_breadcrumb }}</div>
                 {{/ispath}}
                 {{#ischips}}
                 <span class="d-inline-flex flex-wrap local-llmchat-chips">{{#chips}}<span class="badge badge-pill rounded-pill bg-light text-dark border">{{text}}</span>{{/chips}}</span>

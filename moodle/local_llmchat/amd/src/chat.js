@@ -35,7 +35,7 @@ import ReconnectingSocket from 'local_llmchat/socket';
 import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
 import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
-import {describeCall, describeResult, STRING_KEYS as TOOL_STRING_KEYS} from 'local_llmchat/tooldetails';
+import {describeCall, describeResult, linkSegments, STRING_KEYS as TOOL_STRING_KEYS} from 'local_llmchat/tooldetails';
 
 const STRING_KEYS = [
     'cancelled', 'copied', 'error', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
@@ -168,6 +168,7 @@ class ChatController {
         this.offlineNotice = null;
         this.wasOffline = false;
         this.stickToBottom = true;
+        this.pathCache = new Map();
 
         this.socket = new ReconnectingSocket({
             credentials: async() => {
@@ -721,12 +722,63 @@ class ChatController {
             label = `${meta.label || frame.name}${firstArg ? ` „${firstArg}“` : ''}`;
         }
         const [icon, component] = toolIcon(frame.name, meta);
-        const node = await renderNode('tool_call', Object.assign({uniqid: uniqid('llmchat-tool'), icon, component, label},
-            describeCall(args, this.displayOptions())));
+        const call = describeCall(args, this.displayOptions());
+        const node = await renderNode('tool_call', Object.assign({uniqid: uniqid('llmchat-tool'), icon, component, label}, call));
         turn.tools.classList.remove('d-none');
         turn.tools.appendChild(node);
         turn.cards.set(frame.id, node);
         this.contentArrived(turn);
+        // Not awaited: links arrive when ready and never hold up the stream.
+        this.linkPaths(node, call);
+    }
+
+    /**
+     * Turn the path breadcrumbs of a tool card into links to what the user can open.
+     *
+     * @param {HTMLElement} card
+     * @param {Object} call result of describeCall()
+     */
+    async linkPaths(card, call) {
+        if (!call.paths.length) {
+            return;
+        }
+        try {
+            const resolved = await this.resolvePaths(call.paths);
+            for (const param of call.params.filter((p) => p.ispath)) {
+                const answer = resolved.get(param.path);
+                const holder = [...card.querySelectorAll('[data-region="path"]')].find((h) => h.dataset.path === param.path);
+                if (holder && answer && answer.some((s) => s.url)) {
+                    await renderInto(holder, 'local_llmchat/path_breadcrumb', {segments: linkSegments(param.segments, answer)});
+                }
+            }
+        } catch (e) {
+            Log.debug(e);
+        }
+    }
+
+    /**
+     * Links for paths, resolved on the server for the current user; cached per page.
+     *
+     * @param {string[]} paths
+     * @returns {Promise<Map>} path => [{name, url}]
+     */
+    async resolvePaths(paths) {
+        const missing = paths.filter((p) => !this.pathCache.has(p));
+        if (missing.length) {
+            const request = Ajax.call([{methodname: 'local_llmchat_resolve_paths', args: {paths: missing}}])[0];
+            missing.forEach((path) => {
+                this.pathCache.set(path, request.then((result) => (result.find((r) => r.path === path) || {}).segments)
+                    .catch(() => {
+                        this.pathCache.delete(path);
+                        return undefined;
+                    }));
+            });
+        }
+        const out = new Map();
+        for (const path of paths) {
+            out.set(path, await this.pathCache.get(path));
+        }
+        return out;
     }
 
     /**
@@ -1041,6 +1093,8 @@ class ChatController {
         this.enqueue(async() => {
             this.conversationId = id;
             this.turn = null;
+            // Access may have changed since the links were resolved.
+            this.pathCache.clear();
             this.regions.messages.replaceChildren(this.regions.empty);
             this.regions.empty.classList.toggle('d-none', Boolean(id));
             this.clearStatusErrors();

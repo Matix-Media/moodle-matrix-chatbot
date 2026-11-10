@@ -39,9 +39,9 @@ require_once($CFG->dirroot . '/local/llmchat/lib.php');
 final class chat_page_test extends \advanced_testcase {
     /** Templates the chat client renders, each needs a working example context. */
     private const TEMPLATES = [
-        'chat_page', 'message_user', 'message_assistant', 'thinking', 'tool_call', 'answer_footer', 'notice',
-        'tool_details', 'tool_result', 'conversation_list', 'interaction_question', 'interaction_confirm', 'interaction_choice',
-        'interaction_freetext', 'interaction_answered', 'quota_panel', 'status_page', 'quota_report',
+        'chat_page', 'message_user', 'message_assistant', 'thinking', 'tool_call', 'tool_details', 'tool_result',
+        'path_breadcrumb', 'answer_footer', 'notice', 'conversation_list', 'interaction_question', 'interaction_confirm',
+        'interaction_choice', 'interaction_freetext', 'interaction_answered', 'quota_panel', 'status_page', 'quota_report',
     ];
 
     /**
