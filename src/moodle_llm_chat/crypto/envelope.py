@@ -60,6 +60,48 @@ def _frame_aad(base: bytes, index: int, final: bool) -> bytes:
     return base + struct.pack(">QB", index, 1 if final else 0)
 
 
+class StreamEncryptor:
+    """Incremental blob encryption: feed bytes as they arrive, then :meth:`close`.
+
+    A frame is only emitted once more data is known to follow it, so the last frame
+    can be flagged final without a look-ahead read.
+    """
+
+    def __init__(
+        self, dest: BinaryIO, dek: bytes, *, aad: bytes, frame_size: int = DEFAULT_FRAME
+    ) -> None:
+        self._dest = dest
+        self._gcm = AESGCM(dek)
+        self._aad = aad
+        self._frame = frame_size
+        self._buf = bytearray()
+        self._index = 0
+        self.plaintext_bytes = 0
+        self._closed = False
+        dest.write(BLOB_MAGIC)
+
+    def write(self, data: bytes) -> None:
+        if self._closed:
+            raise ValueError("encryptor is closed")
+        self._buf += data
+        self.plaintext_bytes += len(data)
+        while len(self._buf) > self._frame:
+            self._emit(bytes(self._buf[: self._frame]), final=False)
+            del self._buf[: self._frame]
+
+    def close(self) -> None:
+        if not self._closed:
+            self._emit(bytes(self._buf), final=True)
+            self._buf.clear()
+            self._closed = True
+
+    def _emit(self, chunk: bytes, *, final: bool) -> None:
+        nonce = os.urandom(NONCE_BYTES)
+        sealed = self._gcm.encrypt(nonce, chunk, _frame_aad(self._aad, self._index, final))
+        self._dest.write(struct.pack(">I", len(sealed)) + nonce + sealed)
+        self._index += 1
+
+
 def encrypt_stream(
     source: BinaryIO,
     dest: BinaryIO,
@@ -69,22 +111,11 @@ def encrypt_stream(
     frame_size: int = DEFAULT_FRAME,
 ) -> int:
     """Encrypt ``source`` into ``dest`` frame by frame; returns plaintext bytes read."""
-    gcm = AESGCM(dek)
-    dest.write(BLOB_MAGIC)
-    total = 0
-    index = 0
-    current = source.read(frame_size)
-    while True:
-        following = source.read(frame_size) if current else b""
-        final = not following
-        nonce = os.urandom(NONCE_BYTES)
-        sealed = gcm.encrypt(nonce, current, _frame_aad(aad, index, final))
-        dest.write(struct.pack(">I", len(sealed)) + nonce + sealed)
-        total += len(current)
-        if final:
-            return total
-        current = following
-        index += 1
+    enc = StreamEncryptor(dest, dek, aad=aad, frame_size=frame_size)
+    while chunk := source.read(frame_size):
+        enc.write(chunk)
+    enc.close()
+    return enc.plaintext_bytes
 
 
 def decrypt_stream(source: BinaryIO, dest: BinaryIO, dek: bytes, *, aad: bytes) -> int:
