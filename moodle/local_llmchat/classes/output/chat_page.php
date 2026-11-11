@@ -32,42 +32,59 @@ namespace local_llmchat\output;
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class chat_page implements \renderable, \templatable {
+    /** @var string Root element id of the full chat page. */
+    public const ROOT_ID = 'local-llmchat-root';
+
     /**
      * Constructor.
      *
      * @param int $courseid 0 for the global chat
      * @param string $coursename
+     * @param string $conversationid conversation to open on load ('' = a new one)
+     * @param bool $compact the single-conversation view of the chat block (no conversation list)
+     * @param string $rootid root element id, unique on the page
      */
     public function __construct(
         /** @var int */
         private int $courseid,
         /** @var string */
         private string $coursename = '',
+        /** @var string */
+        private string $conversationid = '',
+        /** @var bool */
+        private bool $compact = false,
+        /** @var string */
+        private string $rootid = self::ROOT_ID,
     ) {
     }
 
     /**
-     * The current user's picture as theme HTML (no link, decorative).
+     * The full chat page for this scope, optionally with a conversation open.
      *
-     * @param \renderer_base $output
-     * @return string
+     * @param string $conversationid
+     * @return \moodle_url
      */
-    private function user_picture(\renderer_base $output): string {
-        global $USER;
-        return $output->user_picture($USER, ['size' => 35, 'link' => false, 'visibletoscreenreaders' => false]);
+    public function full_url(string $conversationid = ''): \moodle_url {
+        $params = [];
+        if ($this->courseid > 0) {
+            $params['courseid'] = $this->courseid;
+        }
+        if ($conversationid !== '') {
+            $params['conversation'] = $conversationid;
+        }
+        return new \moodle_url('/local/llmchat/chat.php', $params);
     }
 
     /**
-     * Config for local_llmchat/chat init(). Contains no profile data beyond the avatar markup.
+     * Config for local_llmchat/chat init(). Contains no profile data.
      *
      * @return array
      */
     public function js_config(): array {
-        global $OUTPUT;
         return [
             'courseid' => $this->courseid,
-            'rootid' => 'local-llmchat-root',
-            'userpicture' => $this->user_picture($OUTPUT),
+            'rootid' => $this->rootid,
+            'conversationid' => $this->conversationid,
         ];
     }
 
@@ -84,15 +101,16 @@ class chat_page implements \renderable, \templatable {
             $suggestions[] = ['text' => get_string($key, 'local_llmchat')];
         }
         return [
-            'rootid' => 'local-llmchat-root',
+            'rootid' => $this->rootid,
             'courseid' => $this->courseid,
+            'compact' => $this->compact,
+            'fullurl' => $this->full_url($this->conversationid)->out(false),
             'coursename' => $this->coursename,
             'courseurl' => $hascourse ? (new \moodle_url('/course/view.php', ['id' => $this->courseid]))->out(false) : '',
             'hascourse' => $hascourse,
             'intro' => $hascourse ? get_string('emptyintrocourse', 'local_llmchat', $this->coursename)
                 : get_string('emptyintro', 'local_llmchat'),
             'suggestions' => $suggestions,
-            'userpicture' => $this->user_picture($output),
         ];
     }
 }

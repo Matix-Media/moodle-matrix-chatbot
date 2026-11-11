@@ -76,6 +76,7 @@ services:
       # version.php bump needs "restart moodle" (the start runs Moodle's upgrade).
       # Needs Docker to see this checkout (Colima/Docker Desktop file sharing).
       - ../moodle/local_llmchat:/var/www/html/local/llmchat:ro
+      - ../moodle/block_llmchat:/var/www/html/blocks/llmchat:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -15,6 +15,7 @@ RUN sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
 
 # Baked in for the first install; docker-compose.yml bind-mounts the live plugin over it.
 COPY moodle/local_llmchat /var/www/html/local/llmchat
+COPY moodle/block_llmchat /var/www/html/blocks/llmchat
 COPY dev/moodle/config.php /var/www/html/config.php
 COPY tests/e2e/moodle/seed.php /opt/e2e/seed.php
 COPY tests/e2e/moodle/entrypoint.sh /docker-entrypoint.d/50-e2e-setup.sh

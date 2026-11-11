@@ -6,6 +6,88 @@
     --llmchat-border: var(--bs-border-color, #dee2e6);
     --llmchat-muted: var(--bs-secondary-color, #6a737b);
     --llmchat-column: 48rem;
+    /* Answers keep this much room on the right, the user's bubbles at least as much on the left,
+       so the side tells who wrote a message. */
+    --llmchat-inset: 3rem;
+    /* Narrow-layout rules follow the chat's own width (a phone, or the block in a side drawer). */
+    container: llmchat / inline-size;
+}
+
+/* Full page on Boost-based themes: the chat fills the window below the page header from the first
+   paint, so nothing jumps once the page has loaded. Boost's page wrapper is a window-high flex
+   column; every wrapper down to the chat card shares out that height instead of growing with
+   the conversation (which scrolls inside the card); #page-content is as specific as Boost's
+   sticky-footer rule, which would let it grow. Other themes are fitted by the JS. */
+body.local-llmchat-fullpage #page.drawers,
+body.local-llmchat-fullpage #page.drawers .main-inner,
+body.local-llmchat-fullpage #page-wrapper #page #page-content,
+body.local-llmchat-fullpage #region-main-box,
+body.local-llmchat-fullpage #region-main,
+body.local-llmchat-fullpage #region-main > [role="main"],
+body.local-llmchat-fullpage .local-llmchat,
+body.local-llmchat-fullpage .local-llmchat-maincol,
+body.local-llmchat-fullpage .local-llmchat-sidecol {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-height: 0;
+}
+
+body.local-llmchat-fullpage .local-llmchat-layout,
+body.local-llmchat-fullpage .local-llmchat-panel {
+    flex: 1 1 0;
+}
+
+body.local-llmchat-fullpage .local-llmchat-layout {
+    min-height: 0;
+}
+
+body.local-llmchat-fullpage .local-llmchat-sidecol {
+    flex: 0 0 auto;
+}
+
+body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
+    display: none;
+}
+
+/* Below md, Boost shows its footer in the page instead of the floating button: the chat keeps the
+   window (navbar 60px and the main area's .5rem + 3rem margins aside), the footer follows below. */
+@media (max-width: 767.98px) {
+    body.local-llmchat-fullpage #page.drawers {
+        flex: 1 0 auto;
+    }
+
+    body.local-llmchat-fullpage #page.drawers .main-inner {
+        flex: 0 0 auto;
+        height: calc(100vh - 60px - 3.5rem);
+        height: calc(100dvh - 60px - 3.5rem);
+    }
+}
+
+/* Boost's drawer buttons float over the bottom of the page edges here, where the composer is:
+   keep the input clear of the side that has one (course index left, blocks right). */
+@media (max-width: 767.98px) {
+    body.local-llmchat-fullpage:has(.drawer-left-toggle) .local-llmchat-composer {
+        padding-left: 1.25rem;
+    }
+
+    body.local-llmchat-fullpage:has(.drawer-right-toggle) .local-llmchat-composer {
+        padding-right: 1.25rem;
+    }
+}
+
+/* The page header (title, course tabs) lines up with the chat below it, as wide as the content. */
+@media (min-width: 768px) {
+    body.local-llmchat-fullpage.mediumwidth .header-maxwidth {
+        max-width: 1120px;
+    }
+}
+
+@media (min-width: 992px) {
+    /* The list column is always shown here (d-lg-block) and as tall as the chat. */
+    body.local-llmchat-fullpage .local-llmchat-sidecol {
+        flex: 0 0 16.5rem;
+    }
 }
 
 .local-llmchat .local-llmchat-minw0 {
@@ -40,7 +122,7 @@
     }
 }
 
-/* Cards: the sidebar column and the chat panel are sized by JS to fill the window. */
+/* Cards: the sidebar column and the chat panel fill the page (see above). */
 .local-llmchat-panel,
 .local-llmchat-sidebar {
     display: flex;
@@ -172,8 +254,12 @@
     margin: 0 auto 1.5rem;
 }
 
+.local-llmchat-msg-assistant {
+    padding-right: var(--llmchat-inset);
+}
+
 .local-llmchat-usercol {
-    max-width: 80%;
+    max-width: min(80%, calc(100% - var(--llmchat-inset)));
 }
 
 .local-llmchat-bubble {
@@ -199,13 +285,6 @@
     overflow: hidden;
 }
 
-.local-llmchat-avatar img.userpicture,
-.local-llmchat-avatar .userinitials {
-    width: 100%;
-    height: 100%;
-    margin: 0;
-}
-
 .local-llmchat-avatar-assistant {
     background: var(--llmchat-accent-soft);
     color: var(--llmchat-accent);
@@ -227,9 +306,9 @@
     font-size: 1.75rem;
 }
 
-/* The assistant's first line sits level with the middle of its avatar. */
+/* No author icons: the bubble on the right is the user's, the full-width text is the answer
+   (the "You:" / "Assistant:" labels stay for screen readers). */
 .local-llmchat-body {
-    padding-top: .375rem;
     overflow-wrap: anywhere;
 }
 
@@ -493,13 +572,36 @@
     height: 2rem;
 }
 
-@media (max-width: 575.98px) {
+@container llmchat (max-width: 36rem) {
     .local-llmchat-messages {
         padding: 1rem .75rem;
     }
 
+    .local-llmchat-msg {
+        margin-bottom: 1rem;
+    }
+
+    .local-llmchat-messages {
+        --llmchat-inset: 2rem;
+    }
+
     .local-llmchat-usercol {
-        max-width: 88%;
+        max-width: calc(100% - var(--llmchat-inset));
+    }
+
+    .local-llmchat-inputwrap {
+        padding-left: .75rem;
+    }
+
+    .local-llmchat-hint {
+        padding-left: calc(.75rem + 1px);
+    }
+
+    /* The placeholder stays on the one line the empty field has. */
+    .local-llmchat .local-llmchat-input::placeholder {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
     }
 
     /* Compact empty state so the suggestions fit above the composer. */
@@ -595,7 +697,7 @@
     display: none;
 }
 
-@media (max-width: 575.98px) {
+@container llmchat (max-width: 36rem) {
     .local-llmchat-params {
         grid-template-columns: 1fr;
         gap: 0;
@@ -610,4 +712,51 @@
     text-decoration: underline;
     text-decoration-color: var(--llmchat-accent-line);
     text-underline-offset: .15em;
+}
+
+/* The chat block: the current conversation only, at a fixed height in the block drawer or column.
+   The block is the card, so the chat inside drops its own card frame. */
+.local-llmchat-compact .local-llmchat-panel {
+    height: min(36rem, calc(100vh - 14rem));
+    min-height: 22rem;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.local-llmchat-compact .local-llmchat-panel > .card-header {
+    min-height: 0;
+    padding: 0 0 .5rem;
+    border-bottom: 1px solid var(--llmchat-border);
+}
+
+.local-llmchat-compact .local-llmchat-panel > .card-footer {
+    padding: .5rem 0 0;
+    border-top: 0;
+}
+
+.local-llmchat-compact .local-llmchat-quota {
+    margin-left: .25rem;
+}
+
+.local-llmchat-compact .local-llmchat-ring {
+    width: 2rem;
+    height: 2rem;
+}
+
+.local-llmchat-compact .local-llmchat-header .local-llmchat-iconbtn {
+    color: inherit;
+}
+
+.local-llmchat-compact .local-llmchat-status .alert {
+    margin-top: .5rem;
+    border-radius: .375rem;
+}
+
+.local-llmchat.local-llmchat-compact .local-llmchat-messages {
+    padding: .75rem .125rem;
+}
+
+.local-llmchat-compact .local-llmchat-toolsummary {
+    display: none;
 }
