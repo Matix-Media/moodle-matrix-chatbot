@@ -62,6 +62,7 @@ $string['newconversation'] = 'New conversation';
 $string['noconversations'] = 'No conversations yet';
 $string['notaccessible'] = 'not accessible';
 $string['offline'] = 'Offline — reconnecting…';
+$string['openfullchat'] = 'Open in full view with all conversations';
 $string['other'] = 'Other answer';
 $string['placeholder'] = 'Ask a question about your courses…';
 $string['pluginname'] = 'Course chat (LLM)';

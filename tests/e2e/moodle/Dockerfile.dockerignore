@@ -1,3 +1,4 @@
 **
 !moodle/local_llmchat/**
+!moodle/block_llmchat/**
 !tests/e2e/moodle/**

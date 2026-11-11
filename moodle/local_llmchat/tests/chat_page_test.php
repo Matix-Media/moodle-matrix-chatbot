@@ -57,21 +57,29 @@ final class chat_page_test extends \advanced_testcase {
         return [$page->export_for_template($PAGE->get_renderer('core')), $page->js_config()];
     }
 
-    public function test_context_has_user_avatar_and_suggestions(): void {
+    public function test_context_has_suggestions(): void {
         $this->resetAfterTest();
-        $user = $this->getDataGenerator()->create_user(['firstname' => 'Lena', 'lastname' => 'Schmidt']);
-        $this->setUser($user);
-        [$ctx, $config] = $this->export();
+        $this->setUser($this->getDataGenerator()->create_user());
+        [$ctx] = $this->export();
         $this->assertFalse($ctx['hascourse']);
-        // Core renders the picture, or the initials when the user has none.
-        $this->assertMatchesRegularExpression('/<img|userinitials/', $ctx['userpicture']);
-        $this->assertStringContainsString('LS', $ctx['userpicture']);
-        $this->assertSame($ctx['userpicture'], $config['userpicture']);
+        $this->assertArrayNotHasKey('userpicture', $ctx, 'no author icons');
         $this->assertCount(3, $ctx['suggestions']);
         foreach ($ctx['suggestions'] as $suggestion) {
             $this->assertNotEmpty($suggestion['text']);
         }
         $this->assertSame(get_string('emptyintro', 'local_llmchat'), $ctx['intro']);
+    }
+
+    public function test_messages_have_no_author_icons(): void {
+        global $PAGE;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $output = $PAGE->get_renderer('core');
+        foreach (['message_user' => ['text' => 'Hallo'], 'message_assistant' => []] as $name => $context) {
+            $html = $output->render_from_template("local_llmchat/$name", $context);
+            $this->assertStringNotContainsString('local-llmchat-avatar', $html, $name);
+            $this->assertStringContainsString('sr-only', $html, "$name: still says who wrote it");
+        }
     }
 
     public function test_course_context_names_the_course(): void {
@@ -91,30 +99,92 @@ final class chat_page_test extends \advanced_testcase {
         $user = $this->getDataGenerator()->create_user(['email' => 'lena@example.org', 'idnumber' => 'S-1']);
         $this->setUser($user);
         [, $config] = $this->export();
-        $this->assertSame(['courseid', 'rootid', 'userpicture'], array_keys($config));
+        $this->assertSame(['courseid', 'rootid', 'conversationid'], array_keys($config));
         $this->assertStringNotContainsString('lena@example.org', json_encode($config));
     }
 
     public function test_icon_map_registers_plugin_icons_and_svg_fallbacks_exist(): void {
         $map = local_llmchat_get_fontawesome_icon_map();
-        foreach (['assistant', 'thinking', 'tool', 'conversation', 'offline', 'send'] as $icon) {
+        foreach (['assistant', 'thinking', 'tool', 'conversation', 'offline', 'send', 'expand'] as $icon) {
             $this->assertArrayHasKey("local_llmchat:$icon", $map);
             $this->assertStringStartsWith('fa-', $map["local_llmchat:$icon"]);
             $this->assertFileExists(__DIR__ . "/../pix/$icon.svg");
         }
     }
 
+    public function test_conversation_to_open_is_passed_to_the_client(): void {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $page = new chat_page(7, 'LF7', 'k3Yb_x-9');
+        $this->assertSame('k3Yb_x-9', $page->js_config()['conversationid']);
+        $this->assertSame('local-llmchat-root', $page->js_config()['rootid']);
+    }
+
+    public function test_full_url_names_the_scope_and_the_conversation(): void {
+        $this->assertSame('/local/llmchat/chat.php', (new chat_page(0))->full_url()->out_as_local_url(false));
+        $this->assertSame('/local/llmchat/chat.php?courseid=7', (new chat_page(7))->full_url()->out_as_local_url(false));
+        $this->assertSame(
+            '/local/llmchat/chat.php?courseid=7&conversation=abc',
+            (new chat_page(7))->full_url('abc')->out_as_local_url(false)
+        );
+    }
+
+    public function test_compact_context_links_the_full_page(): void {
+        global $PAGE;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $page = new chat_page(7, 'LF7', '', true, 'block-llmchat-3');
+        $ctx = $page->export_for_template($PAGE->get_renderer('core'));
+        $config = $page->js_config();
+        $this->assertTrue($ctx['compact']);
+        $this->assertSame('block-llmchat-3', $ctx['rootid']);
+        $this->assertSame('block-llmchat-3', $config['rootid']);
+        $this->assertStringEndsWith('/local/llmchat/chat.php?courseid=7', $ctx['fullurl']);
+    }
+
+    public function test_compact_chat_has_no_list_and_links_the_full_page(): void {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xpath = $this->chat_page_dom(['compact' => true, 'rootid' => 'block-llmchat-3']);
+        $root = $xpath->query('//*[@id="block-llmchat-3"]')->item(0);
+        $this->assertSame('compact', $root->getAttribute('data-mode'));
+        $this->assertSame(0, $xpath->query('//*[@data-region="conversations"]')->length, 'only the current conversation');
+        $this->assertSame(0, $xpath->query('//*[@data-action="toggle"]')->length);
+        $header = $xpath->query('//*[contains(@class, "local-llmchat-header")]')->item(0);
+        $actions = [];
+        foreach ($xpath->query('.//button', $header) as $button) {
+            $actions[] = $button->getAttribute('data-action');
+        }
+        $this->assertSame(['quota-toggle', 'new-conversation'], $actions);
+        $expand = $xpath->query('.//a[@data-region="expand"]', $header)->item(0);
+        $this->assertNotNull($expand, 'a link to the full page');
+        $this->assertSame('https://moodle.example/local/llmchat/chat.php?courseid=2', $expand->getAttribute('href'));
+        $this->assertNotSame('', trim($expand->getAttribute('title')));
+        $this->assertSame(1, $xpath->query('.//*[@data-region="title"]', $header)->length, 'shows the conversation title');
+    }
+
+    public function test_full_chat_has_the_conversation_list(): void {
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xpath = $this->chat_page_dom();
+        $this->assertSame('full', $xpath->query('//*[@data-region="llmchat"]')->item(0)->getAttribute('data-mode'));
+        $this->assertSame(1, $xpath->query('//*[@data-region="conversations"]')->length);
+        $this->assertSame(0, $xpath->query('//*[@data-region="expand"]')->length);
+    }
+
     /**
      * The chat page rendered from its own example context, as a DOM.
      *
+     * @param array $overrides context values to change
      * @return \DOMXPath
      */
-    private function chat_page_dom(): \DOMXPath {
+    private function chat_page_dom(array $overrides = []): \DOMXPath {
         global $PAGE;
         $source = file_get_contents(__DIR__ . '/../templates/chat_page.mustache');
         preg_match_all('/{{!([\s\S]*?)}}/', $source, $blocks);
         preg_match('/Example context \(json\):([\s\S]*)/', $blocks[1][1], $m);
-        $html = $PAGE->get_renderer('core')->render_from_template('local_llmchat/chat_page', json_decode($m[1], true));
+        $context = array_merge(json_decode($m[1], true), $overrides);
+        $html = $PAGE->get_renderer('core')->render_from_template('local_llmchat/chat_page', $context);
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
         $dom->loadHTML('<?xml encoding="utf-8"?>' . $html);

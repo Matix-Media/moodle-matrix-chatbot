@@ -80,6 +80,17 @@ e2e_page($generator, $lf7, 'Musterlösung',
 e2e_page($generator, $pv, 'Altklausur',
     '<p>Prüfungsfragen Zebrafink aus dem Vorjahr.</p>');
 
+// The chat block in LF7, on the course page and its activities (block drawer).
+$lf7context = context_course::instance($lf7->id);
+if (!$DB->record_exists('block_instances', ['blockname' => 'llmchat', 'parentcontextid' => $lf7context->id])) {
+    $generator->create_block('llmchat', [
+        'parentcontextid' => $lf7context->id,
+        'pagetypepattern' => '*',
+        'showinsubcontexts' => 1,
+        'defaultregion' => 'side-pre',
+    ]);
+}
+
 $generator->enrol_user($student->id, $lf7->id, 'student');
 $generator->enrol_user($other->id, $lf7->id, 'student');
 $generator->enrol_user($teacher->id, $lf7->id, 'editingteacher');
@@ -90,6 +101,9 @@ $secret = trim(file_get_contents('/shared/site-secret'));
 set_config('apiurl', getenv('E2E_API_URL') ?: 'http://api:8000', 'local_llmchat');
 \local_llmchat\secret::set($secret);
 set_config('syncenabled', 1, 'local_llmchat');
+
+// No first-visit user tours: their backdrop would sit over the page under test.
+$DB->set_field('tool_usertours_tours', 'enabled', 0);
 
 purge_all_caches();
 cli_writeln('e2e seed done: courses ' . $lf7->id . ',' . $pv->id);

@@ -105,6 +105,26 @@ class Chat:
         earlier submits the form natively (a reload). The server's ``ready`` frame is
         the one reliable "usable now" signal.
         """
+        return self.open_page(f"/local/llmchat/chat.php{query}")
+
+    def open_block(self, course_shortname: str) -> Chat:
+        """Open a course page and its block drawer, and wait until the chat block is ready.
+
+        The block connects only once it is on screen, so the drawer must be opened first.
+        """
+
+        def reveal() -> None:
+            block = self.page.locator(".block_llmchat [data-region=llmchat]")
+            if not block.is_visible():
+                self.page.locator(
+                    "button[data-action=toggle][data-target=theme_boost-drawers-blocks]"
+                ).first.click()
+            expect(block).to_be_visible()
+
+        return self.open_page(f"/course/view.php?name={course_shortname}", reveal)
+
+    def open_page(self, path: str, reveal: Any = None) -> Chat:
+        """Open a Moodle page with a chat on it; ``reveal`` brings the chat on screen."""
         ready = {"seen": False}
 
         def on_websocket(ws: Any) -> None:
@@ -115,7 +135,9 @@ class Chat:
             ws.on("framereceived", on_frame)
 
         self.page.on("websocket", on_websocket)
-        self.page.goto(f"{MOODLE}/local/llmchat/chat.php{query}")
+        self.page.goto(f"{MOODLE}{path}")
+        if reveal is not None:
+            reveal()
         expect(self.page.locator("[data-region=llmchat]")).to_be_visible()
         deadline = time.monotonic() + 30
         while not ready["seen"]:

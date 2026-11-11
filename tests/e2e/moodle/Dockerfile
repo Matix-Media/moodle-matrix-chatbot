@@ -8,6 +8,7 @@ RUN curl -fsSL "https://github.com/moodle/moodle/archive/refs/heads/${MOODLE_BRA
  && mkdir -p /var/moodledata
 
 COPY moodle/local_llmchat /var/www/html/local/llmchat
+COPY moodle/block_llmchat /var/www/html/blocks/llmchat
 COPY tests/e2e/moodle/config.php /var/www/html/config.php
 COPY tests/e2e/moodle/seed.php /opt/e2e/seed.php
 # The base image's entrypoint runs /docker-entrypoint.d/*.sh, then starts Apache.
