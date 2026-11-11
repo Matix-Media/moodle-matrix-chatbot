@@ -76,6 +76,7 @@ services:
       # version.php bump needs "restart moodle" (the start runs Moodle's upgrade).
       # Needs Docker to see this checkout (Colima/Docker Desktop file sharing).
       - ../moodle/local_llmchat:/var/www/html/local/llmchat:ro
+      - ../moodle/block_llmchat:/var/www/html/blocks/llmchat:ro
       # Optional course dataset (see dev/seed/README.md). No manifest.json → not seeded.
       # MLC_DATASET_DIR (shell or dev/.env) picks another one, relative to dev/.
       - ${MLC_DATASET_DIR:-./dataset}:/opt/dataset:ro

@@ -25,6 +25,7 @@
 require(__DIR__ . '/../../config.php');
 
 $courseid = optional_param('courseid', 0, PARAM_INT);
+$conversationid = optional_param('conversation', '', PARAM_ALPHANUMEXT);
 $params = [];
 $coursename = '';
 if ($courseid && $courseid != SITEID) {
@@ -46,12 +47,16 @@ if (isguestuser()) {
 }
 require_capability('local/llmchat:use', $context);
 
+// The conversation parameter only picks what opens first; the page URL stays the scope's.
 $PAGE->set_url(new moodle_url('/local/llmchat/chat.php', $params));
 $PAGE->set_title(get_string('chat', 'local_llmchat'));
 $PAGE->set_heading($coursename !== '' ? $coursename : get_string('chat', 'local_llmchat'));
-$PAGE->add_body_class('local-llmchat');
+// One width for the course and the global chat: Moodle's medium page width (as mod_data uses),
+// instead of 'incourse' going edge to edge and 'standard' capping the content at 830px.
+$PAGE->add_body_class('local-llmchat-fullpage');
+$PAGE->add_body_class('mediumwidth');
 
-$page = new \local_llmchat\output\chat_page($courseid, $coursename);
+$page = new \local_llmchat\output\chat_page($courseid, $coursename, $conversationid);
 
 echo $OUTPUT->header();
 if (!\local_llmchat\api_client::is_configured()) {

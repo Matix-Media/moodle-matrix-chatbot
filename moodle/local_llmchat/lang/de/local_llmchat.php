@@ -62,6 +62,7 @@ $string['newconversation'] = 'Neue Unterhaltung';
 $string['noconversations'] = 'Noch keine Unterhaltungen';
 $string['notaccessible'] = 'nicht zugänglich';
 $string['offline'] = 'Offline – Verbindung wird wiederhergestellt…';
+$string['openfullchat'] = 'In der Vollansicht mit allen Unterhaltungen öffnen';
 $string['other'] = 'Eigene Antwort';
 $string['placeholder'] = 'Stelle eine Frage zu deinen Kursen…';
 $string['pluginname'] = 'Kurs-Chat (LLM)';

@@ -17,12 +17,11 @@
 {{!
     @template local_llmchat/message_user
 
-    One user message: a bubble on the right with the user's avatar.
+    One user message: a bubble on the right.
 
     Example context (json):
     {
-        "text": "Wann ist die Abgabe für das Subnetting-Projekt?",
-        "avatar": "<img src=\"https://moodle.example/pix/u/f2.png\" class=\"userpicture\" alt=\"\">"
+        "text": "Wann ist die Abgabe für das Subnetting-Projekt?"
     }
 }}
 <div class="local-llmchat-msg local-llmchat-msg-user d-flex justify-content-end" data-role="user">
@@ -33,5 +32,4 @@
         </div>
         <div class="small text-muted mt-1" data-region="note"></div>
     </div>
-    <div class="local-llmchat-avatar ms-2 flex-shrink-0" aria-hidden="true">{{{avatar}}}</div>
 </div>

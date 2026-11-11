@@ -17,15 +17,14 @@
 {{!
     @template local_llmchat/message_assistant
 
-    One assistant turn: avatar plus regions the client streams into (thinking, tool cards, text,
+    One assistant turn: the regions the client streams into (thinking, tool cards, text,
     interaction, footer).
 
     Example context (json):
     {}
 }}
-<div class="local-llmchat-msg local-llmchat-msg-assistant d-flex" data-role="assistant">
-    <span class="local-llmchat-avatar local-llmchat-avatar-assistant me-2 flex-shrink-0" aria-hidden="true">{{#pix}} assistant, local_llmchat {{/pix}}</span>
-    <div class="local-llmchat-body flex-grow-1 local-llmchat-minw0" data-region="body">
+<div class="local-llmchat-msg local-llmchat-msg-assistant" data-role="assistant">
+    <div class="local-llmchat-body local-llmchat-minw0" data-region="body">
         <span class="sr-only visually-hidden">{{#str}} assistant, local_llmchat {{/str}}:</span>
         <div data-region="thinking"></div>
         <div class="list-group local-llmchat-tools d-none" data-region="tools"></div>

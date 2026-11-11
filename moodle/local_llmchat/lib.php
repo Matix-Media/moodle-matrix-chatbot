@@ -82,5 +82,6 @@ function local_llmchat_get_fontawesome_icon_map(): array {
         'local_llmchat:conversation' => 'fa-regular fa-comment',
         'local_llmchat:offline' => 'fa-plug-circle-xmark',
         'local_llmchat:send' => 'fa-paper-plane',
+        'local_llmchat:expand' => 'fa-up-right-and-down-left-from-center',
     ];
 }
