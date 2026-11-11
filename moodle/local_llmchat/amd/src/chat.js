@@ -32,6 +32,7 @@ import Log from 'core/log';
 import {getStrings} from 'core/str';
 import {add as addToast} from 'core/toast';
 import ReconnectingSocket from 'local_llmchat/socket';
+import * as frames from 'local_llmchat/frames';
 import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
 import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
@@ -211,7 +212,7 @@ class ChatController {
         input.addEventListener('input', () => this.autosize());
         this.cancelButton.addEventListener('click', () => {
             if (this.conversationId) {
-                this.socket.send({type: 'cancel', 'conversation_id': this.conversationId});
+                this.socket.send(frames.cancel({conversationId: this.conversationId}));
             }
         });
         this.regions.messages.addEventListener('scroll', () => {
@@ -398,8 +399,8 @@ class ChatController {
     handleReady(frame) {
         (frame.tools || []).forEach((tool) => this.tools.set(tool.name, tool));
         if (this.conversationId) {
-            this.socket.send({type: 'resume', 'conversation_id': this.conversationId,
-                'last_seq': this.lastSeq[this.conversationId] || 0});
+            this.socket.send(frames.resume({conversationId: this.conversationId,
+                lastSeq: this.lastSeq[this.conversationId]}));
         }
         if (this.queued) {
             const queued = this.queued;
@@ -447,14 +448,8 @@ class ChatController {
         this.clearStatusErrors();
         try {
             const t = await this.issueToken();
-            const sent = this.socket.send({
-                type: 'send',
-                text,
-                token: t.token,
-                'client_msg_id': clientMsgId,
-                ...(this.conversationId ? {'conversation_id': this.conversationId} : {}),
-                ...(this.courseid ? {'course_id': this.courseid} : {}),
-            });
+            const sent = this.socket.send(frames.send({text, token: t.token, clientMsgId,
+                conversationId: this.conversationId, courseId: this.courseid}));
             if (sent) {
                 this.setRunning(true);
             } else {
@@ -857,8 +852,8 @@ class ChatController {
      */
     async answerInteraction(turn, node, interruptId, response, summary) {
         try {
-            await this.issueToken();
-            this.socket.send({type: 'answer', 'conversation_id': this.conversationId, 'interrupt_id': interruptId, response});
+            const t = await this.issueToken();
+            this.socket.send(frames.answer({conversationId: this.conversationId, interruptId, response, token: t.token}));
             const answered = await renderNode('interaction_answered', {answer: summary});
             answered.dataset.interrupt = interruptId;
             node.replaceWith(answered);
@@ -931,8 +926,9 @@ class ChatController {
             hasaction: true, actionlabel: this.str.resume,
         });
         notice.querySelector('[data-action="notice-action"]').addEventListener('click', async() => {
-            await this.issueToken();
-            if (this.socket.send({type: 'continue', 'conversation_id': this.conversationId, 'turn_id': frame.turn_id})) {
+            const t = await this.issueToken();
+            if (this.socket.send(frames.continueTurn({conversationId: this.conversationId, turnId: frame.turn_id,
+                token: t.token}))) {
                 notice.remove();
                 this.setRunning(true);
                 this.showTyping(turn);
@@ -1128,7 +1124,7 @@ class ChatController {
             this.enqueue(() => {
                 this.setRunning(false);
                 // Anything newer than history (a running turn, a pending question) arrives via resume.
-                this.socket.send({type: 'resume', 'conversation_id': id, 'last_seq': this.lastSeq[id] || 0});
+                this.socket.send(frames.resume({conversationId: id, lastSeq: this.lastSeq[id]}));
                 this.scroll(true);
             });
         });
