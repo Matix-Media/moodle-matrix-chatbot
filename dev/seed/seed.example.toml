@@ -1,0 +1,47 @@
+# Copy next to the data as <dataset>/seed.toml, then rebuild the manifest:
+#   python dev/seed/build_manifest.py <dataset>
+# Every key is optional (the defaults are shown); unknown keys are an error.
+
+# Starts every idnumber ("legacy:2250", "legacy:mbz:…") and names the category's
+# idnumber ("legacy-dataset"). Datasets with different prefixes live side by side.
+prefix = "legacy"
+# Course category for the whole dataset. Default: "Legacy dataset" for the prefix
+# "legacy", otherwise "<prefix> dataset".
+# category = "Legacy dataset"
+
+# Only these legacy course ids (from documents.db). Default: all of them.
+# courses = [2250, 507, 1386]
+
+# Files larger than this many MB are left out (listed as skipped "too large").
+# 0 = no limit.
+max_file_mb = 0
+
+# What each generated course hides from students; teachers see everything.
+#   alternate   a hidden content module, or in every other course a restricted section
+#   hidden      a hidden content module in every course
+#   restricted  a restricted last section where there is more than one section
+#   none        everything visible
+# Backups keep their own visibility and restrictions.
+traps = "alternate"
+
+# Restore the user data inside .mbz backups (accounts, enrolments, forum posts,
+# submissions). Off by default: real backups contain real people.
+restore_users = false
+
+# Who is enrolled where. A [users] table replaces these defaults entirely. pattern
+# repeats over the courses in order (generated courses first, then backups by file
+# name): "1" enrolled, "0" not. Missing users are created with password Test1234!.
+[users.teacher]
+role = "editingteacher"
+pattern = "1"
+firstname = "Tina"
+
+[users.student]
+role = "student"
+pattern = "1110"
+firstname = "Sophie"
+
+[users.student2]
+role = "student"
+pattern = "10"
+firstname = "Bruno"

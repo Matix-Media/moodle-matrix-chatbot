@@ -10,3 +10,5 @@ secrets/
 chunks/
 tests/e2e/artifacts/
 moodle/
+dev/dataset/
+dev/datasets/
