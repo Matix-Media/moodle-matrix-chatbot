@@ -134,6 +134,8 @@ With the default rules the courses land in the *Legacy dataset* category:
 * Every generated course hides one thing from students: a module, or a section that
   stays restricted until 2099. Teachers see both.
 
+`dev/seed/dataset_bundle.py` packs a built dataset into one file that other checkouts
+unpack instead of fetching it again.
 `MLC_DATASET_DIR=./datasets/<name>` (relative to `dev/`) seeds another dataset next to
 the first; give it its own `prefix`. Keep datasets inside the checkout so Docker can see
 them. Seeding is idempotent and only adds.
