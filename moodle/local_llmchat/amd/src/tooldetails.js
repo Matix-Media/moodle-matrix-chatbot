@@ -158,29 +158,213 @@ export const describeCall = (args, {strings, locale}) => {
 };
 
 /**
- * Display data for a tool result: summary plus the sources (citations, link attachments) it found.
+ * The pages of a citation, from `pages` or (conversations saved before it) `page`.
  *
- * @param {Object} frame tool_result{summary, citations?, attachments?}
+ * @param {Object} citation {page?, pages?}
+ * @returns {number[]}
+ */
+export const citationPages = (citation) => {
+    if (Array.isArray(citation.pages) && citation.pages.length) {
+        return citation.pages;
+    }
+    return citation.page ? [citation.page] : [];
+};
+
+/**
+ * Secondary line for a cited source: course and pages, e.g. "LF7 · Page 2, 5".
+ *
+ * @param {Object} citation {course_name?, page?, pages?}
+ * @param {string} pageWord the word for "page"
+ * @returns {string}
+ */
+export const citationMeta = (citation, pageWord) => {
+    const pages = citationPages(citation);
+    const {'course_name': courseName} = citation;
+    return [courseName, pages.length ? `${pageWord} ${pages.join(', ')}` : ''].filter(Boolean).join(' · ');
+};
+
+/** Display-block labels with a translation; others use the label the server sent. */
+const FIELD_KEYS = ['title', 'kind', 'size', 'modified', 'link', 'note', 'date', 'weekday', 'time', 'week', 'timezone',
+    'name', 'lang', 'course', 'courses', 'teaching', 'roles', 'groups'];
+const ENTRY_TYPES = ['folder', 'inline', 'html', 'file', 'external'];
+const NOTICE_CODES = ['no_hits', 'empty', 'no_access', 'no_text', 'no_documents', 'path_not_found',
+    'moodle_unavailable', 'invalid_input', 'access_note'];
+
+/** Strings describeResult needs (component local_llmchat). */
+export const RESULT_STRING_KEYS = [
+    'toolresult:entries', 'toolresult:pages', 'toolresult:chars', 'toolresult:range',
+    ...FIELD_KEYS.map((key) => `toolfield:${key}`),
+    ...ENTRY_TYPES.map((type) => `toolentry:${type}`),
+    ...NOTICE_CODES.map((code) => `toolnotice:${code}`),
+];
+
+/**
+ * Fill {$a} or {$a->name} placeholders.
+ *
+ * @param {string} template
+ * @param {*} a a value, or an object for {$a->name}
+ * @returns {string}
+ */
+const fillAll = (template, a) => String(template || '')
+    .replace(/\{\$a->(\w+)\}/g, (m, key) => String(a && typeof a === 'object' ? a[key] ?? '' : ''))
+    .replace(/\{\$a\}/g, String(a));
+
+/**
+ * An http(s) URL, or '' for anything else (javascript:, data:, relative).
+ *
+ * @param {*} url
+ * @returns {string}
+ */
+const httpUrl = (url) => (/^https?:\/\//i.test(String(url || '')) ? String(url) : '');
+
+/**
+ * Path segments of a course path.
+ *
+ * @param {string} path
+ * @returns {string[]}
+ */
+const segmentsOf = (path) => String(path || '').split('/').map((s) => s.trim()).filter(Boolean);
+
+/**
+ * Epoch seconds or ISO date/date-time in the user's locale ('' when unknown).
+ *
+ * @param {number|string|null} value
+ * @param {Object} strings
+ * @param {string} locale
+ * @returns {string}
+ */
+const formatWhen = (value, strings, locale) => {
+    if (value === null || value === undefined || value === '') {
+        return '';
+    }
+    if (typeof value === 'number') {
+        return new Date(value * 1000).toLocaleDateString(locale);
+    }
+    return formatDate(String(value), strings, locale);
+};
+
+/**
+ * Number in the user's locale.
+ *
+ * @param {number} n
+ * @param {string} locale
+ * @returns {string}
+ */
+const num = (n, locale) => Number(n).toLocaleString(locale);
+
+/**
+ * Template context for one display block, by kind. Unknown kinds are shown generically.
+ *
+ * @param {Object} block
+ * @param {Map} cites citation index => citation
+ * @param {Object} strings
+ * @param {string} locale
+ * @returns {Object}
+ */
+const describeBlock = (block, cites, strings, locale) => {
+    const items = Array.isArray(block.items) ? block.items : [];
+    switch (block.kind) {
+        case 'hits':
+            return {ishits: true, items: items.map((hit) => {
+                const cite = cites.get(Number(hit.cite));
+                const names = segmentsOf(hit.path);
+                const url = httpUrl(cite && cite.url);
+                return {
+                    index: hit.cite ?? '',
+                    title: (cite && cite.title) || names[names.length - 1] || String(hit.path || ''),
+                    url, hasurl: url !== '',
+                    meta: [names.slice(0, -1).join(' › '), hit.page ? `${strings.page} ${hit.page}` : '',
+                        formatWhen(hit.modified, strings, locale)].filter(Boolean).join(' · '),
+                    snippet: String(hit.snippet || ''),
+                };
+            })};
+        case 'entries':
+            return {isentries: true, items: items.map((entry) => {
+                const type = String(entry.type || '');
+                const counted = entry.count !== null && entry.count !== undefined;
+                const size = [
+                    counted ? fillAll(strings['toolresult:entries'], num(entry.count, locale)) : '',
+                    entry.pages ? fillAll(strings['toolresult:pages'], num(entry.pages, locale)) : '',
+                    !entry.pages && entry.chars ? fillAll(strings['toolresult:chars'], num(entry.chars, locale)) : '',
+                ];
+                return {
+                    name: String(entry.name || ''), path: String(entry.path || ''), isfolder: type === 'folder',
+                    detail: String(entry.detail || ''),
+                    meta: [strings[`toolentry:${type}`] || humanise(type), ...size, formatWhen(entry.modified, strings, locale)]
+                        .filter(Boolean).join(' · '),
+                };
+            })};
+        case 'fields':
+            return {isfields: true, items: items.map((field) => {
+                const value = String(field.value ?? '');
+                const url = field.format === 'link' ? httpUrl(value) : '';
+                return {
+                    label: strings[`toolfield:${field.key}`] || String(field.label || humanise(field.key)),
+                    text: field.format === 'date' ? formatWhen(value, strings, locale) : value,
+                    islink: url !== '', url, iscode: field.format === 'code',
+                };
+            })};
+        case 'text': {
+            const cite = cites.get(Number(block.cite));
+            const names = segmentsOf(block.title);
+            const url = httpUrl(cite && cite.url);
+            const ranged = [block.start, block.end, block.total].every((n) => typeof n === 'number');
+            return {
+                istext: true, text: String(block.text || ''), index: block.cite ?? '',
+                title: (cite && cite.title) || names[names.length - 1] || '',
+                url, hasurl: url !== '',
+                range: ranged && block.total > block.end - block.start ? fillAll(strings['toolresult:range'],
+                    {start: num(block.start, locale), end: num(block.end, locale), total: num(block.total, locale)}) : '',
+            };
+        }
+        case 'table':
+            return {
+                istable: true,
+                columns: (block.columns || []).map((c) => ({label: strings[`toolfield:${c.key}`] || String(c.label || c.key)})),
+                rows: (block.rows || []).map((row) => ({cells: (row || []).map((cell) => ({text: String(cell ?? '')}))})),
+            };
+        case 'notice': {
+            const level = ['info', 'warning', 'error'].includes(block.level) ? block.level : 'info';
+            const translated = strings[`toolnotice:${block.code}`];
+            const own = String(block.text || '');
+            return {
+                isnotice: true, level, iserror: level === 'error', iswarning: level === 'warning',
+                text: translated || own, detail: translated && level === 'error' && own !== translated ? own : '',
+            };
+        }
+        default: {
+            const rest = Object.assign({}, block);
+            delete rest.kind;
+            return {isgeneric: true, text: typeof block.text === 'string' ? block.text : JSON.stringify(rest, null, 2)};
+        }
+    }
+};
+
+/**
+ * Display data for a tool result: its display blocks, plus the sources it cited that no block shows.
+ *
+ * @param {Object} frame tool_result{citations?, display?}
  * @param {Object} options
  * @param {Object} options.strings loaded language strings
- * @returns {Object} {hasresult, summary, hascitations, citations}
+ * @param {string} options.locale BCP 47 locale for numbers and dates
+ * @returns {Object} {hasresult, blocks, hascitations, citations, paths} - paths: entry paths, for linking
  */
-export const describeResult = (frame, {strings}) => {
-    const citations = (frame.citations || []).map((c) => {
-        const {'course_name': courseName} = c;
-        return {
-            index: c.index ?? '',
-            title: c.title || c.url || '',
-            meta: [courseName, c.page ? `${strings.page} ${c.page}` : ''].filter(Boolean).join(' · '),
-            url: c.url || '',
-            hasurl: Boolean(c.url),
-        };
-    });
-    (frame.attachments || []).filter((a) => a && a.type === 'link' && a.url).forEach((a) => {
-        citations.push({index: '', title: a.title || a.url, meta: '', url: a.url, hasurl: true});
-    });
-    const summary = frame.summary ? String(frame.summary) : '';
-    return {hasresult: Boolean(summary) || citations.length > 0, summary, hascitations: citations.length > 0, citations};
+export const describeResult = (frame, {strings, locale}) => {
+    const all = frame.citations || [];
+    const cites = new Map(all.map((c) => [Number(c.index), c]));
+    const display = (frame.display || []).filter((b) => b && typeof b === 'object');
+    const blocks = display.map((b) => describeBlock(b, cites, strings, locale));
+    const shown = new Set(display.flatMap((b) => [b.cite, ...(b.items || []).map((i) => i && i.cite)])
+        .filter((n) => n !== null && n !== undefined).map(Number));
+    const citations = all.filter((c) => !shown.has(Number(c.index))).map((c) => ({
+        index: c.index ?? '',
+        title: c.title || c.url || '',
+        meta: citationMeta(c, strings.page),
+        url: c.url || '',
+        hasurl: Boolean(c.url),
+    }));
+    const paths = [...new Set(blocks.filter((b) => b.isentries).flatMap((b) => b.items.map((e) => e.path)).filter(Boolean))];
+    return {hasresult: blocks.length > 0 || citations.length > 0, blocks, hascitations: citations.length > 0, citations, paths};
 };
 
 /**

@@ -103,6 +103,7 @@ class TestToolLoop:
         assert call_event.name == "search_text" and call_event.summary == "„Raum“"
         result = next(e for e in events if isinstance(e, ToolResultEvent))
         assert result.citations[0].path == "/LF7/Woche 2/Plan"
+        assert result.display[0]["kind"] == "hits"
         final = events[-1]
         assert isinstance(final, FinalEvent)
         assert final.text.endswith("[1].")

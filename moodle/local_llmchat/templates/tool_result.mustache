@@ -17,15 +17,24 @@
 {{!
     @template local_llmchat/tool_result
 
-    Result section of an expanded tool card: the tool's summary and the sources it found.
+    Result section of an expanded tool card: the tool's display blocks, rendered by kind
+    (hits, entries, fields, text, table, notice; anything else generically), and the sources
+    it cited that no block shows. Context from local_llmchat/tooldetails::describeResult.
 
     Example context (json):
     {
         "hasresult": true,
-        "summary": "4 Treffer in LF7",
+        "blocks": [
+            {"ishits": true, "items": [{"index": 1, "title": "Plan", "url": "https://moodle.example/mod/page/view.php?id=11", "hasurl": true, "meta": "LF7 › Woche 2 · 09.11.2026", "snippet": "Stundenplan: Raum B204 am Montag."}]},
+            {"isentries": true, "items": [{"name": "Woche 1", "path": "/LF7/Woche 1", "isfolder": true, "detail": "", "meta": "Ordner · 3 Einträge"}]},
+            {"isfields": true, "items": [{"label": "Geändert", "text": "09.11.2026", "islink": false, "url": "", "iscode": false}]},
+            {"istext": true, "index": 1, "title": "Skript", "url": "", "hasurl": false, "range": "Zeichen 0–6000 von 18.000", "text": "[Seite 1] Ein VLAN trennt Netze."},
+            {"istable": true, "columns": [{"label": "Kurs"}, {"label": "Rollen"}], "rows": [{"cells": [{"text": "LF7"}, {"text": "Teilnehmer/in"}]}]},
+            {"isnotice": true, "level": "info", "iserror": false, "iswarning": false, "text": "Keine Treffer.", "detail": ""},
+            {"isgeneric": true, "text": "{\"lat\": 1}"}
+        ],
         "hascitations": true,
         "citations": [
-            {"index": 1, "title": "Abgabe Subnetting-Projekt", "meta": "LF7", "url": "https://moodle.example/mod/assign/view.php?id=3", "hasurl": true},
             {"index": 2, "title": "Bewertungsraster.txt", "meta": "LF7 · Page 2", "url": "", "hasurl": false}
         ]
     }
@@ -33,7 +42,72 @@
 <div class="local-llmchat-toolresult">
     {{#hasresult}}
     <h4 class="local-llmchat-label text-uppercase text-muted mb-1">{{#str}} tool:result, local_llmchat {{/str}}</h4>
-    {{#summary}}<p class="mb-1">{{summary}}</p>{{/summary}}
+    {{#blocks}}
+    <div class="local-llmchat-block">
+        {{#ishits}}
+        <ul class="list-unstyled mb-0 local-llmchat-hits">
+            {{#items}}
+            <li class="d-flex align-items-baseline">
+                {{#index}}<span class="local-llmchat-citenum me-2">{{index}}</span>{{/index}}
+                <div class="local-llmchat-minw0">
+                    <div>{{#hasurl}}<a href="{{url}}" target="_blank" rel="noopener">{{title}}</a>{{/hasurl}}{{^hasurl}}{{title}}{{/hasurl}}
+                        {{#meta}}<span class="text-muted small"> · {{meta}}</span>{{/meta}}</div>
+                    {{#snippet}}<div class="small local-llmchat-snippet">{{snippet}}</div>{{/snippet}}
+                </div>
+            </li>
+            {{/items}}
+        </ul>
+        {{/ishits}}
+        {{#isentries}}
+        <ul class="list-unstyled mb-0 local-llmchat-entries">
+            {{#items}}
+            <li class="d-flex align-items-baseline">
+                <span class="local-llmchat-entryicon text-muted me-2">{{#isfolder}}{{#pix}} i/folder, core {{/pix}}{{/isfolder}}{{^isfolder}}{{#pix}} f/document, core {{/pix}}{{/isfolder}}</span>
+                <span class="local-llmchat-minw0">
+                    <span data-region="entry" data-path="{{path}}">{{name}}</span>{{#detail}}<span> — {{detail}}</span>{{/detail}}
+                    {{#meta}}<span class="text-muted small"> · {{meta}}</span>{{/meta}}
+                </span>
+            </li>
+            {{/items}}
+        </ul>
+        {{/isentries}}
+        {{#isfields}}
+        <dl class="local-llmchat-params mb-0">
+            {{#items}}
+            <div class="local-llmchat-param">
+                <dt>{{label}}</dt>
+                <dd>{{#islink}}<a href="{{url}}" target="_blank" rel="noopener">{{text}}</a>{{/islink}}{{^islink}}{{#iscode}}<code>{{text}}</code>{{/iscode}}{{^iscode}}{{text}}{{/iscode}}{{/islink}}</dd>
+            </div>
+            {{/items}}
+        </dl>
+        {{/isfields}}
+        {{#istext}}
+        {{#title}}
+        <div class="d-flex align-items-baseline mb-1">
+            {{#index}}<span class="local-llmchat-citenum me-2">{{index}}</span>{{/index}}
+            <span class="local-llmchat-minw0">{{#hasurl}}<a href="{{url}}" target="_blank" rel="noopener">{{title}}</a>{{/hasurl}}{{^hasurl}}{{title}}{{/hasurl}}
+                {{#range}}<span class="text-muted small"> · {{range}}</span>{{/range}}</span>
+        </div>
+        {{/title}}
+        <div class="small rounded p-2 local-llmchat-excerpt">{{text}}</div>
+        {{/istext}}
+        {{#istable}}
+        <div class="table-responsive">
+            <table class="table table-sm small mb-0 local-llmchat-table">
+                <thead><tr>{{#columns}}<th scope="col">{{label}}</th>{{/columns}}</tr></thead>
+                <tbody>{{#rows}}<tr>{{#cells}}<td>{{text}}</td>{{/cells}}</tr>{{/rows}}</tbody>
+            </table>
+        </div>
+        {{/istable}}
+        {{#isnotice}}
+        <p class="mb-0 {{#iserror}}text-danger{{/iserror}}{{#iswarning}}text-warning{{/iswarning}}{{^iserror}}{{^iswarning}}text-muted{{/iswarning}}{{/iserror}}">{{text}}</p>
+        {{#detail}}<p class="mb-0 small text-muted">{{detail}}</p>{{/detail}}
+        {{/isnotice}}
+        {{#isgeneric}}
+        <div class="small rounded p-2 local-llmchat-excerpt">{{text}}</div>
+        {{/isgeneric}}
+    </div>
+    {{/blocks}}
     {{#hascitations}}
     <ul class="list-unstyled mb-0">
         {{#citations}}

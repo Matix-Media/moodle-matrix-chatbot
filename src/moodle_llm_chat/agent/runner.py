@@ -293,7 +293,7 @@ class AgentRunner:
             name=message.name or "",
             summary=str(artifact.get("summary", "")),
             citations=refs,
-            attachments=list(artifact.get("attachments", [])),
+            display=list(artifact.get("display", [])),
             truncated=bool(artifact.get("truncated", False)),
             error=meta.get("error"),
         )

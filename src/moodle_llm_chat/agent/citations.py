@@ -1,4 +1,9 @@
-"""Stable ``[n]`` citation numbers for everything a run's tools showed the model."""
+"""Stable ``[n]`` citation numbers for everything a run's tools showed the model.
+
+One number per document: every page of a document links to the same Moodle module, so
+numbering pages separately only listed the same source several times. The pages the
+tools showed are collected on the ref instead.
+"""
 
 from __future__ import annotations
 
@@ -18,20 +23,33 @@ class CitationRef(BaseModel):
     course_name: str
     path: str
     url: str | None
+    #: First page the tools showed; kept for conversations saved before ``pages``.
     page: int | None
+    #: Every page of the document the tools showed, ascending.
+    pages: list[int] = []
 
 
 class CitationRegistry:
     def __init__(self, existing: list[CitationRef] | None = None) -> None:
-        self._refs: list[CitationRef] = list(existing or [])
-        self._by_key = {(r.doc_id, r.page): r.index for r in self._refs}
+        self._refs: list[CitationRef] = []
+        self._by_doc: dict[str, int] = {}
+        for ref in existing or []:
+            if not ref.pages and ref.page is not None:
+                ref = ref.model_copy(update={"pages": [ref.page]})
+            self._refs.append(ref)
+            self._by_doc.setdefault(ref.doc_id, ref.index)
 
     def add(
         self, document: Document, *, path: str, course_name: str, page: int | None = None
     ) -> int:
-        key = (document.doc_id, page)
-        if key in self._by_key:
-            return self._by_key[key]
+        known = self._by_doc.get(document.doc_id)
+        if known is not None:
+            ref = self._refs[known - 1]
+            if page is not None and page not in ref.pages:
+                ref.pages = sorted([*ref.pages, page])
+                if ref.page is None:
+                    ref.page = page
+            return known
         index = len(self._refs) + 1
         self._refs.append(
             CitationRef(
@@ -42,9 +60,10 @@ class CitationRegistry:
                 path=path,
                 url=document.module_url,
                 page=page,
+                pages=[page] if page is not None else [],
             )
         )
-        self._by_key[key] = index
+        self._by_doc[document.doc_id] = index
         return index
 
     @property

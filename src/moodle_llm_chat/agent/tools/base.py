@@ -3,7 +3,8 @@
 * :class:`Tool` declares its argument schema (pydantic → JSON schema for the model),
   the capabilities it requires, and UI metadata for its card in the chat.
 * :class:`ToolResult` is the uniform envelope every tool returns: the text the model
-  sees, citation numbers, typed attachments for the UI, and pagination hints.
+  sees, citation numbers, display blocks for the tool card (:mod:`.display`), and
+  pagination hints.
 * :class:`InteractiveTool` pauses the run (LangGraph ``interrupt``) with a typed
   payload of some interaction *kind*, and validates the user's typed response — the
   UI renders by kind, so a new interactive tool needs no new UI code.
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from moodle_llm_chat.access.scope import Capability
 from moodle_llm_chat.agent.context import RunContext
 from moodle_llm_chat.agent.interactions import INTERACTIONS, Interaction
+from moodle_llm_chat.agent.tools.display import Block
 
 
 class ToolUI(BaseModel):
@@ -32,17 +34,11 @@ class ToolUI(BaseModel):
     max_chars: int = 6000
 
 
-class Attachment(BaseModel):
-    """A typed UI payload: ``table``, ``file_ref``, ``link``, …; unknown kinds are ignored."""
-
-    kind: str
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
 class ToolResult(BaseModel):
     text: str
     citations: list[int] = Field(default_factory=list)
-    attachments: list[Attachment] = Field(default_factory=list)
+    #: What the tool card shows; empty = a text block of ``text`` (see registry).
+    display: list[Block] = Field(default_factory=list)
     truncated: bool = False
     next_cursor: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)

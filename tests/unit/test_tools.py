@@ -188,6 +188,28 @@ class TestSearch:
         again = await SearchText().run(SearchText.Args(query="Raum"), c)
         assert again.citations == [1]
 
+    async def test_hit_header_names_change_date_without_stand(self, world: Store) -> None:
+        result = await SearchText().run(SearchText.Args(query="Raum"), ctx(world))
+        assert "Stand" not in result.text
+        assert "[1] /LF7/Woche 2/Plan · geändert 09.11.2026" in result.text
+
+    async def test_pages_of_one_document_share_one_citation(self, world: Store) -> None:
+        c = ctx(world)
+        result = await SearchText().run(SearchText.Args(query="Seite"), c)
+        assert result.citations == [1]
+        assert "[1] /LF7/Woche 1/Skript, S. 1" in result.text
+        assert "[1] /LF7/Woche 1/Skript, S. 2" in result.text
+        (ref,) = c.citations.refs
+        assert ref.pages == [1, 2]
+
+    async def test_read_and_stat_reuse_the_search_citation(self, world: Store) -> None:
+        c = ctx(world)
+        await SearchText().run(SearchText.Args(query="Trunking"), c)
+        read = await ReadFile().run(ReadFile.Args(path="/LF7/Woche 1/Skript"), c)
+        stat = await StatFile().run(StatFile.Args(path="/LF7/Woche 1/Skript"), c)
+        assert read.citations == stat.citations == [1]
+        assert len(c.citations.refs) == 1
+
 
 class TestRegex:
     async def test_finds_dates_with_context_and_page(self, world: Store) -> None:
