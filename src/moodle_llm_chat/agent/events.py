@@ -87,6 +87,8 @@ class UserMessageEvent(_Event):
     type: Literal["user_message"] = "user_message"
     text: str
     course_id: int | None = None
+    #: Echoed back so the client can match it to the bubble it drew on send.
+    client_msg_id: str | None = None
 
 
 class UserAnswerEvent(_Event):

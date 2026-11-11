@@ -194,9 +194,9 @@ class ChatService:
         self._publish(
             v,
             conversation_id,
-            UserMessageEvent(turn_id=turn_id, text=text, course_id=course_id).model_dump(
-                mode="json"
-            ),
+            UserMessageEvent(
+                turn_id=turn_id, text=text, course_id=course_id, client_msg_id=client_msg_id
+            ).model_dump(mode="json"),
         )
         self._spawn(v, conversation_id, turn_id, message=text, course_id=course_id)
         return conversation_id, turn_id
