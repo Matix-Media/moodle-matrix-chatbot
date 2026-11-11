@@ -138,6 +138,19 @@ class TestRequireEmbedding:
         ).require_embedding()
         assert cfg.provider is Provider.OLLAMA
         assert cfg.dim == 768
+        assert cfg.send_dimensions is False
+
+    def test_send_dimensions_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _settings(
+            monkeypatch,
+            MLC_EMBEDDING__PROVIDER="openai",
+            MLC_EMBEDDING__MODEL="qwen/qwen3-embedding-8b",
+            MLC_EMBEDDING__BASE_URL="https://openrouter.ai/api/v1",
+            MLC_EMBEDDING__API_KEY="k",
+            MLC_EMBEDDING__DIM="1024",
+            MLC_EMBEDDING__SEND_DIMENSIONS="true",
+        ).require_embedding()
+        assert cfg.send_dimensions is True
 
     def test_dim_must_be_positive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MLC_EMBEDDING__DIM", "0")

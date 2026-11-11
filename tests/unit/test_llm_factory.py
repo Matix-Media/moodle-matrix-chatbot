@@ -226,6 +226,30 @@ class TestEmbeddings:
         assert emb.check_embedding_ctx_length is False
         assert emb.openai_api_base == "http://localhost:8000/v1"
 
+    def test_openai_compatible_server_omits_dimensions_by_default(self) -> None:
+        """Some servers (vLLM on a non-Matryoshka model) reject the parameter outright."""
+        emb = build_embeddings(
+            _emb(Provider.OPENAI, base_url="http://localhost:8000/v1", dim=1024),
+            task="document",
+        )
+        assert isinstance(emb, OpenAIEmbeddings)
+        assert emb.dimensions is None
+
+    def test_openai_compatible_server_sends_dimensions_when_opted_in(self) -> None:
+        """OpenRouter or vLLM serving a Matryoshka model can truncate to the configured dim."""
+        emb = build_embeddings(
+            _emb(
+                Provider.OPENAI,
+                base_url="https://openrouter.ai/api/v1",
+                dim=1024,
+                send_dimensions=True,
+            ),
+            task="document",
+        )
+        assert isinstance(emb, OpenAIEmbeddings)
+        assert emb.dimensions == 1024
+        assert emb.check_embedding_ctx_length is False
+
     def test_ollama(self) -> None:
         emb = build_embeddings(_emb(Provider.OLLAMA, base_url="http://gpu:11434"), task="query")
         assert isinstance(emb, OllamaEmbeddings)

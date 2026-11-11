@@ -107,6 +107,10 @@ class EmbeddingSection(BaseModel):
     dim: int = Field(default=768, gt=0)
     api_key: SecretStr | None = None
     base_url: str | None = None
+    #: Ask an OpenAI-compatible server (``base_url`` set) to truncate vectors to ``dim``.
+    #: Off by default: servers like vLLM reject it for models without Matryoshka support.
+    #: OpenAI itself (no ``base_url``) always gets it.
+    send_dimensions: bool = False
     batch_size: int = Field(default=100, gt=0)
     rpm: int = Field(default=90, gt=0)
     items_per_minute: int = Field(default=2500, gt=0)
@@ -200,6 +204,7 @@ class EmbeddingConfig(BaseModel):
     batch_size: int
     rpm: int
     items_per_minute: int
+    send_dimensions: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -292,6 +297,7 @@ class Settings(BaseSettings):
             batch_size=s.batch_size,
             rpm=s.rpm,
             items_per_minute=s.items_per_minute,
+            send_dimensions=s.send_dimensions,
         )
 
 

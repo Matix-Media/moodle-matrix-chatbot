@@ -150,6 +150,7 @@ def build_embeddings(cfg: EmbeddingConfig, *, task: EmbeddingTask) -> Embeddings
                 base_url=cfg.base_url,
                 api_key=api_key or "not-needed",  # type: ignore[arg-type]
                 check_embedding_ctx_length=False,
+                dimensions=cfg.dim if cfg.send_dimensions else None,
             )
         return OpenAIEmbeddings(
             model=cfg.model,
