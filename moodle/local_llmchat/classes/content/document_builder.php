@@ -114,7 +114,7 @@ class document_builder {
                     $docs[] = new document(array_merge($base, [
                         'doc_id' => $base['doc_id'] . 'url',
                         'title' => $base['module_name'],
-                        'kind' => 'url',
+                        'kind' => 'external',
                         'external_url' => $external,
                         'content_hash' => hash('sha256', $external),
                     ]));
