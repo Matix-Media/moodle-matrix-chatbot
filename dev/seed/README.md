@@ -10,18 +10,20 @@ site: events → outbox → `/ingest`, the API downloading every file back from 
   manifest.json      what to seed — the only file the seeder reads (format below)
   seed.toml          optional rules for build_manifest.py (dev/seed/seed.example.toml)
   documents.db       optional source: a legacy (Matrix-era bsbot) content index …
-  blobs/aa/<sha256>  … and its files (fetch-legacy.sh copies both)
+  blobs/aa/<sha256>  … and its files (both travel in a bundle, see below)
   backups/*.mbz      optional source: Moodle course backups, restored as they are
   files/…            anything a hand-written manifest points at with "path"
 ```
 
 ## Three ways to get a dataset
 
-**From the legacy deployment.** Copies only the `documents` table and the file blobs
-(no embeddings, chunks, PII tokens or credentials):
+**From a legacy bundle.** The legacy deployment's content index (only the `documents`
+table and the file blobs: no embeddings, chunks, PII tokens or credentials) was copied
+once and is passed around as a bundle. Unpack it ([Bundles](#bundles-one-file-to-carry-a-dataset-between-checkouts))
+and, to change the rules, rebuild:
 
 ```bash
-dev/seed/fetch-legacy.sh "ssh user@legacy-host" <api-container>
+python dev/seed/dataset_bundle.py unpack <bundle>.tar.gz dev/dataset
 python dev/seed/build_manifest.py dev/dataset
 ```
 
