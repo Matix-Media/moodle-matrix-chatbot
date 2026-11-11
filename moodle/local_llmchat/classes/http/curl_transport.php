@@ -41,10 +41,13 @@ class curl_transport implements transport {
      * Constructor.
      *
      * @param int $timeout seconds
+     * @param int $connecttimeout seconds
      */
     public function __construct(
         /** @var int request timeout in seconds */
         private int $timeout = 60,
+        /** @var int connect timeout in seconds */
+        private int $connecttimeout = 10,
     ) {
     }
 
@@ -64,7 +67,7 @@ class curl_transport implements transport {
         $curl->setHeader($headers);
         $options = [
             'CURLOPT_TIMEOUT' => $this->timeout,
-            'CURLOPT_CONNECTTIMEOUT' => 10,
+            'CURLOPT_CONNECTTIMEOUT' => $this->connecttimeout,
             'CURLOPT_PROTOCOLS' => CURLPROTO_HTTPS | CURLPROTO_HTTP,
             'CURLOPT_FOLLOWLOCATION' => false,
         ];

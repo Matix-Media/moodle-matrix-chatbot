@@ -295,6 +295,36 @@ class TestConversationsApi:
         )
         assert env.client.get("/api/conversations", headers=self._bearer(env)).json() == []
 
+    def test_detail_carries_last_seq_and_tool_metadata(self, env: Env) -> None:
+        conv = self._make(env)
+        detail = env.client.get(f"/api/conversations/{conv}", headers=self._bearer(env)).json()
+        assert detail["last_seq"] == max(e["seq"] for e in detail["events"])
+        names = {t["name"] for t in detail["tools"]}
+        assert "search_text" in names
+        assert all({"name", "label", "icon"} <= set(t) for t in detail["tools"])
+
+    def test_compact_merges_streamed_tokens(self, env: Env) -> None:
+        conv = self._make(env)
+        url = f"/api/conversations/{conv}"
+        full = env.client.get(url, headers=self._bearer(env)).json()
+        compact = env.client.get(f"{url}?compact=true", headers=self._bearer(env)).json()
+        tokens = [e for e in compact["events"] if e["type"] == "token"]
+        assert len(tokens) <= 1
+        assert "".join(e["delta"] for e in tokens) == "".join(
+            e.get("delta", "") for e in full["events"] if e["type"] == "token"
+        )
+        assert compact["last_seq"] == full["last_seq"]
+        assert [e["type"] for e in compact["events"] if e["type"] != "token"] == [
+            e["type"] for e in full["events"] if e["type"] != "token"
+        ]
+
+    def test_empty_conversation_has_last_seq_zero(self, env: Env) -> None:
+        conv = self._make(env)
+        last = env.client.get(f"/api/conversations/{conv}", headers=self._bearer(env)).json()
+        url = f"/api/conversations/{conv}?after_seq={last['last_seq']}"
+        assert env.client.get(url, headers=self._bearer(env)).json()["events"] == []
+        assert env.client.get(url, headers=self._bearer(env)).json()["last_seq"] == last["last_seq"]
+
     def test_other_user_gets_404(self, env: Env) -> None:
         conv = self._make(env)
         r = env.client.get(f"/api/conversations/{conv}", headers=self._bearer(env, user=8))

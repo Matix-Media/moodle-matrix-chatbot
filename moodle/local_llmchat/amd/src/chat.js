@@ -149,7 +149,7 @@ class ChatController {
      * Constructor.
      *
      * @param {HTMLElement} root
-     * @param {Object} config {courseid, conversationid}
+     * @param {Object} config {courseid, conversationid, preloaded}
      * @param {Object} strings
      */
     constructor(root, config, strings) {
@@ -158,6 +158,8 @@ class ChatController {
         // Compact: the chat block, one conversation, no list (the full page has the list).
         this.compact = root.dataset.mode === 'compact';
         this.initialConversation = config.conversationid ? String(config.conversationid) : '';
+        // What the page already shows: the list, and a conversation up to a seq.
+        this.preloaded = config.preloaded || {};
         this.str = strings;
         this.regions = {};
         ['messages', 'empty', 'conversations', 'status', 'quota', 'quota-button', 'quota-ring', 'quota-percent', 'quota-panel',
@@ -242,7 +244,7 @@ class ChatController {
     }
 
     /**
-     * Delegated clicks: toggles, suggestions, conversation list, new conversation.
+     * Delegated clicks: toggles, suggestions, conversation list, new conversation, copy.
      *
      * @param {MouseEvent} e
      */
@@ -269,6 +271,22 @@ class ChatController {
         } else if (action === 'new-conversation') {
             this.closeSidebarOnMobile();
             this.openConversation(null);
+        } else if (action === 'copy') {
+            this.copy(target.dataset.copytext || '');
+        }
+    }
+
+    /**
+     * Put an answer on the clipboard.
+     *
+     * @param {string} text
+     */
+    async copy(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            addToast(this.str.copied);
+        } catch (e) {
+            Log.debug(e);
         }
     }
 
@@ -329,11 +347,30 @@ class ChatController {
     run() {
         this.socket.connect();
         const id = this.initialConversation || (this.compact ? this.loadCurrent() : '');
-        if (id) {
+        if (id && this.preloaded.conversationid === id) {
+            this.adoptConversation(id, Number(this.preloaded.lastseq) || 0);
+        } else if (id) {
             this.openConversation(id, {focus: false, restore: !this.initialConversation});
-        } else {
+        } else if (!this.preloaded.list) {
             this.refreshConversations();
         }
+    }
+
+    /**
+     * Take over a conversation the page rendered up to lastSeq: nothing to fetch, the socket's
+     * resume brings whatever came after (a running turn, a pending question).
+     *
+     * @param {string} id
+     * @param {number} lastSeq
+     */
+    adoptConversation(id, lastSeq) {
+        this.enqueue(() => {
+            this.setConversation(id);
+            // Exactly the page's state, even if this tab saw more before a reload.
+            this.lastSeq[id] = lastSeq;
+            this.saveSeqs();
+            this.scroll(true);
+        });
     }
 
     /**
@@ -1018,6 +1055,7 @@ class ChatController {
         turn.raw = frame.text ?? turn.raw;
         text.innerHTML = renderMarkdown(turn.raw, turn.citations);
         const footer = await renderNode('answer_footer', {
+            copytext: turn.raw,
             budgetexhausted: Boolean(frame.budget_exhausted || frame.truncated_by_budget),
             hascitations: turn.citations.length > 0,
             citations: turn.citations.map((c) => ({
@@ -1027,15 +1065,6 @@ class ChatController {
                 url: c.url || '',
                 hasurl: Boolean(c.url),
             })),
-        });
-        const raw = turn.raw;
-        footer.querySelector('[data-action="copy"]').addEventListener('click', async() => {
-            try {
-                await navigator.clipboard.writeText(raw);
-                addToast(this.str.copied);
-            } catch (e) {
-                Log.debug(e);
-            }
         });
         this.place(turn, footer);
         this.setRunning(false);
@@ -1268,7 +1297,8 @@ class ChatController {
         this.enqueue(async() => {
             let data;
             try {
-                data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+                // Compact: streamed deltas arrive folded, one render per text run instead of per token.
+                data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}?compact=true`);
             } catch (e) {
                 if (restore && this.conversationId === id) {
                     Log.debug(e);
@@ -1305,7 +1335,7 @@ class ChatController {
 /**
  * Initialise the chat page.
  *
- * @param {Object} config {courseid, rootid, conversationid}
+ * @param {Object} config {courseid, rootid, conversationid, preloaded}
  */
 export const init = async(config) => {
     const root = document.getElementById(config.rootid);

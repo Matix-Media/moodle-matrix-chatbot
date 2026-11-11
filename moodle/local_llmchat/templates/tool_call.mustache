@@ -18,7 +18,9 @@
     @template local_llmchat/tool_call
 
     One tool call as a list-group item: icon, label, live status; expands to the readable
-    parameters, the result and the raw data (local_llmchat/tool_details).
+    parameters, the result and the raw data (local_llmchat/tool_details). "done" with "summary"
+    and "result" (a local_llmchat/tool_result context) renders a finished call, as the page does
+    for a stored conversation.
 
     Example context (json):
     {
@@ -28,7 +30,10 @@
         "label": "Suche „Abgabe Subnetting-Projekt“",
         "hasparams": true,
         "params": [{"label": "Search for", "istext": true, "text": "Abgabe Subnetting-Projekt"}],
-        "raw": "{\"query\": \"Abgabe Subnetting-Projekt\"}"
+        "raw": "{\"query\": \"Abgabe Subnetting-Projekt\"}",
+        "done": true,
+        "summary": "4 Treffer",
+        "result": {"hasresult": true, "summary": "4 Treffer", "hascitations": false, "citations": []}
     }
 }}
 <div class="list-group-item local-llmchat-tool" data-region="tool">
@@ -36,11 +41,11 @@
         data-action="toggle" aria-expanded="false" aria-controls="{{uniqid}}">
         <span class="local-llmchat-toolicon text-muted">{{#pix}} {{icon}}, {{component}} {{/pix}}</span>
         <span class="text-truncate local-llmchat-minw0">{{label}}</span>
-        <span class="text-muted text-truncate ms-auto ps-2 local-llmchat-toolsummary" data-region="summary"></span>
-        <span class="spinner-border spinner-border-sm text-secondary ms-2 flex-shrink-0" data-region="spinner" role="status">
+        <span class="text-muted text-truncate ms-auto ps-2 local-llmchat-toolsummary" data-region="summary">{{summary}}</span>
+        <span class="spinner-border spinner-border-sm text-secondary ms-2 flex-shrink-0{{#done}} d-none{{/done}}" data-region="spinner" role="status">
             <span class="sr-only visually-hidden">{{#str}} tool:running, local_llmchat {{/str}}</span>
         </span>
-        <span class="text-success ms-2 d-none flex-shrink-0" data-region="done">{{#pix}} i/checked, core, {{#str}} tool:done, local_llmchat {{/str}} {{/pix}}</span>
+        <span class="text-success ms-2{{^done}} d-none{{/done}} flex-shrink-0" data-region="done">{{#pix}} i/checked, core, {{#str}} tool:done, local_llmchat {{/str}} {{/pix}}</span>
         <span class="local-llmchat-chevron ms-1 flex-shrink-0">{{#pix}} t/expandedchevron, core {{/pix}}</span>
     </button>
     <div class="collapse" id="{{uniqid}}" data-region="collapsible">
