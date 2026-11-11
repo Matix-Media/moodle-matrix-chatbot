@@ -177,6 +177,19 @@ class TestChat:
             seqs = [f["seq"] for f in frames if "seq" in f]
             assert seqs == sorted(seqs)
 
+    def test_user_message_echo_carries_the_client_msg_id(self, env: Env) -> None:
+        # The plugin draws the user's bubble on send and drops the echo whose
+        # client_msg_id matches; without it, every message shows up twice.
+        env.model.script.append(AIMessage(content="ok"))
+        with connect(env) as ws:
+            authed(env, ws)
+            ws.send_json(
+                {"type": "send", "text": "Hi", "token": env.token(), "client_msg_id": "m1"}
+            )
+            frames = until(ws, "final")
+            echo = next(f for f in frames if f["type"] == "user_message")
+            assert echo["client_msg_id"] == "m1"
+
     def test_question_and_answer_round_trip(self, env: Env) -> None:
         env.model.script.extend(
             [
