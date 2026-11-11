@@ -1162,9 +1162,13 @@ class ChatController {
             const data = await this.apiGet('/api/conversations');
             const items = Array.isArray(data) ? data : (data.conversations || data.items || []);
             if (this.compact) {
+                // The conversation may have changed while the list loaded.
+                if (!this.conversationId) {
+                    this.regions.title.textContent = this.str.newconversation;
+                    return;
+                }
                 const current = items.find((c) => String(c.id) === this.conversationId);
-                this.regions.title.textContent = current ? (current.title || this.str.untitled)
-                    : (this.conversationId ? this.str.untitled : this.str.newconversation);
+                this.regions.title.textContent = (current && current.title) || this.str.untitled;
                 return;
             }
             await renderInto(this.regions.conversations, 'local_llmchat/conversation_list', {

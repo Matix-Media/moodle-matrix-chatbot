@@ -9,8 +9,6 @@
     /* Answers keep this much room on the right, the user's bubbles at least as much on the left,
        so the side tells who wrote a message. */
     --llmchat-inset: 3rem;
-    /* Narrow-layout rules follow the chat's own width (a phone, or the block in a side drawer). */
-    container: llmchat / inline-size;
 }
 
 /* Full page on Boost-based themes: the chat fills the window below the page header from the first
@@ -60,7 +58,6 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     body.local-llmchat-fullpage #page.drawers .main-inner {
         flex: 0 0 auto;
         height: calc(100vh - 60px - 3.5rem);
-        height: calc(100dvh - 60px - 3.5rem);
     }
 }
 
@@ -572,17 +569,16 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     height: 2rem;
 }
 
-@container llmchat (max-width: 36rem) {
+/* Narrow layout: phones (media query) and the chat block at any screen size (.local-llmchat-compact,
+   the same rules again). Moodle's CSS linter does not accept container queries yet. */
+@media (max-width: 575.98px) {
     .local-llmchat-messages {
+        --llmchat-inset: 2rem;
         padding: 1rem .75rem;
     }
 
     .local-llmchat-msg {
         margin-bottom: 1rem;
-    }
-
-    .local-llmchat-messages {
-        --llmchat-inset: 2rem;
     }
 
     .local-llmchat-usercol {
@@ -627,7 +623,56 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
         margin-bottom: .75rem;
         font-size: .875rem;
     }
+}
 
+.local-llmchat-compact .local-llmchat-messages {
+    --llmchat-inset: 2rem;
+    padding: 1rem .75rem;
+}
+
+.local-llmchat-compact .local-llmchat-msg {
+    margin-bottom: 1rem;
+}
+
+.local-llmchat-compact .local-llmchat-usercol {
+    max-width: calc(100% - var(--llmchat-inset));
+}
+
+.local-llmchat-compact .local-llmchat-inputwrap {
+    padding-left: .75rem;
+}
+
+.local-llmchat-compact .local-llmchat-hint {
+    padding-left: calc(.75rem + 1px);
+}
+
+.local-llmchat-compact .local-llmchat-input::placeholder {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.local-llmchat-compact .local-llmchat-empty {
+    padding: .5rem 0;
+}
+
+.local-llmchat-compact .local-llmchat-empty .local-llmchat-avatar-lg {
+    width: 2.75rem;
+    height: 2.75rem;
+}
+
+.local-llmchat-compact .local-llmchat-empty .local-llmchat-avatar-lg .icon {
+    font-size: 1.25rem;
+}
+
+.local-llmchat-compact .local-llmchat-emptytitle {
+    margin-top: .5rem;
+    font-size: 1.125rem;
+}
+
+.local-llmchat-compact .local-llmchat-intro {
+    margin-bottom: .75rem;
+    font-size: .875rem;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -697,7 +742,7 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     display: none;
 }
 
-@container llmchat (max-width: 36rem) {
+@media (max-width: 575.98px) {
     .local-llmchat-params {
         grid-template-columns: 1fr;
         gap: 0;
@@ -706,6 +751,15 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     .local-llmchat-params dd {
         margin-bottom: .375rem;
     }
+}
+
+.local-llmchat-compact .local-llmchat-params {
+    grid-template-columns: 1fr;
+    gap: 0;
+}
+
+.local-llmchat-compact .local-llmchat-params dd {
+    margin-bottom: .375rem;
 }
 
 .local-llmchat-path a {
@@ -717,7 +771,8 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
 /* The chat block: the current conversation only, at a fixed height in the block drawer or column.
    The block is the card, so the chat inside drops its own card frame. */
 .local-llmchat-compact .local-llmchat-panel {
-    height: min(36rem, calc(100vh - 14rem));
+    height: calc(100vh - 14rem);
+    max-height: 36rem;
     min-height: 22rem;
     border: 0;
     border-radius: 0;
