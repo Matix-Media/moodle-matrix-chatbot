@@ -5,8 +5,10 @@ websockets. A turn either ends with a :class:`FinalEvent`, or pauses with a
 :class:`QuestionEvent` (an interactive tool called ``interrupt``); the next call with
 ``resume=`` continues the same LangGraph thread from its checkpoint.
 
-Reasoning ("thinking") arrives as standard ``reasoning`` content blocks whatever the
-provider; ``show_thinking`` decides whether its text, only an indicator, or nothing
+Reasoning ("thinking") arrives as standard ``reasoning`` content blocks, or — from
+OpenAI-compatible servers, which have no standard block — as
+``additional_kwargs["reasoning_content"]`` (see :mod:`llm.openai_compat`);
+``show_thinking`` decides whether its text, only an indicator, or nothing
 reaches the client. The full messages — reasoning blocks and provider signatures
 included — stay in the checkpoint, because stripping them breaks multi-step tool
 calling on providers that verify them.
@@ -219,8 +221,17 @@ class AgentRunner:
             return []
         if not isinstance(message, AIMessageChunk | AIMessage):
             return []
+        blocks = list(message.content_blocks)
+        extra = message.additional_kwargs.get("reasoning_content")
+        if (
+            isinstance(extra, str)
+            and extra
+            and not any(b.get("type") == "reasoning" for b in blocks)
+        ):
+            # Reasoning goes first: a chunk carries either, or reasoning before text.
+            blocks.insert(0, {"type": "reasoning", "reasoning": extra})
         events: list[AgentEvent] = []
-        for block in message.content_blocks:
+        for block in blocks:
             kind = block.get("type")
             if kind == "reasoning" and self.show_thinking is not ShowThinking.OFF:
                 if self.show_thinking is ShowThinking.FULL:

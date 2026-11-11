@@ -1,0 +1,131 @@
+{
+  "$comment": "Shared by tests/js/markdown.test.mjs and tests/markdown_test.php: the PHP port must render exactly what amd/src/markdown.js renders. URLs are given already normalised (the JS resolves them with new URL()).",
+  "vectors": [
+    {
+      "name": "plain",
+      "markdown": "Hallo Welt",
+      "citations": [],
+      "html": "<p>Hallo Welt</p>"
+    },
+    {
+      "name": "escapes html",
+      "markdown": "<script>alert(\"x\")</script> & 'q'",
+      "citations": [],
+      "html": "<p>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;q&#39;</p>"
+    },
+    {
+      "name": "paragraphs and line breaks",
+      "markdown": "Zeile eins\nZeile zwei\n\nNeuer Absatz",
+      "citations": [],
+      "html": "<p>Zeile eins<br>Zeile zwei</p><p>Neuer Absatz</p>"
+    },
+    {
+      "name": "bold italic code",
+      "markdown": "Das ist **fett**, *kursiv* und `a < b`.",
+      "citations": [],
+      "html": "<p>Das ist <strong>fett</strong>, <em>kursiv</em> und <code>a &lt; b</code>.</p>"
+    },
+    {
+      "name": "code is not formatted",
+      "markdown": "Nutze `**nicht fett**` hier",
+      "citations": [],
+      "html": "<p>Nutze <code>**nicht fett**</code> hier</p>"
+    },
+    {
+      "name": "headings",
+      "markdown": "# Titel\n## Unter\n#### Klein",
+      "citations": [],
+      "html": "<h4>Titel</h4><h5>Unter</h5><h6>Klein</h6>"
+    },
+    {
+      "name": "bullet list",
+      "markdown": "- eins\n- zwei\n* drei",
+      "citations": [],
+      "html": "<ul><li>eins</li><li>zwei</li><li>drei</li></ul>"
+    },
+    {
+      "name": "numbered list",
+      "markdown": "1. erst\n2) dann",
+      "citations": [],
+      "html": "<ol><li>erst</li><li>dann</li></ol>"
+    },
+    {
+      "name": "list switch",
+      "markdown": "- a\n1. b",
+      "citations": [],
+      "html": "<ul><li>a</li></ul><ol><li>b</li></ol>"
+    },
+    {
+      "name": "code block",
+      "markdown": "```python\nx = 1 < 2\n**y**\n```\nDanach",
+      "citations": [],
+      "html": "<pre><code>x = 1 &lt; 2\n**y**</code></pre><p>Danach</p>"
+    },
+    {
+      "name": "unterminated code block",
+      "markdown": "```\nopen",
+      "citations": [],
+      "html": "<pre><code>open</code></pre>"
+    },
+    {
+      "name": "link",
+      "markdown": "Siehe [Kursseite](https://moodle.example/course/view.php?id=2&x=1).",
+      "citations": [],
+      "html": "<p>Siehe <a href=\"https://moodle.example/course/view.php?id=2&amp;x=1\" target=\"_blank\" rel=\"noopener\">Kursseite</a>.</p>"
+    },
+    {
+      "name": "non-http link stays text",
+      "markdown": "[x](javascript:alert(1))",
+      "citations": [],
+      "html": "<p>[x](javascript:alert(1))</p>"
+    },
+    {
+      "name": "citation",
+      "markdown": "Raum B204 [1] und [2].",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        },
+        {
+          "index": 2,
+          "title": "Ohne Link",
+          "url": ""
+        }
+      ],
+      "html": "<p>Raum B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a> und [2].</p>"
+    },
+    {
+      "name": "citation title is escaped",
+      "markdown": "Siehe [1]",
+      "citations": [
+        {
+          "index": 1,
+          "title": "A \"B\" <c>",
+          "url": "https://moodle.example/mod/resource/view.php?id=9"
+        }
+      ],
+      "html": "<p>Siehe&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/resource/view.php?id=9\" target=\"_blank\" rel=\"noopener\" title=\"A &quot;B&quot; &lt;c&gt;\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>"
+    },
+    {
+      "name": "unknown citation stays",
+      "markdown": "Nichts [7]",
+      "citations": [],
+      "html": "<p>Nichts [7]</p>"
+    },
+    {
+      "name": "empty",
+      "markdown": "",
+      "citations": [],
+      "html": ""
+    },
+    {
+      "name": "list then paragraph",
+      "markdown": "- a\n- b\nText",
+      "citations": [],
+      "html": "<ul><li>a</li><li>b</li></ul><p>Text</p>"
+    }
+  ]
+}

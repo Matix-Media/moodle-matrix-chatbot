@@ -90,19 +90,28 @@ class api_client {
         return trim((string)get_config('local_llmchat', 'apiurl')) !== '' && secret::is_configured();
     }
 
+    /** Seconds a page may wait for the API while it renders (connecting gets two of them). */
+    public const PAGE_TIMEOUT = 3;
+
     /**
      * Client from plugin settings.
      *
+     * @param int|null $timeout request timeout in seconds (default: the transport's); a page
+     *     that waits for the API while it renders uses {@see self::PAGE_TIMEOUT}
      * @return self
      * @throws api_exception when not configured
      */
-    public static function from_config(): self {
+    public static function from_config(?int $timeout = null): self {
         $url = trim((string)get_config('local_llmchat', 'apiurl'));
         $secret = secret::get();
         if ($url === '' || $secret === null) {
             throw new api_exception('error:notconfigured');
         }
-        return new self($url, $secret, self::$testtransport);
+        $transport = self::$testtransport;
+        if ($transport === null && $timeout !== null) {
+            $transport = new curl_transport($timeout, max(1, min($timeout - 1, 10)));
+        }
+        return new self($url, $secret, $transport);
     }
 
     /**
@@ -153,20 +162,28 @@ class api_client {
      * @param array $headers
      * @param string|null $payload
      * @param array $query
+     * @param string[] $redact further credentials to keep out of error messages
      * @return array
      * @throws api_exception
      */
-    private function send(string $method, string $path, array $headers, ?string $payload, array $query = []): array {
+    private function send(
+        string $method,
+        string $path,
+        array $headers,
+        ?string $payload,
+        array $query = [],
+        array $redact = []
+    ): array {
         $url = $this->baseurl . $path . ($query ? '?' . http_build_query($query, '', '&') : '');
         $response = $this->transport->request($method, $url, $headers, $payload);
         if ($response->status === 0) {
-            throw new api_exception('error:apiunreachable', 0, $this->redact($response->error));
+            throw new api_exception('error:apiunreachable', 0, $this->redact($response->error, $redact));
         }
         if ($response->status < 200 || $response->status >= 300) {
             throw new api_exception(
                 'error:apistatus',
                 $response->status,
-                $this->redact(\core_text::substr($response->body, 0, 500)),
+                $this->redact(\core_text::substr($response->body, 0, 500), $redact),
                 $response->status
             );
         }
@@ -178,13 +195,51 @@ class api_client {
     }
 
     /**
-     * Remove the secret from text that may end up in logs.
+     * Remove the secret (and other credentials) from text that may end up in logs.
      *
      * @param string $text
+     * @param string[] $also
      * @return string
      */
-    private function redact(string $text): string {
-        return str_replace($this->secret, '[redacted]', $text);
+    private function redact(string $text, array $also = []): string {
+        $secrets = array_filter(array_merge([$this->secret], $also), fn($s) => $s !== '');
+        return str_replace($secrets, '[redacted]', $text);
+    }
+
+    /**
+     * GET an /api/* route as a user: the bearer is that user's chat token, not the site secret.
+     * The service only reads with it, so the token stays valid for the websocket.
+     *
+     * @param string $chattoken from {@see \local_llmchat\access\chat_token::issue()}
+     * @param string $path
+     * @param array $query
+     * @return array
+     * @throws api_exception
+     */
+    private function user_get(string $chattoken, string $path, array $query = []): array {
+        $headers = ['Authorization: Bearer ' . $chattoken, 'Accept: application/json'];
+        return $this->send('GET', $path, $headers, null, $query, [$chattoken]);
+    }
+
+    /**
+     * GET /api/conversations: the user's conversations, most recently updated first.
+     *
+     * @param string $chattoken
+     * @return array [{id, title, course_id, created_at, updated_at}]
+     */
+    public function conversations(string $chattoken): array {
+        return $this->user_get($chattoken, '/api/conversations');
+    }
+
+    /**
+     * GET /api/conversations/{id}, with streamed deltas folded into one event per run.
+     *
+     * @param string $chattoken
+     * @param string $id
+     * @return array {conversation, events, last_seq, tools}
+     */
+    public function conversation(string $chattoken, string $id): array {
+        return $this->user_get($chattoken, '/api/conversations/' . rawurlencode($id), ['compact' => 'true']);
     }
 
     /**

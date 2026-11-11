@@ -118,13 +118,12 @@ a minute. Add your own courses as admin; they sync the same way.
 The two e2e courses are tiny. To try the assistant on real material and a realistic
 workload, seed the dev Moodle with a dataset. It becomes ordinary Moodle content, so the
 plugin ingests it like a real site's. A dataset can be the legacy deployment's content
-index, Moodle course backups (`.mbz`, from any Moodle), or a hand-written
+index (shared as a bundle), Moodle course backups (`.mbz`, from any Moodle), or a hand-written
 `manifest.json`. [dev/seed/README.md](dev/seed/README.md) describes all three, the
 manifest format and the `seed.toml` rules.
 
 ```bash
-dev/seed/fetch-legacy.sh "ssh user@legacy-host" <api-container>   # or: backups/*.mbz
-python dev/seed/build_manifest.py dev/dataset
+python dev/seed/dataset_bundle.py unpack <bundle>.tar.gz dev/dataset   # or: backups/*.mbz + build_manifest.py
 docker compose -f dev/docker-compose.yml up -d --build --wait     # running: … restart moodle
 ```
 
@@ -135,7 +134,7 @@ With the default rules the courses land in the *Legacy dataset* category:
   stays restricted until 2099. Teachers see both.
 
 `dev/seed/dataset_bundle.py` packs a built dataset into one file that other checkouts
-unpack instead of fetching it again.
+unpack.
 `MLC_DATASET_DIR=./datasets/<name>` (relative to `dev/`) seeds another dataset next to
 the first; give it its own `prefix`. Keep datasets inside the checkout so Docker can see
 them. Seeding is idempotent and only adds.

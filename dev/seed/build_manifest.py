@@ -6,7 +6,7 @@
 Sources in the dataset directory, both optional:
 
 * ``documents.db`` + ``blobs/<aa>/<sha256>`` — a legacy (Matrix-era bsbot) content index
-  (see fetch-legacy.sh): one row per document (a folder has a row per file, a book a
+  (shipped in a dataset bundle): one row per document (a folder has a row per file, a book a
   row per chapter, an intro its own row), regrouped here into courses → sections →
   modules in the order the legacy crawler walked them.
 * ``backups/*.mbz`` — Moodle course backups, restored as they are by the seeder.

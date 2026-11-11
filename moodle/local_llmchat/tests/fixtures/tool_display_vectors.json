@@ -1,0 +1,556 @@
+{
+  "$comment": "Shared by tests/js/tooldetails.test.mjs and tests/tool_display_test.php: the PHP port (classes/output/tool_display.php) must describe tool calls exactly like amd/src/tooldetails.js. Locale-dependent values (dates, numbers >= 1000) are tested on each side separately.",
+  "strings": {
+    "toolarg:query": "Search for",
+    "toolarg:k": "Max. results",
+    "toolarg:path": "Location",
+    "toolarg:course_ids": "Courses",
+    "toolarg:pattern": "Pattern",
+    "toolarg:order": "Order",
+    "toolarg:detail": "Detail",
+    "toolarg:options": "Options",
+    "toolarg:question": "Question",
+    "toolval:modified_desc": "Newest first",
+    "toolval:modified_asc": "Oldest first",
+    "toolval:daysago": "last {$a} days",
+    "toolval:yes": "Yes",
+    "toolval:no": "No",
+    "toolval:root": "All courses",
+    "page": "Page"
+  },
+  "calls": [
+    {
+      "name": "empty",
+      "args": {},
+      "expected": {
+        "hasparams": false,
+        "params": [],
+        "raw": "{}",
+        "paths": []
+      }
+    },
+    {
+      "name": "query and k",
+      "args": {
+        "query": "Raum B204",
+        "k": 5
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Search for",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "Raum B204",
+            "segments": [],
+            "chips": []
+          },
+          {
+            "label": "Max. results",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "5",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"query\": \"Raum B204\",\n  \"k\": 5\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "known order then others",
+      "args": {
+        "extra_flag": true,
+        "path": "/LF7/Material Projekt/",
+        "query": "x"
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Search for",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "x",
+            "segments": [],
+            "chips": []
+          },
+          {
+            "label": "Location",
+            "istext": false,
+            "iscode": false,
+            "ispath": true,
+            "ischips": false,
+            "text": "",
+            "segments": [
+              {
+                "name": "LF7",
+                "last": false,
+                "url": "",
+                "hasurl": false
+              },
+              {
+                "name": "Material Projekt",
+                "last": true,
+                "url": "",
+                "hasurl": false
+              }
+            ],
+            "chips": [],
+            "path": "/LF7/Material Projekt/"
+          },
+          {
+            "label": "Extra flag",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "Yes",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"extra_flag\": true,\n  \"path\": \"/LF7/Material Projekt/\",\n  \"query\": \"x\"\n}",
+        "paths": [
+          "/LF7/Material Projekt/"
+        ]
+      }
+    },
+    {
+      "name": "root path",
+      "args": {
+        "path": "/"
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Location",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "All courses",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"path\": \"/\"\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "pattern is code",
+      "args": {
+        "pattern": "\\b/2[4-9]"
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Pattern",
+            "istext": false,
+            "iscode": true,
+            "ispath": false,
+            "ischips": false,
+            "text": "\\b/2[4-9]",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"pattern\": \"\\\\b/2[4-9]\"\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "chips",
+      "args": {
+        "course_ids": [
+          529,
+          530
+        ]
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Courses",
+            "istext": false,
+            "iscode": false,
+            "ispath": false,
+            "ischips": true,
+            "text": "",
+            "segments": [],
+            "chips": [
+              {
+                "text": "529"
+              },
+              {
+                "text": "530"
+              }
+            ]
+          }
+        ],
+        "raw": "{\n  \"course_ids\": [\n    529,\n    530\n  ]\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "mixed array is code",
+      "args": {
+        "options": [
+          {
+            "a": 1
+          }
+        ]
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Options",
+            "istext": false,
+            "iscode": true,
+            "ispath": false,
+            "ischips": false,
+            "text": "[{\"a\":1}]",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"options\": [\n    {\n      \"a\": 1\n    }\n  ]\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "object is code",
+      "args": {
+        "filter": {
+          "a": "b"
+        }
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Filter",
+            "istext": false,
+            "iscode": true,
+            "ispath": false,
+            "ischips": false,
+            "text": "{\"a\":\"b\"}",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"filter\": {\n    \"a\": \"b\"\n  }\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "enum known and unknown",
+      "args": {
+        "order": "modified_desc",
+        "detail": "full_text"
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Order",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "Newest first",
+            "segments": [],
+            "chips": []
+          },
+          {
+            "label": "Detail",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "Full text",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"order\": \"modified_desc\",\n  \"detail\": \"full_text\"\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "relative since",
+      "args": {
+        "since": "-7d"
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Since",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "last 7 days",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"since\": \"-7d\"\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "empty values skipped",
+      "args": {
+        "query": "",
+        "path": null,
+        "max_depth": 0,
+        "dry_run": false
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Max depth",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "0",
+            "segments": [],
+            "chips": []
+          },
+          {
+            "label": "Dry run",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "No",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"query\": \"\",\n  \"path\": null,\n  \"max_depth\": 0,\n  \"dry_run\": false\n}",
+        "paths": []
+      }
+    },
+    {
+      "name": "unicode",
+      "args": {
+        "query": "Prüfung „Netze“ / Ü"
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Search for",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "Prüfung „Netze“ / Ü",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"query\": \"Prüfung „Netze“ / Ü\"\n}",
+        "paths": []
+      }
+    }
+  ],
+  "results": [
+    {
+      "name": "summary only",
+      "frame": {
+        "summary": "4 Treffer"
+      },
+      "expected": {
+        "hasresult": true,
+        "summary": "4 Treffer",
+        "hascitations": false,
+        "citations": []
+      }
+    },
+    {
+      "name": "nothing",
+      "frame": {},
+      "expected": {
+        "hasresult": false,
+        "summary": "",
+        "hascitations": false,
+        "citations": []
+      }
+    },
+    {
+      "name": "citations and links",
+      "frame": {
+        "summary": "x",
+        "citations": [
+          {
+            "index": 1,
+            "title": "A",
+            "url": "https://moodle.example/a",
+            "course_name": "LF7",
+            "page": 2
+          },
+          {
+            "index": 2,
+            "title": "",
+            "url": ""
+          }
+        ],
+        "attachments": [
+          {
+            "type": "link",
+            "url": "https://ex.example/b",
+            "title": "B"
+          },
+          {
+            "type": "file",
+            "url": "https://ex.example/c"
+          },
+          {
+            "type": "link",
+            "url": ""
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "summary": "x",
+        "hascitations": true,
+        "citations": [
+          {
+            "index": 1,
+            "title": "A",
+            "meta": "LF7 · Page 2",
+            "url": "https://moodle.example/a",
+            "hasurl": true
+          },
+          {
+            "index": 2,
+            "title": "",
+            "meta": "",
+            "url": "",
+            "hasurl": false
+          },
+          {
+            "index": "",
+            "title": "B",
+            "meta": "",
+            "url": "https://ex.example/b",
+            "hasurl": true
+          }
+        ]
+      }
+    }
+  ],
+  "links": [
+    {
+      "name": "match by name",
+      "segments": [
+        {
+          "name": "LF7",
+          "last": false
+        },
+        {
+          "name": "Datei",
+          "last": true
+        }
+      ],
+      "resolved": [
+        {
+          "name": "lf7",
+          "url": "https://moodle.example/course/view.php?id=2"
+        },
+        {
+          "name": "Datei",
+          "url": ""
+        }
+      ],
+      "expected": [
+        {
+          "name": "LF7",
+          "last": false,
+          "url": "https://moodle.example/course/view.php?id=2",
+          "hasurl": true
+        },
+        {
+          "name": "Datei",
+          "last": true,
+          "url": "",
+          "hasurl": false
+        }
+      ]
+    },
+    {
+      "name": "mismatch and bad scheme",
+      "segments": [
+        {
+          "name": "A",
+          "last": false
+        },
+        {
+          "name": "B",
+          "last": true
+        }
+      ],
+      "resolved": [
+        {
+          "name": "X",
+          "url": "https://x"
+        },
+        {
+          "name": "B",
+          "url": "javascript:x"
+        }
+      ],
+      "expected": [
+        {
+          "name": "A",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "B",
+          "last": true,
+          "url": "",
+          "hasurl": false
+        }
+      ]
+    },
+    {
+      "name": "no answer",
+      "segments": [
+        {
+          "name": "A",
+          "last": true
+        }
+      ],
+      "resolved": null,
+      "expected": [
+        {
+          "name": "A",
+          "last": true,
+          "url": "",
+          "hasurl": false
+        }
+      ]
+    }
+  ]
+}

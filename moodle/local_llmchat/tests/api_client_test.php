@@ -51,6 +51,34 @@ final class api_client_test extends \advanced_testcase {
         $this->assertSame('[{"doc_id":"1:2:intro"}]', $req['body']);
     }
 
+    public function test_conversation_routes_authenticate_as_the_user(): void {
+        $t = new fake_transport();
+        $t->routes['GET /api/conversations'] = fake_transport::json([['id' => 'c1', 'title' => 'Frage']]);
+        $t->routes['GET /api/conversations/a-b_c'] = fake_transport::json(['events' => [], 'last_seq' => 0]);
+        $client = new api_client('https://api.example', 'sekret', $t);
+
+        $this->assertSame([['id' => 'c1', 'title' => 'Frage']], $client->conversations('chat.jwt'));
+        $this->assertSame(['events' => [], 'last_seq' => 0], $client->conversation('chat.jwt', 'a-b_c'));
+        foreach ($t->requests as $req) {
+            $this->assertSame('GET', $req['method']);
+            $this->assertContains('Authorization: Bearer chat.jwt', $req['headers']);
+            $this->assertStringNotContainsString('sekret', implode("\n", $req['headers']));
+        }
+        $this->assertSame('https://api.example/api/conversations/a-b_c?compact=true', $t->requests[1]['url']);
+    }
+
+    public function test_chat_token_is_redacted_from_errors(): void {
+        $t = new fake_transport();
+        $t->routes['GET /api/conversations'] = new response(401, 'bad token chat.jwt');
+        $client = new api_client('https://api.example', 'sekret', $t);
+        try {
+            $client->conversations('chat.jwt');
+            $this->fail('expected api_exception');
+        } catch (api_exception $e) {
+            $this->assertStringNotContainsString('chat.jwt', $e->getMessage() . ' ' . $e->debuginfo);
+        }
+    }
+
     public function test_status_uses_get(): void {
         $t = new fake_transport();
         $t->routes['GET /ingest/status'] = fake_transport::json(['site_id' => 'x', 'documents' => 3]);

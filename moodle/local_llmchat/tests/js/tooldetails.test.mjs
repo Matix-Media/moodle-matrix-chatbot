@@ -16,7 +16,26 @@
 // Tests for local_llmchat/tooldetails. Run: node --test moodle/local_llmchat/tests/js/
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {citationMeta, describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
+
+// Vectors shared with the PHP port (tests/tool_display_test.php).
+const VECTORS = JSON.parse(readFileSync(new URL('../fixtures/tool_display_vectors.json', import.meta.url), 'utf8'));
+for (const {name, args, expected} of VECTORS.calls) {
+    test(`shared vector, call: ${name}`, () => {
+        assert.deepEqual(describeCall(args, {strings: VECTORS.strings, locale: 'en'}), expected);
+    });
+}
+for (const {name, frame, expected} of VECTORS.results) {
+    test(`shared vector, result: ${name}`, () => {
+        assert.deepEqual(describeResult(frame, {strings: VECTORS.strings}), expected);
+    });
+}
+for (const {name, segments, resolved, expected} of VECTORS.links) {
+    test(`shared vector, links: ${name}`, () => {
+        assert.deepEqual(linkSegments(segments, resolved), expected);
+    });
+}
 
 // Strings as the page would load them (keys from STRING_KEYS → lang/en).
 const STR = {

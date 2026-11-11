@@ -15,7 +15,10 @@ Thinking levels (``off|low|medium|high``) map to:
   ``off`` (→ ``low``), is an effort level, and no ``temperature`` is ever sent.
 * **openai** — hosted: Responses API with ``reasoning={effort, summary}`` so summaries
   stream; an OpenAI-compatible server (``base_url`` set) gets plain
-  ``reasoning_effort`` on chat completions. ``temperature`` is dropped when reasoning.
+  ``reasoning_effort`` on chat completions, except OpenRouter, which takes
+  ``reasoning={effort}`` in the request body. ``temperature`` is dropped when
+  reasoning. Compatible servers are built as :class:`ChatOpenAICompatible`, which keeps
+  the reasoning they stream (plain ``ChatOpenAI`` drops it).
 * **ollama** — ``reasoning=True|False`` (the ``think`` flag).
 
 ``thinking_params`` (raw provider kwargs) are merged last, for servers this table
@@ -25,6 +28,7 @@ does not know. Utility calls (titles, OCR) never think.
 from __future__ import annotations
 
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from langchain.chat_models import init_chat_model
 from langchain_core.embeddings import Embeddings
@@ -37,6 +41,7 @@ from moodle_llm_chat.config import (
     Provider,
     ThinkingLevel,
 )
+from moodle_llm_chat.llm.openai_compat import ChatOpenAICompatible
 
 #: LangChain's ``model_provider`` names.
 _LANGCHAIN_PROVIDER = {
@@ -94,6 +99,9 @@ def chat_model_kwargs(cfg: LLMConfig, *, utility: bool = False) -> tuple[str, di
         kwargs["stream_usage"] = True
         if thinking is ThinkingLevel.OFF:
             kwargs["temperature"] = cfg.temperature
+        elif cfg.base_url and _is_openrouter(cfg.base_url):
+            # ``reasoning=`` would switch ChatOpenAI to the Responses API.
+            kwargs["extra_body"] = {"reasoning": {"effort": thinking.value}}
         elif cfg.base_url:
             kwargs["reasoning_effort"] = thinking.value
         else:
@@ -113,10 +121,21 @@ def chat_model_kwargs(cfg: LLMConfig, *, utility: bool = False) -> tuple[str, di
     return _LANGCHAIN_PROVIDER[provider], kwargs
 
 
-def build_chat_model(cfg: LLMConfig, *, utility: bool = False) -> BaseChatModel:
-    """Construct the chat model. Nothing is contacted until the first call."""
+def _is_openrouter(base_url: str) -> bool:
+    host = urlparse(base_url).hostname or ""
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def build_chat_model(cfg: LLMConfig, *, utility: bool = False, **client: Any) -> BaseChatModel:
+    """Construct the chat model. Nothing is contacted until the first call.
+
+    ``client`` kwargs (e.g. ``http_async_client``) go to the constructor unchanged.
+    """
     provider, kwargs = chat_model_kwargs(cfg, utility=utility)
+    kwargs.update(client)
     model = kwargs.pop("model")
+    if cfg.provider is Provider.OPENAI and cfg.base_url:
+        return ChatOpenAICompatible(model=model, **kwargs)
     built = init_chat_model(model, model_provider=provider, **kwargs)
     assert isinstance(built, BaseChatModel)
     return built

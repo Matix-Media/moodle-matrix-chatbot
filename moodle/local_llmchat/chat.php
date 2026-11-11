@@ -62,6 +62,7 @@ echo $OUTPUT->header();
 if (!\local_llmchat\api_client::is_configured()) {
     echo $OUTPUT->notification(get_string('error:notconfigured', 'local_llmchat'), 'warning');
 } else {
+    $page->preload($OUTPUT);
     echo $OUTPUT->render_from_template('local_llmchat/chat_page', $page->export_for_template($OUTPUT));
     $PAGE->requires->js_call_amd('local_llmchat/chat', 'init', [$page->js_config()]);
 }
