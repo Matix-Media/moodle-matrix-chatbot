@@ -33,3 +33,7 @@ moodle-llm-chat.log
 /chunks/
 all_content*
 /secrets/
+
+# Course datasets for the dev stack (dev/seed/README.md) — real data, never commit
+/dev/dataset/
+/dev/datasets/
