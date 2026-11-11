@@ -88,6 +88,33 @@ see it.
 
 ## Development
 
+### Trying it locally
+
+`dev/` runs a real Moodle 4.5 with the plugin, the API and a real model of your choice
+in Docker, for clicking through by hand:
+
+```bash
+cp dev/.env.example dev/.env        # provider, model, API key (Gemini, OpenAI, Ollama, …)
+docker compose -f dev/docker-compose.yml up -d --build --wait
+```
+
+Open <http://localhost:8080> and log in as `student`, `student2` or `teacher`
+(password `Test1234!`), or `admin` (`Admin1234!`). The plugin is already connected to
+the API at <http://localhost:8000>, and two seeded courses are imported by cron within
+a minute. Add your own courses as admin; they sync the same way.
+
+* Model change: edit `dev/.env`, then `docker compose -f dev/docker-compose.yml up -d api`.
+  If the embedding model or dimension changed, the API won't start until you run
+  `… run --rm --no-deps --entrypoint moodle-llm-chat api reembed --yes` (content is kept
+  and re-embedded).
+* The plugin is bind-mounted: PHP, templates and a rebuilt `amd/build` apply on reload;
+  a `version.php` bump needs `… restart moodle`. API changes need `… up -d --build api`.
+  Data is kept. (Docker must be able to see this checkout.)
+* A model on your machine (Ollama, LM Studio) is reachable as `host.docker.internal`.
+* `… logs -f api` shows the agent; `… down -v` wipes all data.
+
+### Tests
+
 Tests are the specification — write the failing test first.
 
 ```bash
