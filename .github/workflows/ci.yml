@@ -4,6 +4,9 @@ on:
   push:
     branches: [master]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "17 3 * * *"  # nightly end-to-end run
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -106,3 +109,34 @@ jobs:
       - name: Shared chat-token vectors agree with the API
         # The PHP and Python sides must derive the same key and verify the same tokens.
         run: cmp plugin/tests/fixtures/jwt_vectors.json plugin/moodle/local_llmchat/tests/fixtures/jwt_vectors.json
+
+  e2e:
+    name: End to end — Moodle + plugin + API + browser
+    runs-on: ubuntu-latest
+    needs: [python-integration, moodle-plugin]
+    # ~10 minutes: on master, nightly, and on PRs labelled "e2e".
+    if: >-
+      github.event_name == 'push' || github.event_name == 'schedule' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the stack
+        run: docker compose -f tests/e2e/docker-compose.yml --profile test build
+      - name: Start Moodle, API and the scripted model
+        run: docker compose -f tests/e2e/docker-compose.yml up -d --wait moodle
+      - name: Browser tests
+        run: docker compose -f tests/e2e/docker-compose.yml run --name mlc-e2e-run runner
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f tests/e2e/docker-compose.yml logs --no-color --tail=300
+      - name: Collect Playwright traces
+        if: failure()
+        run: docker cp mlc-e2e-run:/artifacts tests/e2e/artifacts || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-traces
+          path: tests/e2e/artifacts
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/e2e/docker-compose.yml down -v

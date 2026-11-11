@@ -205,7 +205,7 @@ _DROP_TAGS = ("script", "style", "nav", "header", "footer", "noscript", "svg")
 def extract_html(data: bytes, *, ocr: OcrCallable | None = None) -> list[Segment]:
     import base64
 
-    from selectolax.parser import HTMLParser
+    from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
     markup = _decode(data)
     try:

@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS courses (
     payload BLOB NOT NULL,
     visible INTEGER NOT NULL, startdate INTEGER NOT NULL, enddate INTEGER NOT NULL,
     timemodified INTEGER NOT NULL, sync_id TEXT, last_seen INTEGER NOT NULL,
+    seen_seq INTEGER NOT NULL DEFAULT 0,
     tombstoned_at INTEGER,
     PRIMARY KEY (site_id, course_id)
 );
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS documents (
     extract_version INTEGER, extracted_at INTEGER, skip_reason TEXT,
     char_count INTEGER NOT NULL DEFAULT 0, page_count INTEGER NOT NULL DEFAULT 0,
     first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, sync_id TEXT,
+    seen_seq INTEGER NOT NULL DEFAULT 0,
     tombstoned_at INTEGER,
     PRIMARY KEY (site_id, doc_id)
 );
@@ -118,6 +120,7 @@ CREATE INDEX IF NOT EXISTS documents_extract ON documents(extract_version);
 CREATE TABLE IF NOT EXISTS sync_runs (
     site_id TEXT NOT NULL, sync_id TEXT NOT NULL, mode TEXT NOT NULL,
     state TEXT NOT NULL, started_at INTEGER NOT NULL, last_activity_at INTEGER NOT NULL,
+    start_seq INTEGER NOT NULL DEFAULT 0,
     finished_at INTEGER,
     PRIMARY KEY (site_id, sync_id)
 );
@@ -340,6 +343,7 @@ class Store:
         self.blobs_dir = blobs_dir or self.path.parent / "blobs"
         self._con: Any = None
         self._lookup_key = ring.derive("lookup")
+        self._last_seq = 0
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -378,6 +382,9 @@ class Store:
                     f"{self.embed_dim} is configured. Run `moodle-llm-chat reembed` after "
                     "changing the embedding model."
                 )
+            for table in ("documents", "courses"):
+                row = con.execute(f"SELECT coalesce(max(seen_seq), 0) FROM {table}").fetchone()
+                self._last_seq = max(self._last_seq, int(row[0]))
             con.execute(
                 "INSERT OR REPLACE INTO meta VALUES ('schema_version', ?), ('embed_dim', ?)",
                 (str(SCHEMA_VERSION), str(self.embed_dim)),
@@ -400,6 +407,15 @@ class Store:
         if self._con is None:
             raise StoreError("store is not open")
         return self._con
+
+    def _seq(self) -> int:
+        """A strictly increasing "seen" sequence: orders activity within one second.
+
+        Full syncs delete what was not seen since they started; wall-clock seconds
+        cannot order a push and a sync start that happen in the same second.
+        """
+        self._last_seq = max(self._last_seq + 1, time.time_ns())
+        return self._last_seq
 
     def _lookup(self, value: str) -> str:
         return hmac.new(self._lookup_key, value.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -602,13 +618,13 @@ class Store:
                 )
                 con.execute(
                     "INSERT INTO courses (site_id, course_id, payload, visible, startdate, "
-                    "enddate, timemodified, sync_id, last_seen, tombstoned_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,NULL) "
+                    "enddate, timemodified, sync_id, last_seen, seen_seq, tombstoned_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,NULL) "
                     "ON CONFLICT(site_id, course_id) DO UPDATE SET payload=excluded.payload, "
                     "visible=excluded.visible, startdate=excluded.startdate, "
                     "enddate=excluded.enddate, timemodified=excluded.timemodified, "
                     "sync_id=COALESCE(excluded.sync_id, courses.sync_id), "
-                    "last_seen=excluded.last_seen, tombstoned_at=NULL",
+                    "last_seen=excluded.last_seen, seen_seq=excluded.seen_seq, tombstoned_at=NULL",
                     (
                         site_id,
                         c.course_id,
@@ -619,6 +635,7 @@ class Store:
                         c.timemodified,
                         sync_id,
                         stamp,
+                        self._seq(),
                     ),
                 )
         if sync_id:
@@ -706,9 +723,9 @@ class Store:
                     and existing["tombstoned_at"] is None
                 ):
                     con.execute(
-                        "UPDATE documents SET last_seen=?, sync_id=COALESCE(?, sync_id) "
-                        "WHERE site_id=? AND doc_id=?",
-                        (stamp, sync_id, site_id, d.doc_id),
+                        "UPDATE documents SET last_seen=?, seen_seq=?, "
+                        "sync_id=COALESCE(?, sync_id) WHERE site_id=? AND doc_id=?",
+                        (stamp, self._seq(), sync_id, site_id, d.doc_id),
                     )
                     continue
                 payload = self._seal_json(
@@ -729,8 +746,8 @@ class Store:
                     "INSERT INTO documents (site_id, doc_id, course_id, section_id, "
                     "section_order, cmid, modname, kind, payload, mimetype, filesize, "
                     "blob_sha256, timemodified, content_hash, extract_version, extracted_at, "
-                    "skip_reason, first_seen, last_seen, sync_id, tombstoned_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,NULL) "
+                    "skip_reason, first_seen, last_seen, sync_id, seen_seq, tombstoned_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,NULL) "
                     "ON CONFLICT(site_id, doc_id) DO UPDATE SET course_id=excluded.course_id, "
                     "section_id=excluded.section_id, section_order=excluded.section_order, "
                     "cmid=excluded.cmid, modname=excluded.modname, kind=excluded.kind, "
@@ -738,6 +755,7 @@ class Store:
                     "filesize=excluded.filesize, blob_sha256=excluded.blob_sha256, "
                     "timemodified=excluded.timemodified, content_hash=excluded.content_hash, "
                     "extract_version=NULL, skip_reason=NULL, last_seen=excluded.last_seen, "
+                    "seen_seq=excluded.seen_seq, "
                     "sync_id=COALESCE(excluded.sync_id, documents.sync_id), tombstoned_at=NULL",
                     (
                         site_id,
@@ -757,6 +775,7 @@ class Store:
                         stamp,
                         stamp,
                         sync_id,
+                        self._seq(),
                     ),
                 )
                 changed.append(d.doc_id)
@@ -886,10 +905,10 @@ class Store:
         with self.connection as con:
             con.execute(
                 "INSERT INTO sync_runs (site_id, sync_id, mode, state, started_at, "
-                "last_activity_at) VALUES (?,?,?,'open',?,?) "
+                "last_activity_at, start_seq) VALUES (?,?,?,'open',?,?,?) "
                 "ON CONFLICT(site_id, sync_id) DO UPDATE SET "
                 "last_activity_at=excluded.last_activity_at",
-                (site_id, sync_id, mode, stamp, stamp),
+                (site_id, sync_id, mode, stamp, stamp, self._seq()),
             )
 
     def apply_manifest(
@@ -900,7 +919,11 @@ class Store:
         *,
         now: int | None = None,
     ) -> list[str]:
-        """Mark unchanged documents as seen; return the ids the plugin must send."""
+        """Mark every listed document as seen in this run; return the ids to send.
+
+        Listed-but-changed documents count as seen too: if the plugin then fails to
+        push one, the old version is kept rather than deleted.
+        """
         stamp = _now(now)
         self._open_run(site_id, sync_id, stamp)
         need: list[str] = []
@@ -914,11 +937,12 @@ class Store:
                 ).fetchone()
                 if row is None or row["tombstoned_at"] is not None or row[0] != content_hash:
                     need.append(doc_id)
-                    continue
-                con.execute(
-                    "UPDATE documents SET sync_id=?, last_seen=? WHERE site_id=? AND doc_id=?",
-                    (sync_id, stamp, site_id, doc_id),
-                )
+                if row is not None and row["tombstoned_at"] is None:
+                    con.execute(
+                        "UPDATE documents SET sync_id=?, last_seen=?, seen_seq=? "
+                        "WHERE site_id=? AND doc_id=?",
+                        (sync_id, stamp, self._seq(), site_id, doc_id),
+                    )
         self._touch_sync(site_id, sync_id, stamp)
         return sorted(need)
 
@@ -945,12 +969,15 @@ class Store:
         tombstoned: list[str] = []
         courses_gone: list[int] = []
         if run["mode"] == "full":
+            # "Seen in this run" = listed in its manifest or pushed since it started.
+            # The plugin does not tag pushes with the sync id, so activity order decides.
+            started = run["start_seq"]
             tombstoned = [
                 r[0]
                 for r in self.connection.execute(
                     "SELECT doc_id FROM documents WHERE site_id=? AND tombstoned_at IS NULL "
-                    "AND (sync_id IS NULL OR sync_id != ?) ORDER BY doc_id",
-                    (site_id, sync_id),
+                    "AND seen_seq < ? AND (sync_id IS NULL OR sync_id != ?) ORDER BY doc_id",
+                    (site_id, started, sync_id),
                 )
             ]
             self.tombstone_documents(site_id, tombstoned, now=stamp)
@@ -958,8 +985,8 @@ class Store:
                 r[0]
                 for r in self.connection.execute(
                     "SELECT course_id FROM courses WHERE site_id=? AND tombstoned_at IS NULL "
-                    "AND (sync_id IS NULL OR sync_id != ?)",
-                    (site_id, sync_id),
+                    "AND seen_seq < ? AND (sync_id IS NULL OR sync_id != ?)",
+                    (site_id, started, sync_id),
                 )
             ]
             self.tombstone_courses(site_id, courses_gone, now=stamp)
@@ -974,6 +1001,17 @@ class Store:
             mode=run["mode"],
             tombstoned=tombstoned,
             courses_tombstoned=courses_gone,
+        )
+
+    def has_open_full_sync(self, site_id: str, *, now: int | None = None) -> bool:
+        cutoff = _now(now) - SYNC_STALE_AFTER_S
+        return (
+            self.connection.execute(
+                "SELECT 1 FROM sync_runs WHERE site_id=? AND mode='full' AND state='open' "
+                "AND last_activity_at >= ? LIMIT 1",
+                (site_id, cutoff),
+            ).fetchone()
+            is not None
         )
 
     def _open_run(self, site_id: str, sync_id: str, stamp: int) -> None:

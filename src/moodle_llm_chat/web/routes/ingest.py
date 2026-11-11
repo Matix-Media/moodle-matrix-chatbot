@@ -22,6 +22,7 @@ from moodle_llm_chat.web.auth import SiteDep, StoreDep
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 SHA256_PATH = Path(pattern=r"^[0-9a-f]{64}$")
+MAX_DOCUMENTS_PER_REQUEST = 500
 
 
 class SyncStart(BaseModel):
@@ -33,9 +34,24 @@ class SyncRef(BaseModel):
     sync_id: str = Field(min_length=1, max_length=64)
 
 
+class ManifestEntry(BaseModel):
+    doc_id: str
+    content_hash: str
+    timemodified: int | None = None
+
+
 class Manifest(BaseModel):
+    """``entries`` as the plugin sends it (a list), or as a ``doc_id → hash`` map."""
+
     sync_id: str = Field(min_length=1, max_length=64)
-    entries: dict[str, str]
+    entries: list[ManifestEntry] | dict[str, str]
+    chunk_no: int | None = None
+    of: int | None = None
+
+    def hashes(self) -> dict[str, str]:
+        if isinstance(self.entries, dict):
+            return self.entries
+        return {e.doc_id: e.content_hash for e in self.entries}
 
 
 class CoursesBody(BaseModel):
@@ -49,7 +65,7 @@ class CourseIds(BaseModel):
 
 class DocumentsBody(BaseModel):
     sync_id: str | None = None
-    documents: list[DocumentIn] = Field(max_length=500)
+    documents: list[DocumentIn]
 
 
 class DocIds(BaseModel):
@@ -72,7 +88,7 @@ async def sync_start(body: SyncStart, site: SiteDep, store: StoreDep) -> dict[st
 @router.post("/manifest")
 async def manifest(body: Manifest, site: SiteDep, store: StoreDep) -> dict[str, list[str]]:
     try:
-        need = store.apply_manifest(site.site_id, body.sync_id, body.entries)
+        need = store.apply_manifest(site.site_id, body.sync_id, body.hashes())
     except SyncStateError as exc:
         raise _conflict(exc) from exc
     return {"need": need}
@@ -88,10 +104,16 @@ async def sync_finish(body: SyncRef, site: SiteDep, store: StoreDep) -> SyncResu
     return result
 
 
+# Bodies are accepted in the plugin's shape (a bare JSON array) or wrapped in an object.
+
+
 @router.post("/courses")
-async def courses(body: CoursesBody, site: SiteDep, store: StoreDep) -> dict[str, int]:
-    store.upsert_courses(site.site_id, body.courses, sync_id=body.sync_id)
-    return {"count": len(body.courses)}
+async def courses(
+    body: list[CourseIn] | CoursesBody, site: SiteDep, store: StoreDep
+) -> dict[str, int]:
+    items, sync_id = (body, None) if isinstance(body, list) else (body.courses, body.sync_id)
+    store.upsert_courses(site.site_id, items, sync_id=sync_id)
+    return {"count": len(items)}
 
 
 @router.post("/courses/delete")
@@ -102,20 +124,31 @@ async def delete_courses(body: CourseIds, site: SiteDep, store: StoreDep) -> dic
 
 @router.post("/documents")
 async def documents(
-    body: DocumentsBody, request: Request, site: SiteDep, store: StoreDep
+    body: list[DocumentIn] | DocumentsBody, request: Request, site: SiteDep, store: StoreDep
 ) -> dict[str, list[str]]:
-    changed = store.upsert_documents(site.site_id, body.documents, sync_id=body.sync_id)
-    needs_blob = store.missing_blobs(d.file.sha256 for d in body.documents if d.file)
+    items, sync_id = (body, None) if isinstance(body, list) else (body.documents, body.sync_id)
+    if len(items) > MAX_DOCUMENTS_PER_REQUEST:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"at most {MAX_DOCUMENTS_PER_REQUEST} documents per request",
+        )
+    changed = store.upsert_documents(site.site_id, items, sync_id=sync_id)
+    needs_blob = store.missing_blobs(d.file.sha256 for d in items if d.file)
     if changed:
+        # Pushes during an open full sync are bulk work; everything else is urgent.
+        bulk = sync_id is not None or store.has_open_full_sync(site.site_id)
         for listener in request.app.state.document_listeners:
-            listener(site.site_id, changed, body.sync_id is not None)
+            listener(site.site_id, changed, bulk)
     return {"changed": changed, "needs_blob": needs_blob}
 
 
 @router.post("/documents/delete")
-async def delete_documents(body: DocIds, site: SiteDep, store: StoreDep) -> dict[str, int]:
-    store.tombstone_documents(site.site_id, body.doc_ids)
-    return {"count": len(body.doc_ids)}
+async def delete_documents(
+    body: list[str] | DocIds, site: SiteDep, store: StoreDep
+) -> dict[str, int]:
+    doc_ids = body if isinstance(body, list) else body.doc_ids
+    store.tombstone_documents(site.site_id, doc_ids)
+    return {"count": len(doc_ids)}
 
 
 @router.put("/blobs/{sha256}", response_model=None)
@@ -154,6 +187,7 @@ async def put_blob(
 @router.get("/status")
 async def ingest_status(request: Request, site: SiteDep, store: StoreDep) -> dict[str, Any]:
     result = store.status(site.site_id)
+    result["site_id"] = site.site_id
     pipeline = getattr(request.app.state, "pipeline_status", None)
     if pipeline is not None:
         result["pipeline"] = pipeline()

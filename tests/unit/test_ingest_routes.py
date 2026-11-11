@@ -88,6 +88,13 @@ class TestAuth:
         assert r.status_code == 200
         assert r.json()["documents"] == 0
 
+    def test_status_names_the_site(self, app_client: TestClient, secrets: dict[str, str]) -> None:
+        """The plugin learns its site id (the chat token's `kid`) from this response."""
+        r = app_client.get("/ingest/status", headers=_auth(secrets["a"]))
+        assert r.json()["site_id"] == "site-a"
+        r = app_client.get("/ingest/status", headers=_auth(secrets["b"]))
+        assert r.json()["site_id"] == "site-b"
+
 
 class TestDocuments:
     def test_upsert_reports_changed_and_missing_blobs(
@@ -264,3 +271,41 @@ class TestSync:
             headers=_auth(secrets["a"]),
         )
         assert r.status_code == 409
+
+
+class TestPluginWireShapes:
+    """The exact bodies local_llmchat's api_client sends (bare arrays, list manifests)."""
+
+    def test_bare_arrays_and_list_manifest(
+        self, app_client: TestClient, secrets: dict[str, str]
+    ) -> None:
+        h = _auth(secrets["a"])
+        course = {"course_id": 2, "fullname": "Netzwerke", "shortname": "LF7", "visible": True}
+        assert app_client.post("/ingest/courses", json=[course], headers=h).status_code == 200
+        old = doc("2:9:old").model_dump(mode="json")
+        assert app_client.post("/ingest/documents", json=[old], headers=h).status_code == 200
+        app_client.post("/ingest/sync/start", json={"sync_id": "s1", "mode": "full"}, headers=h)
+        manifest = {
+            "sync_id": "s1",
+            "chunk_no": 1,
+            "of": 1,
+            "entries": [{"doc_id": "2:10:a", "timemodified": 1, "content_hash": "h-2:10:a"}],
+        }
+        r = app_client.post("/ingest/manifest", json=manifest, headers=h)
+        assert r.status_code == 200 and r.json()["need"] == ["2:10:a"]
+        app_client.post("/ingest/courses", json=[course], headers=h)
+        r = app_client.post(
+            "/ingest/documents", json=[doc("2:10:a").model_dump(mode="json")], headers=h
+        )
+        assert r.json()["changed"] == ["2:10:a"]
+        result = app_client.post("/ingest/sync/finish", json={"sync_id": "s1"}, headers=h).json()
+        assert result["tombstoned"] == ["2:9:old"]
+        status = app_client.get("/ingest/status", headers=h).json()
+        assert status["documents"] == 1 and status["courses"] == 1
+
+    def test_bare_array_delete(self, app_client: TestClient, secrets: dict[str, str]) -> None:
+        h = _auth(secrets["a"])
+        app_client.post("/ingest/documents", json=[doc().model_dump(mode="json")], headers=h)
+        r = app_client.post("/ingest/documents/delete", json=["2:10:intro"], headers=h)
+        assert r.status_code == 200
+        assert app_client.get("/ingest/status", headers=h).json()["documents"] == 0

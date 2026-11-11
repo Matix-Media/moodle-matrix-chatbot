@@ -1,0 +1,110 @@
+# End-to-end stack: Moodle + local_llmchat, the API, a scripted model, and a browser.
+#   docker compose -f tests/e2e/docker-compose.yml --profile test build
+#   docker compose -f tests/e2e/docker-compose.yml up -d --wait moodle
+#   docker compose -f tests/e2e/docker-compose.yml run --name mlc-e2e-run runner
+#   docker cp mlc-e2e-run:/artifacts tests/e2e/artifacts   # Playwright traces on failure
+# The plugin and the tests are copied into their images (no bind mounts), so a code
+# change needs a rebuild — and it works where the Docker VM cannot see this checkout.
+name: mlc-e2e
+
+x-api-env: &api-env
+  MLC_DATA_DIR: /data
+  # A fixed, test-only key. Never reuse outside this stack.
+  MLC_SECURITY__MASTER_KEY: "ZTJlLW9ubHktbWFzdGVyLWtleS0tLW5vdC1zZWNyZXQ="
+  MLC_SECURITY__REQUIRE_TLS: "false"
+  MLC_LLM__PROVIDER: openai
+  MLC_LLM__MODEL: mock
+  MLC_LLM__BASE_URL: http://mock-llm:9000/v1
+  MLC_EMBEDDING__PROVIDER: openai
+  MLC_EMBEDDING__MODEL: mock-embed
+  MLC_EMBEDDING__DIM: "64"
+  MLC_EMBEDDING__BASE_URL: http://mock-llm:9000/v1
+  MLC_AGENT__SHOW_THINKING: indicator
+  MLC_SERVER__BURST_PER_MINUTE: "200"
+  MLC_LOG_LEVEL: INFO
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: moodle
+      POSTGRES_PASSWORD: moodle
+      POSTGRES_DB: moodle
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "moodle"]
+      interval: 2s
+      retries: 30
+
+  mock-llm:
+    build: ./mock_llm
+    environment:
+      MOCK_EMBED_DIM: "64"
+
+  api:
+    build: ../..
+    environment: *api-env
+    entrypoint: ["sh", "-c"]
+    # Register the Moodle site once and hand its secret to Moodle via the shared volume.
+    command:
+      - >-
+        if [ ! -s /shared/site-secret ]; then
+        moodle-llm-chat site add e2e --name E2E --url http://moodle | tail -1 > /shared/site-secret;
+        fi; exec moodle-llm-chat serve --port 8000
+    user: root
+    volumes:
+      - shared:/shared
+      - api-data:/data
+    depends_on: [mock-llm]
+
+  moodle:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/moodle/Dockerfile
+    environment:
+      E2E_API_URL: http://api:8000
+    volumes:
+      - shared:/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/login/index.php"]
+      interval: 5s
+      retries: 60
+      start_period: 60s
+    # No published ports: the browser runs on the compose network (service "runner"),
+    # so the stack never collides with anything else on the host.
+
+  runner:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/runner/Dockerfile
+    profiles: ["test"]
+    working_dir: /repo
+    volumes:
+      - shared:/shared:ro
+    environment:
+      E2E_MOODLE_URL: http://moodle
+      E2E_API_URL: http://api:8000
+      E2E_MOCK_URL: http://mock-llm:9000
+      PYTHONDONTWRITEBYTECODE: "1"
+    command:
+      - pytest
+      - -p
+      - no:cacheprovider
+      - -o
+      - addopts=
+      - -m
+      - e2e
+      - tests/e2e
+      - --tracing=retain-on-failure
+      - --output=/artifacts
+    depends_on:
+      moodle:
+        condition: service_healthy
+
+volumes:
+  shared:
+  api-data:

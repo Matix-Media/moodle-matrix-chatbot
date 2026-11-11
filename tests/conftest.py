@@ -16,6 +16,10 @@ from pathlib import Path
 
 import pytest
 
+#: The end-to-end tier only runs inside tests/e2e/docker-compose.yml (its runner sets
+#: E2E_MOODLE_URL and has Playwright); elsewhere it is not even collected.
+collect_ignore = [] if os.environ.get("E2E_MOODLE_URL") else ["e2e"]
+
 
 @pytest.fixture(autouse=True)
 def _isolated_env(

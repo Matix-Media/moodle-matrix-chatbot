@@ -140,15 +140,15 @@ class TestDocuments:
 
 class TestSyncRuns:
     def test_full_sync_tombstones_unseen_documents(self, store: Store) -> None:
-        store.upsert_documents(SITE, [doc("2:10:a"), doc("2:11:b")])
+        store.upsert_documents(SITE, [doc("2:10:a"), doc("2:11:b")], now=50)
         store.start_sync(SITE, "s1", mode="full", now=100)
-        store.upsert_documents(SITE, [doc("2:10:a")], sync_id="s1")
+        store.upsert_documents(SITE, [doc("2:10:a", content_hash="new")], now=110)
         result = store.finish_sync(SITE, "s1", now=200)
         assert result.tombstoned == ["2:11:b"]
         assert [d.doc_id for d in store.live_documents(SITE)] == ["2:10:a"]
 
     def test_manifest_marks_unchanged_as_seen_and_reports_needed(self, store: Store) -> None:
-        store.upsert_documents(SITE, [doc("2:10:a"), doc("2:11:b")])
+        store.upsert_documents(SITE, [doc("2:10:a"), doc("2:11:b")], now=50)
         store.start_sync(SITE, "s1", mode="full", now=100)
         need = store.apply_manifest(
             SITE,
@@ -157,19 +157,39 @@ class TestSyncRuns:
             now=110,
         )
         assert need == ["2:11:b", "2:12:new"]
-        store.upsert_documents(SITE, [doc("2:11:b", content_hash="changed")], sync_id="s1")
+        store.upsert_documents(SITE, [doc("2:11:b", content_hash="changed")], now=115)
         result = store.finish_sync(SITE, "s1", now=120)
         assert result.tombstoned == []
 
+    def test_documents_pushed_during_the_run_survive_without_sync_id(self, store: Store) -> None:
+        """The plugin sends no sync_id with documents; activity during the run counts."""
+        store.upsert_documents(SITE, [doc("2:10:old"), doc("2:11:changed")], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        store.apply_manifest(SITE, "s1", {"2:11:changed": "h2", "2:12:new": "h3"}, now=105)
+        store.upsert_documents(
+            SITE,
+            [doc("2:11:changed", content_hash="h2"), doc("2:12:new", content_hash="h3")],
+            now=110,
+        )
+        result = store.finish_sync(SITE, "s1", now=120)
+        assert result.tombstoned == ["2:10:old"]
+        assert {d.doc_id for d in store.live_documents(SITE)} == {"2:11:changed", "2:12:new"}
+
+    def test_listed_document_the_plugin_failed_to_send_is_kept(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a")], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        assert store.apply_manifest(SITE, "s1", {"2:10:a": "changed"}, now=105) == ["2:10:a"]
+        assert store.finish_sync(SITE, "s1", now=120).tombstoned == []
+
     def test_stale_run_never_tombstones(self, store: Store) -> None:
-        store.upsert_documents(SITE, [doc("2:10:a")])
+        store.upsert_documents(SITE, [doc("2:10:a")], now=50)
         store.start_sync(SITE, "s1", mode="full", now=100)
         with pytest.raises(SyncStateError, match="stale"):
             store.finish_sync(SITE, "s1", now=100 + 25 * 3600)
         assert [d.doc_id for d in store.live_documents(SITE)] == ["2:10:a"]
 
     def test_incremental_finish_does_not_tombstone(self, store: Store) -> None:
-        store.upsert_documents(SITE, [doc("2:10:a")])
+        store.upsert_documents(SITE, [doc("2:10:a")], now=50)
         store.start_sync(SITE, "s1", mode="incremental", now=100)
         assert store.finish_sync(SITE, "s1", now=101).tombstoned == []
 
@@ -178,10 +198,10 @@ class TestSyncRuns:
             store.finish_sync(SITE, "nope", now=1)
 
     def test_full_sync_tombstones_unseen_courses(self, store: Store) -> None:
-        store.upsert_courses(SITE, [_course(2), _course(3)])
+        store.upsert_courses(SITE, [_course(2), _course(3)], now=50)
         store.start_sync(SITE, "s1", mode="full", now=100)
-        store.upsert_courses(SITE, [_course(2)], sync_id="s1")
-        store.finish_sync(SITE, "s1", now=101)
+        store.upsert_courses(SITE, [_course(2)], now=105)  # no sync_id, like the plugin
+        store.finish_sync(SITE, "s1", now=110)
         assert [c.course_id for c in store.courses(SITE)] == [2]
 
 

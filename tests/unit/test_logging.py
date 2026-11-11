@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from moodle_llm_chat.logging import configure_logging
 
 
@@ -42,3 +44,19 @@ def test_payload_fields_are_redacted() -> None:
     assert out["text"] == "[redacted]"
     assert out["content"] == "[redacted]"
     assert out["count"] == 3 and out["doc_id"] == "d1"
+
+
+def test_json_logs_include_tracebacks(capsys: pytest.CaptureFixture[str]) -> None:
+    """Production logs are JSON; an exception must arrive with its traceback."""
+    import json
+
+    import structlog
+
+    configure_logging("INFO", pretty=False)
+    try:
+        raise ValueError("kaputt")
+    except ValueError:
+        structlog.get_logger("t").exception("job_error", doc_id="d1")
+    line = [ln for ln in capsys.readouterr().err.splitlines() if "job_error" in ln][-1]
+    event = json.loads(line)
+    assert "ValueError: kaputt" in event["exception"]

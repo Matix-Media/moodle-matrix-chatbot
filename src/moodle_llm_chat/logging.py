@@ -46,6 +46,9 @@ def configure_logging(level: str = "INFO", *, pretty: bool = True) -> None:
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="%H:%M:%S"),
     ]
+    if not pretty:
+        # JSON has no way to show exc_info itself: render the traceback into the event.
+        shared_processors.append(structlog.processors.format_exc_info)
     renderer = structlog.dev.ConsoleRenderer() if pretty else structlog.processors.JSONRenderer()
 
     structlog.configure(
