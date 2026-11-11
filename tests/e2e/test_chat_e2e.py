@@ -62,6 +62,43 @@ class TestStudentChat:
                 < [...b.children].findIndex(n => n.textContent.includes('B204'))"""
         )
 
+    def test_each_thinking_step_gets_an_expandable_block(self, student: Chat, mock: Mock) -> None:
+        mock.script(
+            {
+                "reasoning": "Ich suche zuerst nach dem Raum.",
+                "tool": "search_text",
+                "args": {"query": "Raum"},
+            },
+            {
+                "reasoning": "Gefunden, der Plan nennt B204.",
+                "reasoning_delay": 4,
+                "text": "Der Unterricht ist in Raum B204 [1].",
+                "expect": "B204",
+            },
+        )
+        student.open().ask("Wo ist der Unterricht?")
+        body = student.last_answer()
+        blocks = body.locator("[data-region=thinking-block]")
+        # The second step thinks for a while: its block is live, the first one is done.
+        expect(blocks).to_have_count(2, timeout=30_000)
+        expect(blocks.nth(1).locator("[data-region=spinner]")).to_be_visible()
+        expect(blocks.nth(0).locator("[data-region=spinner]")).to_be_hidden()
+        student.wait_answer("Raum B204")
+        for n, thought in enumerate(["zuerst nach dem Raum", "der Plan nennt B204"]):
+            block = blocks.nth(n)
+            toggle = block.locator("[data-action=toggle]")
+            expect(toggle).to_have_attribute("aria-expanded", "false")
+            expect(block.locator("[data-region=label-done]")).to_be_visible()
+            toggle.click()
+            expect(block.locator("[data-region=thinking-text]")).to_contain_text(thought)
+        # Stream order: thought, tool cards, thought, answer.
+        order = body.evaluate(
+            """b => [...b.children].map(n => n.dataset.region === 'thinking-block' ? 'thinking'
+                : n.dataset.region === 'tools' ? 'tools'
+                : n.textContent.includes('B204') ? 'answer' : null).filter(Boolean)"""
+        )
+        assert order == ["thinking", "tools", "thinking", "answer"], order
+
     def test_clarifying_question_round_trip(self, student: Chat, mock: Mock) -> None:
         mock.script(
             {

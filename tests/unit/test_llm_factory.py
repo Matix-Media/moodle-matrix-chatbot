@@ -26,6 +26,7 @@ from moodle_llm_chat.llm.factory import (
     build_embeddings,
     chat_model_kwargs,
 )
+from moodle_llm_chat.llm.openai_compat import ChatOpenAICompatible
 
 
 def _llm(provider: Provider, **overrides: Any) -> LLMConfig:
@@ -167,6 +168,33 @@ class TestThinkingMapping:
         )
         assert kwargs["reasoning_effort"] == "low"
         assert "use_responses_api" not in kwargs
+
+    def test_openrouter_gets_its_reasoning_object(self) -> None:
+        """OpenRouter documents ``reasoning: {effort}``, not ``reasoning_effort``; passing
+        ``reasoning`` to ChatOpenAI would switch it to the Responses API, so it goes in
+        the request body."""
+        _, kwargs = chat_model_kwargs(
+            _llm(
+                Provider.OPENAI,
+                base_url="https://openrouter.ai/api/v1",
+                thinking=ThinkingLevel.HIGH,
+            )
+        )
+        assert kwargs["extra_body"] == {"reasoning": {"effort": "high"}}
+        assert "reasoning_effort" not in kwargs and "reasoning" not in kwargs
+        assert "use_responses_api" not in kwargs
+
+    def test_openrouter_off_sends_no_reasoning(self) -> None:
+        _, kwargs = chat_model_kwargs(
+            _llm(Provider.OPENAI, base_url="https://openrouter.ai/api/v1")
+        )
+        assert "extra_body" not in kwargs
+
+    def test_openai_compatible_servers_keep_streamed_reasoning(self) -> None:
+        model = build_chat_model(_llm(Provider.OPENAI, base_url="http://localhost:1234/v1"))
+        assert isinstance(model, ChatOpenAICompatible)
+        hosted = build_chat_model(_llm(Provider.OPENAI))
+        assert not isinstance(hosted, ChatOpenAICompatible)
 
     def test_openai_off_keeps_temperature(self) -> None:
         _, kwargs = chat_model_kwargs(_llm(Provider.OPENAI, temperature=0.2))

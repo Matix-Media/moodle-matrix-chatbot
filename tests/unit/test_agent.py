@@ -309,6 +309,34 @@ class TestLimits:
 
 
 class TestThinking:
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            # OpenAI-compatible servers (ChatOpenAICompatible): no standard block exists.
+            {"model_provider": "openai"},
+            # Ollama: LangChain already turns the same field into a reasoning block.
+            {"model_provider": "ollama"},
+        ],
+    )
+    async def test_reasoning_content_is_shown_exactly_once(
+        self,
+        world: Store,  # noqa: F811
+        metadata: dict[str, Any],
+    ) -> None:
+        model = ScriptedModel(
+            script=[
+                AIMessage(
+                    content="Antwort.",
+                    additional_kwargs={"reasoning_content": "Ich prüfe den Kurs."},
+                    response_metadata=metadata,
+                )
+            ]
+        )
+        events = await collect(
+            runner(model).run(ctx(world), thread_id="t", turn_id="u", message="?")
+        )
+        assert [e.delta for e in events if isinstance(e, ThinkingEvent)] == ["Ich prüfe den Kurs."]
+
     def _model(self) -> ScriptedModel:
         return ScriptedModel(
             script=[
