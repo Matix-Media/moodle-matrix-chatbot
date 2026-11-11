@@ -11,6 +11,35 @@ from playwright.sync_api import BrowserContext, expect
 from e2e.helpers import MOODLE, Chat, Mock, login, run_full_import, wait_for
 
 
+def current_conversation(chat: Chat) -> str:
+    """The id of the conversation the chat has open (as the client remembers it)."""
+    conversation_id = wait_for(
+        lambda: chat.page.evaluate(
+            "() => JSON.parse(sessionStorage.getItem('local_llmchat_current') || '{}')[0] || ''"
+        ),
+        timeout=15,
+        what="the new conversation's id",
+        interval=0.2,
+    )
+    return str(conversation_id)
+
+
+def record_conversation_requests(chat: Chat) -> list[str]:
+    """URLs of conversation API requests made by pages opened with ``?conversation=``.
+
+    Only those pages count: the page before may still be refreshing its list after the
+    last answer when the next one opens.
+    """
+    seen: list[str] = []
+
+    def on_request(request: Any) -> None:
+        if "/api/conversations" in request.url and "conversation=" in request.frame.url:
+            seen.append(request.url)
+
+    chat.page.on("request", on_request)
+    return seen
+
+
 class TestImport:
     def test_test_connection_and_full_import(
         self, admin_context: BrowserContext, api: httpx.Client
@@ -126,6 +155,59 @@ class TestStudentChat:
         expect(conversation.first).to_be_visible(timeout=15_000)
         conversation.first.click()
         student.wait_answer("Gespeicherte Antwort")
+
+    def test_reloaded_conversation_arrives_rendered_by_the_server(
+        self, student: Chat, mock: Mock
+    ) -> None:
+        mock.script(
+            {"tool": "search_text", "args": {"query": "Raum"}},
+            {"text": "Der Unterricht ist in Raum **B204** [1].", "expect": "B204"},
+        )
+        student.open().ask("Wo ist der Unterricht?")
+        student.wait_answer("Raum B204")
+        conversation_id = current_conversation(student)
+
+        api_calls = record_conversation_requests(student)
+        student.open(f"?conversation={conversation_id}")
+        answer = student.last_answer()
+        expect(answer).to_contain_text("Raum B204")
+        expect(answer.locator("a.local-llmchat-cite")).to_have_count(1)
+        tool = student.page.locator("[data-region=tool]").first
+        expect(tool.locator("[data-region=done]")).to_be_visible()
+        expect(tool.locator("[data-region=spinner]")).to_be_hidden()
+        active = student.page.locator("[data-region=conversations] [aria-current=true]")
+        expect(active).to_have_attribute("data-id", conversation_id)
+        assert api_calls == [], "list and history came with the page"
+
+        # The adopted conversation keeps working: a follow-up streams below the history.
+        mock.script({"text": "Und dienstags in B205."})
+        student.ask("Und dienstags?")
+        student.wait_answer("B205")
+        expect(student.page.locator(".local-llmchat-msg-user")).to_have_count(2)
+
+    def test_pending_question_survives_a_reload(self, student: Chat, mock: Mock) -> None:
+        mock.script(
+            {
+                "tool": "ask_user",
+                "args": {"question": "Welcher Kurs?", "options": ["LF7", "Anderer"]},
+            },
+            {"text": "Dann schaue ich in LF7 nach.", "expect": "LF7"},
+        )
+        student.open().ask("Wann ist die Prüfung?")
+        option = student.page.locator(
+            "[data-region=interaction] [data-action=option]", has_text="LF7"
+        )
+        expect(option).to_be_visible(timeout=30_000)
+        conversation_id = current_conversation(student)
+
+        student.open(f"?conversation={conversation_id}")
+        expect(student.page.locator(".local-llmchat-msg-user")).to_have_count(1)
+        option = student.page.locator(
+            "[data-region=interaction] [data-action=option]", has_text="LF7"
+        )
+        expect(option).to_be_visible(timeout=15_000)
+        option.click()
+        student.wait_answer("Dann schaue ich in LF7 nach.")
 
     def test_connection_drop_mid_answer_loses_and_duplicates_nothing(
         self, student: Chat, mock: Mock

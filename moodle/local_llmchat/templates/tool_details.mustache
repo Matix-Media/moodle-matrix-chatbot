@@ -55,7 +55,7 @@
         {{/params}}
     </dl>
     {{/hasparams}}
-    <div data-region="result"></div>
+    <div data-region="result">{{#result}}{{> local_llmchat/tool_result }}{{/result}}</div>
     <button type="button" class="btn btn-link btn-sm p-0 text-muted local-llmchat-toggle local-llmchat-rawtoggle" data-action="toggle"
         aria-expanded="false" aria-controls="{{uniqid}}-raw">
         <span class="local-llmchat-chevron">{{#pix}} t/expandedchevron, core {{/pix}}</span>{{#str}} tool:raw, local_llmchat {{/str}}

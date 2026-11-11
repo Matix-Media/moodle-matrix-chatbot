@@ -17,11 +17,13 @@
 {{!
     @template local_llmchat/answer_footer
 
-    Under a final answer: budget note, numbered sources and the copy action.
+    Under a final answer: budget note, numbered sources and the copy action ("copytext": the raw
+    answer the copy button puts on the clipboard).
 
     Example context (json):
     {
         "budgetexhausted": true,
+        "copytext": "Die Abgabe ist am **12. Mai** [1].",
         "hascitations": true,
         "citations": [
             {"index": 1, "title": "Abgabe Subnetting-Projekt", "meta": "LF7", "url": "https://moodle.example/mod/assign/view.php?id=3", "hasurl": true},
@@ -50,6 +52,6 @@
     </div>
     {{/hascitations}}
     <div class="local-llmchat-actions">
-        <button type="button" class="btn btn-link btn-sm text-muted p-0" data-action="copy">{{#pix}} t/copy, core {{/pix}}{{#str}} copy, local_llmchat {{/str}}</button>
+        <button type="button" class="btn btn-link btn-sm text-muted p-0" data-action="copy" data-copytext="{{copytext}}">{{#pix}} t/copy, core {{/pix}}{{#str}} copy, local_llmchat {{/str}}</button>
     </div>
 </div>

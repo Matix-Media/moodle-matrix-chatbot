@@ -21,14 +21,35 @@
     tool cards, text segments, interactions, footer — always above the working indicator, which
     shows whenever the model works with nothing streaming.
 
+    With an empty context it is the shell of a live turn. The page renders the finished turns of
+    a stored conversation with "done" (no working indicator) and "parts", the body in stream
+    order: a text segment ("istext", answer HTML), a group of tool cards ("istools", their HTML)
+    or other HTML ("ishtml": a thinking block, an answered interaction, the footer, a notice).
+
     Example context (json):
-    {}
+    {
+        "done": true,
+        "hasparts": true,
+        "parts": [
+            {"istext": true, "html": ""},
+            {"ishtml": true, "html": "<div class=\"local-llmchat-thinking\">…</div>"},
+            {"istools": true, "html": "<div class=\"list-group-item\">Suche „Raum“</div>"},
+            {"istext": true, "html": "<p>Der Unterricht ist montags in Raum B204.</p>"}
+        ]
+    }
 }}
 <div class="local-llmchat-msg local-llmchat-msg-assistant" data-role="assistant">
     <div class="local-llmchat-body local-llmchat-minw0" data-region="body">
         <span class="sr-only visually-hidden">{{#str}} assistant, local_llmchat {{/str}}:</span>
+        {{^hasparts}}
         <div class="local-llmchat-text" data-region="text"></div>
-        <div class="local-llmchat-typing" data-region="typing" role="status">
+        {{/hasparts}}
+        {{#parts}}
+        {{#istext}}<div class="local-llmchat-text" data-region="text">{{{html}}}</div>{{/istext}}
+        {{#istools}}<div class="list-group local-llmchat-tools" data-region="tools">{{{html}}}</div>{{/istools}}
+        {{#ishtml}}{{{html}}}{{/ishtml}}
+        {{/parts}}
+        <div class="local-llmchat-typing{{#done}} d-none{{/done}}" data-region="typing" role="status">
             <span class="spinner-grow spinner-grow-sm" aria-hidden="true"></span>
             <span class="spinner-grow spinner-grow-sm" aria-hidden="true"></span>
             <span class="spinner-grow spinner-grow-sm" aria-hidden="true"></span>
