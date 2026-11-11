@@ -40,13 +40,16 @@ import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
 import {describeCall, describeResult, linkSegments, STRING_KEYS as TOOL_STRING_KEYS} from 'local_llmchat/tooldetails';
 
 const STRING_KEYS = [
-    'cancelled', 'copied', 'error', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
+    'cancelled', 'copied', 'error', 'newconversation', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
     'quota:remainingmonth', 'quota:thismonth', 'quota:today', 'quota:usedof', 'ratelimited:burst', 'ratelimited:site',
     'ratelimited:user', 'reconnected', 'resume',
     'turninterrupted', 'unknowninteraction', 'untitled',
 ];
 
 const SEQ_STORAGE_KEY = 'local_llmchat_lastseq';
+
+/** Current conversation per course (0 = global chat), so the block and the full page agree. */
+const CURRENT_STORAGE_KEY = 'local_llmchat_current';
 
 /** Circumference of the token ring (r = 15 in a 36-unit viewBox). */
 const RING_CIRCUMFERENCE = 2 * Math.PI * 15;
@@ -146,17 +149,19 @@ class ChatController {
      * Constructor.
      *
      * @param {HTMLElement} root
-     * @param {Object} config {courseid, userpicture}
+     * @param {Object} config {courseid, conversationid}
      * @param {Object} strings
      */
     constructor(root, config, strings) {
         this.root = root;
         this.courseid = Number(config.courseid) || 0;
-        this.userpicture = config.userpicture || '';
+        // Compact: the chat block, one conversation, no list (the full page has the list).
+        this.compact = root.dataset.mode === 'compact';
+        this.initialConversation = config.conversationid ? String(config.conversationid) : '';
         this.str = strings;
         this.regions = {};
         ['messages', 'empty', 'conversations', 'status', 'quota', 'quota-button', 'quota-ring', 'quota-percent', 'quota-panel',
-            'input', 'composer', 'panel', 'sidebar'].forEach((name) => {
+            'input', 'composer', 'panel', 'sidebar', 'title', 'expand'].forEach((name) => {
             this.regions[name] = root.querySelector(`[data-region="${name}"]`);
         });
         this.sendButton = root.querySelector('[data-action="send"]');
@@ -234,7 +239,6 @@ class ChatController {
                 this.regions['quota-button'].focus();
             }
         });
-        window.addEventListener('resize', () => this.fitHeight());
     }
 
     /**
@@ -282,22 +286,103 @@ class ChatController {
      * Collapse the conversation list again after a pick on small screens.
      */
     closeSidebarOnMobile() {
+        if (!this.regions.sidebar) {
+            return;
+        }
         this.regions.sidebar.classList.remove('show');
         this.root.querySelectorAll(`[aria-controls="${this.regions.sidebar.id}"]`)
             .forEach((b) => b.setAttribute('aria-expanded', 'false'));
     }
 
     /**
-     * Start.
+     * Start. The block waits until it is first on screen (the block drawer may stay closed), so
+     * a page with the block costs no token, socket or API call until the chat is looked at.
      */
     start() {
-        this.fitHeight();
+        if (!this.compact) {
+            // Boost-based themes are sized by styles.css from the first paint; other layouts
+            // get the card fitted to the window here.
+            if (!document.body.classList.contains('uses-drawers')) {
+                this.fitHeight();
+                window.addEventListener('resize', () => this.fitHeight());
+            }
+            this.run();
+            return;
+        }
+        if (typeof window.IntersectionObserver !== 'function') {
+            this.run();
+            return;
+        }
+        const observer = new window.IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                observer.disconnect();
+                this.run();
+            }
+        });
+        observer.observe(this.root);
+    }
+
+    /**
+     * Connect and open the conversation to start with: the one asked for in the URL, in the block
+     * the one last open in this scope, otherwise a new one.
+     */
+    run() {
         this.socket.connect();
-        this.refreshConversations();
+        const id = this.initialConversation || (this.compact ? this.loadCurrent() : '');
+        if (id) {
+            this.openConversation(id, {focus: false, restore: !this.initialConversation});
+        } else {
+            this.refreshConversations();
+        }
+    }
+
+    /**
+     * The conversation last open in this scope (sessionStorage), or ''.
+     *
+     * @returns {string}
+     */
+    loadCurrent() {
+        try {
+            const current = JSON.parse(window.sessionStorage.getItem(CURRENT_STORAGE_KEY) || '{}') || {};
+            return current[this.courseid] ? String(current[this.courseid]) : '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /**
+     * Make a conversation the current one (null = new): remembered for this scope, and the
+     * block's "open in full view" link opens it.
+     *
+     * @param {string|null} id
+     */
+    setConversation(id) {
+        this.conversationId = id;
+        try {
+            const current = JSON.parse(window.sessionStorage.getItem(CURRENT_STORAGE_KEY) || '{}') || {};
+            if (id) {
+                current[this.courseid] = id;
+            } else {
+                delete current[this.courseid];
+            }
+            window.sessionStorage.setItem(CURRENT_STORAGE_KEY, JSON.stringify(current));
+        } catch (e) {
+            // Storage unavailable: the block starts with a new conversation next time.
+        }
+        if (this.regions.expand) {
+            const url = new URL(this.regions.expand.href, window.location.href);
+            if (id) {
+                url.searchParams.set('conversation', id);
+            } else {
+                url.searchParams.delete('conversation');
+            }
+            this.regions.expand.href = url.toString();
+        }
     }
 
     /**
      * Make the chat card fill the window below its top edge, with the composer always in view.
+     * Only for themes without Boost's drawer layout, which styles.css sizes.
      */
     fitHeight() {
         const panel = this.regions.panel;
@@ -315,6 +400,9 @@ class ChatController {
         });
         const height = Math.max(440, window.innerHeight - top - gap);
         panel.style.height = `${height}px`;
+        if (!this.regions.sidebar) {
+            return;
+        }
         if (window.matchMedia('(min-width: 992px)').matches) {
             this.regions.sidebar.style.height = `${height}px`;
         } else {
@@ -507,7 +595,7 @@ class ChatController {
      */
     acceptFrame(frame, replay) {
         if (frame.conversation_id && !this.conversationId && !replay) {
-            this.conversationId = String(frame.conversation_id);
+            this.setConversation(String(frame.conversation_id));
             this.refreshConversations();
         }
         const convId = frame.conversation_id ? String(frame.conversation_id) : this.conversationId;
@@ -554,7 +642,7 @@ class ChatController {
      * @returns {Promise<HTMLElement>}
      */
     async addUserBubble(text) {
-        const bubble = await renderNode('message_user', {text, avatar: this.userpicture});
+        const bubble = await renderNode('message_user', {text});
         this.appendMessage(bubble);
         this.turn = null;
         this.scroll(true);
@@ -1119,9 +1207,24 @@ class ChatController {
      * Reload the conversation list.
      */
     async refreshConversations() {
+        if (this.compact && !this.conversationId) {
+            // The block lists nothing; a new conversation needs no request for its title.
+            this.regions.title.textContent = this.str.newconversation;
+            return;
+        }
         try {
             const data = await this.apiGet('/api/conversations');
             const items = Array.isArray(data) ? data : (data.conversations || data.items || []);
+            if (this.compact) {
+                // The conversation may have changed while the list loaded.
+                if (!this.conversationId) {
+                    this.regions.title.textContent = this.str.newconversation;
+                    return;
+                }
+                const current = items.find((c) => String(c.id) === this.conversationId);
+                this.regions.title.textContent = (current && current.title) || this.str.untitled;
+                return;
+            }
             await renderInto(this.regions.conversations, 'local_llmchat/conversation_list', {
                 hasconversations: items.length > 0,
                 conversations: items.map((c) => ({
@@ -1138,10 +1241,14 @@ class ChatController {
      * Open a stored conversation (null = new).
      *
      * @param {string|null} id
+     * @param {Object} [options]
+     * @param {boolean} [options.focus=true] move the focus to the composer
+     * @param {boolean} [options.restore=false] reopening the remembered conversation: if it is
+     *     gone, quietly start a new one instead of showing an error
      */
-    openConversation(id) {
+    openConversation(id, {focus = true, restore = false} = {}) {
         this.enqueue(async() => {
-            this.conversationId = id;
+            this.setConversation(id);
             this.turn = null;
             // Access may have changed since the links were resolved.
             this.pathCache.clear();
@@ -1149,9 +1256,12 @@ class ChatController {
             this.regions.empty.classList.toggle('d-none', Boolean(id));
             this.clearStatusErrors();
             this.setRunning(false);
-            this.regions.input.focus();
+            if (focus) {
+                this.regions.input.focus();
+            }
+            // After the switch, so the list (or the block's title) marks this conversation.
+            this.refreshConversations();
         });
-        this.refreshConversations();
         if (!id) {
             return;
         }
@@ -1160,6 +1270,13 @@ class ChatController {
             try {
                 data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
             } catch (e) {
+                if (restore && this.conversationId === id) {
+                    Log.debug(e);
+                    this.setConversation(null);
+                    this.regions.empty.classList.remove('d-none');
+                    this.refreshConversations();
+                    return;
+                }
                 await this.showStatus('error', fill(this.str.error, e && e.message ? e.message : String(e)));
                 return;
             }
@@ -1188,7 +1305,7 @@ class ChatController {
 /**
  * Initialise the chat page.
  *
- * @param {Object} config {courseid, rootid, userpicture}
+ * @param {Object} config {courseid, rootid, conversationid}
  */
 export const init = async(config) => {
     const root = document.getElementById(config.rootid);

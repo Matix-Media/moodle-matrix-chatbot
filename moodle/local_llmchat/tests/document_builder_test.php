@@ -144,7 +144,8 @@ final class document_builder_test extends \advanced_testcase {
         ]);
         $docs = $this->build($url->cmid);
         $data = $docs["{$this->course->id}:{$url->cmid}:url"]->to_wire();
-        $this->assertSame('url', $data['kind']);
+        // The API's ContentKind: anything else is rejected with HTTP 422.
+        $this->assertSame('external', $data['kind']);
         $this->assertSame('https://www.youtube.com/watch?v=abc', $data['external_url']);
         $this->assertArrayNotHasKey('text', $data);
         $this->assertSame(hash('sha256', 'https://www.youtube.com/watch?v=abc'), $data['content_hash']);

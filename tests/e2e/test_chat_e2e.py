@@ -198,3 +198,73 @@ class TestApiStatus:
             what="usage rows",
         )
         assert all(r["tokens"] > 0 for r in rows)
+
+
+class TestLayout:
+    def test_full_page_is_full_height_from_the_first_paint(self, student: Chat) -> None:
+        """Course and global chat: one width, as tall as the window, and no growth on load.
+
+        The height is measured twice: at DOMContentLoaded (the stylesheet applies, the chat's
+        JavaScript has not run yet) and after the page has loaded. Equal heights mean the
+        stylesheet alone sizes the card, so it cannot jump once the page has loaded.
+        """
+        page = student.page
+        page.add_init_script(
+            """document.addEventListener('DOMContentLoaded', () => {
+                const panel = document.querySelector('[data-region=panel]');
+                window.__panelAtDomReady = panel ? panel.getBoundingClientRect().height : -1;
+            });"""
+        )
+        widths = []
+        for query in ("", f"?courseid={course_id(page, 'LF7')}"):
+            page.goto(f"{MOODLE}/local/llmchat/chat.php{query}", wait_until="load")
+            page.wait_for_timeout(500)
+            panel = page.locator("[data-region=panel]")
+            box = panel.bounding_box()
+            assert box is not None
+            assert 900 - 120 < box["y"] + box["height"] <= 900, (query, box)
+            assert page.evaluate("window.__panelAtDomReady") == box["height"], query
+            assert panel.evaluate("el => el.style.height") == "", "sized by the stylesheet"
+            # The same page width (an open course index may still take some of it).
+            widths.append(
+                page.evaluate("getComputedStyle(document.getElementById('topofscroll')).maxWidth")
+            )
+        assert widths == ["1120px", "1120px"], widths
+
+
+class TestBlock:
+    def test_block_chat_continues_in_the_full_page_and_back(
+        self, student: Chat, mock: Mock
+    ) -> None:
+        mock.script({"text": "Antwort aus dem Block."})
+        student.open_block("LF7").ask("Frage im Block")
+        student.wait_answer("Antwort aus dem Block.")
+        block = student.page.locator(".block_llmchat")
+        expect(block.locator("[data-region=conversations]")).to_have_count(0)
+
+        # The other conversations are in the full page, which opens this one.
+        expand = block.locator("[data-region=expand]")
+        expect(expand).to_have_attribute("href", re.compile(r"conversation="))
+        with student.page.expect_navigation(wait_until="load"):
+            expand.click()
+        assert "/local/llmchat/chat.php" in student.page.url
+        student.wait_answer("Antwort aus dem Block.")
+        expect(
+            student.page.locator("[data-region=conversations] .active", has_text="Frage im Block")
+        ).to_be_visible()
+
+        # Back in the course, the block still shows that conversation.
+        student.open_block("LF7")
+        student.wait_answer("Antwort aus dem Block.")
+
+
+def course_id(page: Any, shortname: str) -> int:
+    """Course id from the course page URL Moodle redirects a shortname to."""
+    page.goto(f"{MOODLE}/course/view.php?name={shortname}")
+    match = re.search(r"[?&]id=(\d+)", page.url)
+    if match:
+        return int(match.group(1))
+    body = page.locator("body").get_attribute("class") or ""
+    found = re.search(r"\bcourse-(\d+)\b", body)
+    assert found, page.url
+    return int(found.group(1))

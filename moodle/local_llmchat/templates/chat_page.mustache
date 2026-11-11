@@ -17,21 +17,28 @@
 {{!
     @template local_llmchat/chat_page
 
-    Chat page shell; local_llmchat/chat fills it. Everything inside the card is replaced or appended
+    Chat shell; local_llmchat/chat fills it. Everything inside the card is replaced or appended
     by the client through the other local_llmchat templates.
+
+    The full page shows the conversation list next to the chat. The compact variant (the chat
+    block) shows only the current conversation, with a "new conversation" button and a link that
+    opens it in the full page, where the other conversations are listed.
 
     Example context (json):
     {
         "rootid": "local-llmchat-root",
         "courseid": 2,
+        "compact": false,
+        "fullurl": "https://moodle.example/local/llmchat/chat.php?courseid=2",
         "hascourse": true,
         "intro": "Ask about LF7 Vernetzte Systeme: material, deadlines and activities.",
-        "suggestions": [{"text": "What is due this week?"}, {"text": "Summarise the latest material"}],
-        "userpicture": "<img src=\"https://moodle.example/pix/u/f2.png\" class=\"userpicture\" alt=\"\">"
+        "suggestions": [{"text": "What is due this week?"}, {"text": "Summarise the latest material"}]
     }
 }}
-<div id="{{rootid}}" class="local-llmchat" data-region="llmchat" data-courseid="{{courseid}}">
+<div id="{{rootid}}" class="local-llmchat{{#compact}} local-llmchat-compact{{/compact}}" data-region="llmchat"
+    data-courseid="{{courseid}}" data-mode="{{#compact}}compact{{/compact}}{{^compact}}full{{/compact}}">
     <div class="local-llmchat-layout">
+        {{^compact}}
         <div class="local-llmchat-sidecol collapse d-lg-block" id="{{rootid}}-sidebar" data-region="sidebar">
             <nav class="card local-llmchat-sidebar" aria-labelledby="{{rootid}}-conversations">
                 <div class="card-header bg-transparent d-flex align-items-center">
@@ -46,14 +53,20 @@
                 </div>
             </nav>
         </div>
+        {{/compact}}
         <div class="local-llmchat-maincol">
             <section class="card local-llmchat-panel" data-region="panel" aria-labelledby="{{rootid}}-title">
                 <div class="card-header bg-transparent d-flex align-items-center local-llmchat-header">
+                    {{^compact}}
                     <button type="button" class="btn btn-outline-secondary local-llmchat-iconbtn local-llmchat-iconbtn-sm d-lg-none me-2" data-action="toggle"
                         aria-controls="{{rootid}}-sidebar" aria-expanded="false" title="{{#str}} conversations, local_llmchat {{/str}}">
                         {{#pix}} conversation, local_llmchat {{/pix}}<span class="sr-only visually-hidden">{{#str}} conversations, local_llmchat {{/str}}</span>
                     </button>
                     <h2 class="h5 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title">{{#str}} chattitle, local_llmchat {{/str}}</h2>
+                    {{/compact}}
+                    {{#compact}}
+                    <h3 class="h6 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title" data-region="title">{{#str}} newconversation, local_llmchat {{/str}}</h3>
+                    {{/compact}}
                     <div class="local-llmchat-quota invisible" data-region="quota">
                         <button type="button" class="btn btn-link local-llmchat-iconbtn local-llmchat-quotabtn" data-action="quota-toggle"
                             aria-expanded="false" aria-controls="{{rootid}}-quota" data-region="quota-button">
@@ -67,6 +80,16 @@
                         <div class="dropdown-menu dropdown-menu-right dropdown-menu-end local-llmchat-quotapanel" id="{{rootid}}-quota"
                             data-region="quota-panel" role="region" aria-label="{{#str}} quota:title, local_llmchat {{/str}}"></div>
                     </div>
+                    {{#compact}}
+                    <button type="button" class="btn btn-link local-llmchat-iconbtn local-llmchat-iconbtn-sm" data-action="new-conversation"
+                        title="{{#str}} newconversation, local_llmchat {{/str}}">
+                        {{#pix}} t/add, core {{/pix}}<span class="sr-only visually-hidden">{{#str}} newconversation, local_llmchat {{/str}}</span>
+                    </button>
+                    <a class="btn btn-link local-llmchat-iconbtn local-llmchat-iconbtn-sm" href="{{fullurl}}" data-region="expand"
+                        title="{{#str}} openfullchat, local_llmchat {{/str}}">
+                        {{#pix}} expand, local_llmchat {{/pix}}<span class="sr-only visually-hidden">{{#str}} openfullchat, local_llmchat {{/str}}</span>
+                    </a>
+                    {{/compact}}
                 </div>
                 <div class="local-llmchat-status" data-region="status" aria-live="polite"></div>
                 <div class="card-body local-llmchat-messages" data-region="messages" tabindex="0"
@@ -97,7 +120,7 @@
                                 {{#pix}} t/stop, core {{/pix}}<span class="sr-only visually-hidden">{{#str}} cancel, local_llmchat {{/str}}</span>
                             </button>
                         </div>
-                        <div class="small text-muted mt-1 local-llmchat-hint" id="{{rootid}}-hint">{{#str}} composerhint, local_llmchat {{/str}}</div>
+                        <div class="small text-muted mt-1 local-llmchat-hint{{#compact}} sr-only visually-hidden{{/compact}}" id="{{rootid}}-hint">{{#str}} composerhint, local_llmchat {{/str}}</div>
                     </form>
                 </div>
             </section>

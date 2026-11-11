@@ -13,6 +13,11 @@ websocket client inside Moodle).
    secret. The secret is stored encrypted with `\core\encryption`.
 4. Open *Sync status* and choose **Test connection**, then **Run full import now**.
 
+The chat opens from the course navigation (*Chat*) and the user menu, at Moodle's medium page
+width in both places. The optional [`block_llmchat`](../block_llmchat) shows the current
+conversation in a block next to the course; its ⤢ button continues it in the full page, which
+lists all conversations (`chat.php?courseid=…&conversation=…`).
+
 ## How it fits together
 
 | Direction | Mechanism |

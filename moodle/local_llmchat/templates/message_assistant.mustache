@@ -17,16 +17,15 @@
 {{!
     @template local_llmchat/message_assistant
 
-    One assistant turn: avatar plus a body the client streams into in order — thinking blocks,
-    groups of tool cards, text segments, interactions, footer — always above the working indicator,
-    which shows whenever the model works with nothing streaming.
+    One assistant turn: a body the client streams into in order — thinking blocks, groups of
+    tool cards, text segments, interactions, footer — always above the working indicator, which
+    shows whenever the model works with nothing streaming.
 
     Example context (json):
     {}
 }}
-<div class="local-llmchat-msg local-llmchat-msg-assistant d-flex" data-role="assistant">
-    <span class="local-llmchat-avatar local-llmchat-avatar-assistant me-2 flex-shrink-0" aria-hidden="true">{{#pix}} assistant, local_llmchat {{/pix}}</span>
-    <div class="local-llmchat-body flex-grow-1 local-llmchat-minw0" data-region="body">
+<div class="local-llmchat-msg local-llmchat-msg-assistant" data-role="assistant">
+    <div class="local-llmchat-body local-llmchat-minw0" data-region="body">
         <span class="sr-only visually-hidden">{{#str}} assistant, local_llmchat {{/str}}:</span>
         <div class="local-llmchat-text" data-region="text"></div>
         <div class="local-llmchat-typing" data-region="typing" role="status">
