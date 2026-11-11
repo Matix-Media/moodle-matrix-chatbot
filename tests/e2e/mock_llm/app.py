@@ -10,7 +10,8 @@ Control endpoints (used by the test runner):
 * ``POST /__script``  ``[step, ...]`` — replace the queue. A step is
   ``{"tool": name, "args": {...}}`` or ``{"text": "...", "delay": seconds}``; an
   optional ``"expect"`` substring must occur in the latest tool result, otherwise the
-  model answers ``EXPECTATION FAILED: ...`` so the browser test sees why.
+  model answers ``EXPECTATION FAILED: ...`` so the browser test sees why. An optional
+  ``"wait"`` (seconds) holds back the first chunk, like a model that thinks silently.
 * ``GET /__calls`` — every chat request received (messages only), for assertions.
 * ``POST /__reset`` — clear queue and history.
 
@@ -127,6 +128,8 @@ def _chunk(delta: dict[str, Any], finish: str | None = None) -> str:
 
 
 async def _stream(step: dict[str, Any], prompt_tokens: int) -> AsyncIterator[str]:
+    if step.get("wait"):
+        await asyncio.sleep(float(step["wait"]))
     if "tool" in step:
         call_id = f"call_{int(time.time() * 1000)}"
         yield _chunk(

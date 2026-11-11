@@ -41,6 +41,27 @@ class TestStudentChat:
         expect(cite).to_have_count(1)
         assert "/mod/page/view.php?id=" in (cite.get_attribute("href") or "")
 
+    def test_working_indicator_shows_while_the_model_works_after_a_tool(
+        self, student: Chat, mock: Mock
+    ) -> None:
+        """Tool done, model still busy: the message must not look idle."""
+        mock.script(
+            {"tool": "search_text", "args": {"query": "Raum"}},
+            {"text": "Der Unterricht ist in Raum B204 [1].", "expect": "B204", "wait": 4},
+        )
+        student.open().ask("Wo ist der Unterricht?")
+        body = student.last_answer()
+        typing = body.locator("[data-region=typing]")
+        expect(body.locator("[data-region=tool] [data-region=done]")).to_be_visible(timeout=30_000)
+        expect(typing).to_be_visible()
+        student.wait_answer("Raum B204")
+        expect(typing).to_be_hidden()
+        # Stream order: the tool cards sit above the answer they led to.
+        assert body.evaluate(
+            """b => [...b.children].findIndex(n => n.dataset.region === 'tools')
+                < [...b.children].findIndex(n => n.textContent.includes('B204'))"""
+        )
+
     def test_clarifying_question_round_trip(self, student: Chat, mock: Mock) -> None:
         mock.script(
             {
