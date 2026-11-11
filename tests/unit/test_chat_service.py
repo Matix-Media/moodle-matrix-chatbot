@@ -189,7 +189,7 @@ class TestQuestions:
             v,
             conversation_id=conv,
             interrupt_id=question["interrupt_id"],
-            response={"choices": ["LF7"]},
+            response={"text": "LF7", "selected": ["LF7"]},
         )
         await wait_done(svc, conv)
         events = svc.replay(v, conv, after_seq=question["seq"])
@@ -215,7 +215,7 @@ class TestQuestions:
             v,
             conversation_id=conv,
             interrupt_id=question["interrupt_id"],
-            response={"choices": ["LF7"]},
+            response={"text": "LF7", "selected": ["LF7"]},
         )
         await wait_done(second, conv)
         assert any(e["type"] == "final" for e in second.replay(v, conv, after_seq=question["seq"]))
@@ -226,7 +226,9 @@ class TestQuestions:
         conv, _ = await svc.send(v, conversation_id=None, course_id=None, text="?")
         await wait_done(svc, conv)
         with pytest.raises(ChatError) as err:
-            await svc.answer(v, conversation_id=conv, interrupt_id="nope", response={"answer": "x"})
+            await svc.answer(
+                v, conversation_id=conv, interrupt_id="nope", response={"text": "x", "selected": []}
+            )
         assert err.value.code == "no_question"
 
 

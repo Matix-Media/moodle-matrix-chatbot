@@ -203,7 +203,7 @@ class TestAskUser:
                 ctx(world),
                 thread_id="q",
                 turn_id="u1",
-                resume={question.interrupt_id: {"choices": ["LF7"]}},
+                resume={question.interrupt_id: {"text": "LF7", "selected": ["LF7"]}},
             )
         )
         final = second[-1]
@@ -227,7 +227,7 @@ class TestAskUser:
                 ctx(world),
                 thread_id="q",
                 turn_id="u",
-                resume={question.interrupt_id: {"choices": ["Hack"]}},
+                resume={question.interrupt_id: {"text": "Hack", "selected": ["Hack"]}},
             )
         )
         reask = again[-1]
@@ -238,7 +238,7 @@ class TestAskUser:
                 ctx(world),
                 thread_id="q",
                 turn_id="u",
-                resume={reask.interrupt_id: {"answer": "LF7 bitte"}},
+                resume={reask.interrupt_id: {"text": "LF7 bitte", "selected": []}},
             )
         )
         assert isinstance(done[-1], FinalEvent)

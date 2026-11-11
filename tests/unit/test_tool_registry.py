@@ -143,30 +143,34 @@ class TestBinding:
 class TestInteractions:
     def test_question_accepts_offered_choice(self) -> None:
         payload = QuestionPayload(question="Welcher Kurs?", options=["LF7", "MA"])
-        response = INTERACTIONS["question"].parse_response(payload, {"choices": ["LF7"]})
-        assert response.model_dump()["choices"] == ["LF7"]
+        response = INTERACTIONS["question"].parse_response(
+            payload, {"text": "LF7", "selected": ["LF7"]}
+        )
+        assert response.model_dump()["selected"] == ["LF7"]
 
     def test_question_rejects_unoffered_choice(self) -> None:
         payload = QuestionPayload(question="Welcher Kurs?", options=["LF7"])
         with pytest.raises(ValueError, match="offered"):
-            INTERACTIONS["question"].parse_response(payload, {"choices": ["Hack"]})
+            INTERACTIONS["question"].parse_response(payload, {"text": "Hack", "selected": ["Hack"]})
 
     def test_question_rejects_multiple_when_single(self) -> None:
         payload = QuestionPayload(question="?", options=["a", "b"])
         with pytest.raises(ValueError, match="one"):
-            INTERACTIONS["question"].parse_response(payload, {"choices": ["a", "b"]})
+            INTERACTIONS["question"].parse_response(
+                payload, {"text": "a, b", "selected": ["a", "b"]}
+            )
 
     def test_question_requires_something(self) -> None:
         with pytest.raises(ValueError):
             INTERACTIONS["question"].parse_response(QuestionPayload(question="?"), {})
 
     def test_choice_validates_item(self) -> None:
-        payload = ChoicePayload(prompt="Welches?", items=[{"id": "d1", "label": "Skript"}])  # type: ignore[list-item]
+        payload = ChoicePayload(question="Welches?", items=[{"id": "d1", "label": "Skript"}])  # type: ignore[list-item]
         with pytest.raises(ValueError):
             INTERACTIONS["choice"].parse_response(payload, {"id": "d2"})
 
     def test_confirm_requires_boolean(self) -> None:
         with pytest.raises(ValidationError):
             INTERACTIONS["confirm"].parse_response(
-                ConfirmPayload(title="Löschen?"), {"confirmed": "vielleicht"}
+                ConfirmPayload(question="Löschen?"), {"confirmed": "vielleicht"}
             )

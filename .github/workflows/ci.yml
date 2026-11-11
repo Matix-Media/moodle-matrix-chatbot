@@ -113,6 +113,7 @@ jobs:
   e2e:
     name: End to end — Moodle + plugin + API + browser
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [python-integration, moodle-plugin]
     # ~10 minutes: on master, nightly, and on PRs labelled "e2e".
     if: >-

@@ -98,6 +98,7 @@ services:
       - addopts=
       - -m
       - e2e
+      - --timeout=120
       - tests/e2e
       - --tracing=retain-on-failure
       - --output=/artifacts

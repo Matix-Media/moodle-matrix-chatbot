@@ -3,6 +3,10 @@
 The chat UI renders by ``kind`` (``question``, ``confirm``, ``choice``); an unknown
 kind degrades to a free-text prompt. Each kind validates its response against the
 payload it was asked with — e.g. a chosen option must be one that was offered.
+
+**Field names are a contract with the Moodle plugin** (``amd/src/interactions/*.js``,
+``render.js::questionText``): payloads carry their prompt in ``question``; a question
+is answered with ``{text, selected}``. ``tests/unit/test_interaction_wire.py`` pins them.
 """
 
 from __future__ import annotations
@@ -16,17 +20,18 @@ from pydantic import BaseModel, Field
 class QuestionPayload(BaseModel):
     question: str
     options: list[str] = Field(default_factory=list)
-    multi: bool = False
+    multi_select: bool = False
     allow_free_text: bool = True
 
 
 class QuestionResponse(BaseModel):
-    answer: str | None = None
-    choices: list[str] = Field(default_factory=list)
+    #: Free text, or — for an option click — the chosen option(s) as text.
+    text: str = ""
+    selected: list[str] = Field(default_factory=list)
 
 
 class ConfirmPayload(BaseModel):
-    title: str
+    question: str
     explanation: str = ""
 
 
@@ -41,7 +46,7 @@ class ChoiceItem(BaseModel):
 
 
 class ChoicePayload(BaseModel):
-    prompt: str
+    question: str
     items: list[ChoiceItem]
 
 
@@ -50,14 +55,16 @@ class ChoiceResponse(BaseModel):
 
 
 def _check_question(payload: QuestionPayload, response: QuestionResponse) -> None:
-    if not response.answer and not response.choices:
+    if not response.text.strip() and not response.selected:
         raise ValueError("an answer or a choice is required")
-    unknown = [c for c in response.choices if c not in payload.options]
+    unknown = [c for c in response.selected if c not in payload.options]
     if unknown:
         raise ValueError(f"not an offered option: {unknown[0]!r}")
-    if len(response.choices) > 1 and not payload.multi:
+    if len(response.selected) > 1 and not payload.multi_select:
         raise ValueError("only one option may be chosen")
-    if response.answer and not payload.allow_free_text:
+    # An option click arrives as text == the selection; only genuinely typed text counts.
+    typed = response.text.strip() and response.text.strip() != ", ".join(response.selected)
+    if typed and not payload.allow_free_text:
         raise ValueError("free text is not allowed here")
 
 

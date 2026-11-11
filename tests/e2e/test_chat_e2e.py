@@ -17,7 +17,8 @@ class TestImport:
     ) -> None:
         page = admin_context.new_page()
         page.goto(f"{MOODLE}/local/llmchat/admin/sync.php")
-        page.get_by_role("button", name=re.compile("Test connection")).click()
+        with page.expect_navigation(wait_until="load", timeout=30_000):
+            page.get_by_role("button", name=re.compile("Test connection")).click()
         expect(page.locator(".alert-danger")).to_have_count(0)
         page.close()
         status = run_full_import(admin_context, api)

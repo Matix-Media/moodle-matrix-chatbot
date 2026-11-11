@@ -134,7 +134,7 @@ class TestRestart:
                     "type": "answer",
                     "conversation_id": conv,
                     "interrupt_id": question["interrupt_id"],
-                    "response": {"choices": ["LF7"]},
+                    "response": {"text": "LF7", "selected": ["LF7"]},
                     "token": api.token(USER, **SCOPE),
                 }
             )

@@ -89,6 +89,30 @@ instead of in a CI run.
    grunt, phpunit). `tests/fixtures/jwt_vectors.json` must stay byte-identical to the
    plugin's copy — change both together.
 
+9. **Browser (e2e) tests** live in `tests/e2e` and run only inside their compose stack
+   (a normal `pytest` does not collect them):
+
+   ```bash
+   docker compose -f tests/e2e/docker-compose.yml --profile test build
+   docker compose -f tests/e2e/docker-compose.yml up -d --wait moodle
+   docker compose -f tests/e2e/docker-compose.yml run --rm runner      # ~30 s
+   docker compose -f tests/e2e/docker-compose.yml down -v
+   ```
+
+   Plugin and tests are *copied into* their images, so rebuild after changing either.
+   A full run takes about 30 seconds; anything much longer is a hang, not slowness.
+   Three Playwright/Moodle traps already cost hours: (a) log in only after the login
+   page is **network-idle** (typing within ~100 ms loses a session race, ~7% of
+   logins); (b) after clicking a form-POST button, wait for the navigation
+   (`expect_navigation`) **before** `page.close()` — close has no timeout and hangs
+   forever mid-navigation; (c) the chat UI opens a fresh text segment after a tool
+   card or question, so assert on the whole message body, not the first text
+   region. The runner enforces `--timeout=120` and CI `timeout-minutes: 30`.
+
+10. **The interaction wire format is a contract with the plugin** (`question` /
+    `options` / `multi_select`, answers `{text, selected}`, `{confirmed}`, `{id}`),
+    pinned by `tests/unit/test_interaction_wire.py`. Change both sides together.
+
 ## Quick pre-push checklist
 
 ```bash

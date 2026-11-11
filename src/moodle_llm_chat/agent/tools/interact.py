@@ -30,13 +30,17 @@ class AskUser(InteractiveTool[AskArgs]):
     ui: ClassVar[ToolUI] = ToolUI(label="Rückfrage", icon="message-question", summary="{question}")
 
     def payload(self, args: AskArgs) -> QuestionPayload:
-        return QuestionPayload(question=args.question, options=args.options, multi=args.multi)
+        return QuestionPayload(
+            question=args.question, options=args.options, multi_select=args.multi
+        )
 
     def render_response(self, response: BaseModel) -> str:
         assert isinstance(response, QuestionResponse)
+        text = response.text.strip()
         parts = []
-        if response.choices:
-            parts.append("Auswahl: " + ", ".join(response.choices))
-        if response.answer:
-            parts.append(f"Antwort: {response.answer}")
+        if response.selected:
+            parts.append("Auswahl: " + ", ".join(response.selected))
+        # A plain option click arrives as text == the selection: do not say it twice.
+        if text and text != ", ".join(response.selected):
+            parts.append(f"Antwort: {text}")
         return "Der Nutzer antwortet — " + "; ".join(parts)

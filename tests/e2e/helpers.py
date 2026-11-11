@@ -37,8 +37,14 @@ class Mock:
 
 
 def login(page: Page, username: str, password: str = PASSWORD) -> None:
-    """Log in and wait for Moodle's whole post-login redirect chain to settle."""
-    page.goto(f"{MOODLE}/login/index.php", wait_until="load")
+    """Log in and wait for Moodle's whole post-login redirect chain to settle.
+
+    Wait for the login page to go network-idle *before* typing: its own background
+    requests touch the same server-side session, and submitting within ~100 ms of
+    load loses a race ("Your session has timed out") in about 7% of logins
+    (0 of 150 when idle first, measured).
+    """
+    page.goto(f"{MOODLE}/login/index.php", wait_until="networkidle")
     page.fill("#username", username)
     page.fill("#password", password)
     with page.expect_navigation(wait_until="load", timeout=30_000):
@@ -63,7 +69,10 @@ def run_full_import(admin: BrowserContext, api: httpx.Client) -> dict[str, Any]:
     """Trigger the import from the plugin's status page and wait until it is indexed."""
     page = admin.new_page()
     page.goto(f"{MOODLE}/local/llmchat/admin/sync.php")
-    page.get_by_role("button", name=re.compile("Run full import now")).click()
+    # The button is a form POST + redirect. Closing the page while that navigation is
+    # in flight blocks forever (page.close() has no timeout): let it finish first.
+    with page.expect_navigation(wait_until="load", timeout=30_000):
+        page.get_by_role("button", name=re.compile("Run full import now")).click()
     page.close()
 
     def done() -> dict[str, Any] | None:
@@ -121,7 +130,12 @@ class Chat:
         self.page.click("[data-action=send]")
 
     def last_answer(self) -> Any:
-        return self.page.locator(".local-llmchat-msg-assistant [data-region=text]").last
+        """The latest assistant message body.
+
+        The body, not a single text region: after a tool card or a question the UI
+        opens a fresh text segment, so the answer is not in the first region.
+        """
+        return self.page.locator(".local-llmchat-msg-assistant [data-region=body]").last
 
     def wait_answer(self, contains: str, timeout: float = 30_000) -> Any:
         answer = self.last_answer()

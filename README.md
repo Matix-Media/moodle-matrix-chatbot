@@ -103,6 +103,13 @@ checkpointer, quotas — with only the chat model scripted, embeddings hashed an
 Moodle callback mocked at the HTTP level (`tests/support/harness.py`). It includes
 wire-format checks of the real OpenAI and Ollama clients streaming tool calls.
 
+A third tier, `tests/e2e`, drives a real browser against a real Moodle 4.5 with the
+plugin installed, the API, and a scripted OpenAI-compatible model, all in Docker
+(`docker compose -f tests/e2e/docker-compose.yml --profile test build`, then `up -d
+--wait moodle` and `run --rm runner`; about 30 seconds once built). It covers import,
+cited answers, clarifying questions, history, reconnects and per-user rights, and is
+what caught the plugin/API contract mismatches the other tiers could not.
+
 The plugin has its own PHPUnit suite and README in `moodle/local_llmchat/`; CI runs
 it with `moodle-plugin-ci` against Moodle 4.5 and 5.0. `tests/fixtures/jwt_vectors.json`
 is shared byte-for-byte with the plugin so both sides agree on chat tokens.
