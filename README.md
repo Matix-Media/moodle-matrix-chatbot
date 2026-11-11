@@ -1,196 +1,115 @@
-# bsbot — Berufsschule Matrix Bot
+# moodle-llm-chat
 
-A Matrix bot that answers classmates' questions about the Berufsschule, grounded in the
-school's Moodle content — course pages, labels, forum text, PDFs, slides and Nextcloud
-shares — and always citing its sources.
-
-Built against **moodle.itech-bs14.de** (Moodle 5.0.3+): 25 courses (19 direct enrolments +
-6 discovered via same-Moodle-host links and self-enrolled), 5,730 indexed chunks — including
-611 pages of scanned IHK exam papers recovered via OCR.
-
-## How it works
+An agentic course assistant that lives inside Moodle. Students and teachers ask
+questions in a chat on the Moodle site; an agent searches, navigates and reads the
+course material **that this user is allowed to see**, asks back when a question is
+ambiguous, and answers with links to the exact activity, file and page.
 
 ```
-Moodle REST API ──► crawl (structure only, no downloads)
-                      │
-                      ├─ inline text (labels, intros) ──────────┐
-                      └─ files & pages ─► fetch (cached) ─► extract ─► chunk ─┤
-                                                                              ▼
-                                              SQLite: FTS5 (BM25) + sqlite-vec (cosine)
-                                                                              │
-                             question ─► expand ─► ┌─ keyword search ─┐       │
-                                                   ├─ vector search ──┤─► RRF ─► rerank
-                                                   └──────────────────┘            │
-                                                                                   ▼
-                                                        Gemini ─► cited German answer
+┌──────────── Moodle ────────────┐   HTTPS (site secret)   ┌──────── moodle-llm-chat API ────────┐
+│ local_llmchat plugin           │ ──────────────────────▶ │ /ingest/*  content, files, policy   │
+│  • pushes courses, activities, │                         │ job pipeline: fetch → extract →     │
+│    files (events + full sync)  │ ◀────────────────────── │   OCR → embed (encrypted store)     │
+│  • answers live access checks  │   callback.php          │                                     │
+│  • signs short-lived chat      │                         │ /ws/chat   LangGraph agent + tools  │
+│    tokens (who + what visible) │   browser websocket     │ /api/conversations  history         │
+│  • renders the chat UI         │ ──────────────────────▶ │ quotas, usage metering              │
+└────────────────────────────────┘                         └─────────────────────────────────────┘
 ```
 
-### Why hybrid retrieval
+* `moodle/local_llmchat/` — the Moodle plugin (Moodle 4.5+ / 5.x, PHP 8.2+).
+* `src/moodle_llm_chat/` — the API service (Python 3.13+).
 
-Pure vector search is the obvious choice and the wrong one here. The two retrievers fail
-in *complementary* ways, which is exactly when fusing them wins:
+## What the agent can do
 
-- **Lexical needles** — `LF05`, `15.03.2026`, a teacher's surname. BM25 nails them;
-  embeddings blur them.
-- **Casual phrasing against formal documents** — "wann is die prüfung" vs *Termin der
-  Abschlussprüfung Teil 1*. Embeddings bridge it; BM25 cannot.
+| Tool | Purpose |
+|---|---|
+| `search_content` | Semantic + keyword search (hybrid, reciprocal-rank fused) |
+| `search_text` | Exact keyword / phrase search (FTS5, umlaut-folding) |
+| `search_regex` | Regular expressions over full document text (guarded against ReDoS) |
+| `list_dir`, `stat_file`, `read_file` | Courses as folders, documents as files; partial and per-page reads |
+| `list_documents` | Newest / oldest documents, with `since` / `until` filters |
+| `current_datetime`, `current_user` | Today's date and week; who is asking, roles, groups, course context |
+| `ask_user` | Pause and ask a clarifying question (options or free text) |
 
-Results are fused with Reciprocal Rank Fusion, so the two scoring scales never have to be
-made comparable. German compounds (`Prüfung` inside `Abschlussprüfung`) are deliberately the
-vector retriever's job — FTS5 tokenises whole words. That boundary is pinned by a test.
+Every search tool takes a path and time filters. New tools are one class
+(`agent/tools/base.py`); new kinds of question to the user are one interaction kind
+(`agent/interactions.py`) and need no UI change for a basic rendering.
 
-### Course discovery
+## Security model
 
-`bsbot sync` also follows same-Moodle-host course links found inside enrolled courses
-(`core_enrol_get_users_courses` only returns courses the account is *already* enrolled in, so
-a linked course is otherwise invisible). If the linked course offers key-free self-enrolment,
-the bot joins it automatically and crawls it like any other course — verified live: 5 of 7
-linked courses found on the real site required no key and were joined this way. A course
-requiring an enrolment key, or using manual/guest enrolment, is never touched; the bot never
-guesses a password. Every attempt is logged (`enrol.success` / `enrol.requires_password` /
-`enrol.declined`), never silent. Disable with `bsbot sync --no-follow-links`.
+* **Access.** The plugin computes, *as the user*, which courses and modules they can
+  see and signs that into a 15-minute HS256 chat token. Every store query is filtered
+  by it, and before any document text reaches the model the API asks Moodle again
+  live (`callback.php`). If Moodle cannot be reached, nothing is shown.
+* **Plugin ↔ API.** One random secret per site, HTTPS only, sent as a bearer token
+  both ways. Chat tokens use a key derived from it (HKDF), never the secret itself.
+  Secrets rotate with a grace period and can be revoked.
+* **At rest.** The whole database is SQLCipher-encrypted; additionally every course
+  text, file, chat message and agent checkpoint is sealed (AES-256-GCM) under a
+  per-course, per-file or per-user key, wrapped by keys derived from one master key.
+  Logs never contain content.
+* **Quotas.** Token budgets per user and per site (day / month, per turn), configured
+  in the plugin with per-user overrides and exemptions; the operator can set hard
+  ceilings the plugin cannot raise.
 
-### Freshness
-
-Files are downloaded **on demand** and cached content-addressed, with a ladder that tries the
-cheapest check first:
-
-1. No cache entry → download.
-2. Moodle's `timemodified` changed → download. *Free: already known from the structure crawl.*
-3. Inside the soft TTL (24 h) → serve cache, **no network at all**.
-4. TTL elapsed → conditional `GET`; a `304` costs a few hundred bytes.
-5. Bytes differ → new blob, re-extract, re-embed — *only that document*.
-
-Content removed from Moodle is **tombstoned**, so it stops being answerable immediately.
-
-## Quick start
+## Running the API
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+pip install .
+moodle-llm-chat gen-master-key --out secrets/master.key     # mode 0600; back it up separately
+export MLC_SECURITY__MASTER_KEY_FILE=secrets/master.key
+cp .env.example .env                                         # choose providers and models
+moodle-llm-chat doctor                                       # shows what is configured
+moodle-llm-chat site add schule --name "Meine Schule" --url https://moodle.example.de
+moodle-llm-chat serve                                        # behind a TLS-terminating proxy
 ```
 
-Copy `.env.example` to `.env` and fill it in, then:
+Paste the printed site secret and the API URL into the plugin settings
+(*Site administration → Plugins → Local plugins → Course chat (LLM)*), press **Test
+connection**, then **Run full import now**. `docker compose up -d` runs the same with the
+master key as a Docker secret.
 
-```bash
-bsbot doctor          # what is configured
-bsbot whoami          # verify Moodle access
-bsbot sync            # crawl course structure (cheap, run often)
-bsbot index           # fetch + extract + chunk pending documents
-bsbot embed           # embed new chunks
-bsbot ask "Was muss ich bei Fehlzeiten tun?"
-bsbot serve           # run the Matrix bot
-```
+Providers (`MLC_LLM__PROVIDER`, `MLC_EMBEDDING__PROVIDER`): `gemini`, `openai`
+(also any OpenAI-compatible server via `MLC_LLM__BASE_URL`, e.g. vLLM or LM Studio),
+`ollama`, `anthropic` (chat only). `MLC_LLM__THINKING=off|low|medium|high` enables
+reasoning on models that support it; `MLC_AGENT__SHOW_THINKING` decides whether users
+see it.
 
-### Scanned documents
+### Operator commands
 
-Roughly 70 PDFs in this corpus are scans of past IHK exam papers with no extractable text.
-They are transcribed with Gemini, cached per page image so each is paid for once:
-
-```bash
-bsbot index --ocr --retry-empty
-```
-
-## Matrix access
-
-matrix.org accounts created through **account.matrix.org** use next-gen auth (MAS/OIDC) and
-have **no legacy password**: `m.login.password` is advertised but returns `M_FORBIDDEN`, and
-e-mail identifiers are rejected outright (`M_UNKNOWN`). Use the OAuth device grant:
-
-```bash
-bsbot matrix-login     # prints a URL + code; approve once in a browser
-bsbot serve
-```
-
-**Do not copy an access token out of Element.** It authenticates fine, but it is bound to
-*Element's* device, whose Olm private keys never leave that browser — so the bot can read
-nothing, failing with `Olm event doesn't contain ciphertext for our key`. `matrix-login`
-instead names its **own** device in the requested scope (MSC2967), so nio uploads keys it
-actually controls.
-
-The command stores an access token *and a refresh token*. The bot refreshes on startup and
-again while running (matrix.org issues 4-hour tokens), so restarts and redeploys never need
-the browser flow again. Only a revoked refresh token requires re-running it.
-
-Password login still works for legacy and self-hosted homeservers.
-
-The bot must be **invited** to its rooms — it only joins room IDs on its allow-list.
-
-## Moodle access
-
-The site has the `moodle_mobile_app` web service enabled, so a normal student account gets a
-real REST token from `/login/token.php` — no admin action and no HTML scraping.
-
-Two things to know:
-
-- Moodle authenticates with the **Anmeldename**, not the e-mail address.
-- A failed login returns **HTTP 200** with an error body. Anything that only checks the
-  status code will treat a bad password as success and fail confusingly later.
-
-Prefer putting a token in `BSBOT_MOODLE__TOKEN` (from *Einstellungen → Sicherheitsschlüssel*)
-over storing a password. `bsbot whoami` caches one automatically after the first login.
-
-## Configuration
-
-All settings come from environment variables prefixed `BSBOT_`, with `__` separating nested
-sections (`BSBOT_MOODLE__BASE_URL`). See `.env.example`. Secrets are `SecretStr`, so they
-never appear in logs or tracebacks. `.env` is gitignored.
+| Command | |
+|---|---|
+| `site add / list / rotate / revoke / limits` | Manage connected Moodle sites and their hard token ceilings |
+| `status --site X`, `usage --site X` | Content, processing backlog, token usage |
+| `reprocess [--skipped-only]` | Re-extract documents (e.g. after enabling OCR) |
+| `reembed --yes` | Drop vectors after changing the embedding model |
+| `rotate-keys --new-master-key-file F` | New master key; data keys are re-wrapped, the DB is re-keyed |
 
 ## Development
 
-Spec-driven: every feature has a numbered spec in [`specs/`](specs/) with numbered acceptance
-criteria, and each spec names the test module that verifies it. Tests cite the criteria they
-cover (`AC-7`) in their docstrings. Specs are written before tests, tests before code.
+Tests are the specification — write the failing test first.
 
 ```bash
-pytest              # 332 tests, no network required
-ruff check . && ruff format --check .
-mypy
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+ruff check . && ruff format --check . && mypy
+pytest -m "not integration and not e2e"     # unit tier, seconds
+pytest -m integration                       # every real component in-process
 ```
 
-Moodle responses are replayed from recorded fixtures in `tests/fixtures/moodle/`, so the
-whole pipeline is testable without touching the school's server.
+The integration tier runs the real app — encrypted store, pipeline, agent, websocket,
+checkpointer, quotas — with only the chat model scripted, embeddings hashed and the
+Moodle callback mocked at the HTTP level (`tests/support/harness.py`). It includes
+wire-format checks of the real OpenAI and Ollama clients streaming tool calls.
 
-## Deployment
+A third tier, `tests/e2e`, drives a real browser against a real Moodle 4.5 with the
+plugin installed, the API, and a scripted OpenAI-compatible model, all in Docker
+(`docker compose -f tests/e2e/docker-compose.yml --profile test build`, then `up -d
+--wait moodle` and `run --rm runner`; about 30 seconds once built). It covers import,
+cited answers, clarifying questions, history, reconnects and per-user rights, and is
+what caught the plugin/API contract mismatches the other tiers could not.
 
-`api` is the only service that ever opens the SQLite index — `matrix`, `cron`, and `web` are all
-HTTP clients of it (specs/019-microservice-split.md). Start it first:
-
-```bash
-docker compose up -d api            # internal HTTP API: storage, PII, chunking, embedding, answering
-docker compose up -d matrix cron    # the Matrix bot, and the recurring crawl/fetch loop
-docker compose run --rm sync        # one-shot: crawl + fetch/extract, api chunks+embeds+stores
-```
-
-`matrix` and `cron` are separate containers on purpose — a multi-hour crawl or a large embedding
-batch must never delay the bot answering a question in the room. Neither touches the index
-directly anymore, so there's no shared-volume concern between them; `cron` repeats
-crawl → fetch/extract → (api chunks, embeds, stores) every `BSBOT_SYNC_INTERVAL_MINUTES` (default
-180). All containers use `restart: unless-stopped`, and `matrix` additionally restarts its own
-Matrix connection internally with backoff after a transient network failure (a laptop's lid
-closing, a VPS network blip) — see `matrix.crashed_restarting` in the logs. `matrix`'s own volume
-holds only its E2EE session store now, not the RAG index.
-
-For the web chat (spec 014, people outside the Matrix room):
-
-```bash
-docker compose up -d web   # the Nuxt chat frontend — needs `api` already running
-```
-
-Neither `api` nor `web` publishes a host port — `web` needs a reverse proxy / domain rule pointed
-at its internal port 3000 to actually be reachable, see `specs/014-web-chat.md`.
-
-Config reaches the container either way a platform provides it: a real `.env` file (self-hosted
-VPS), or variables injected straight into the environment (Dokploy sets `BSBOT_*` directly rather
-than writing a `.env` file — `docker-compose.yml` handles both, see the comment at its top). On
-Dokploy, point it at this repo, set the values from `.env.example` as environment variables in
-its UI, and deploy; no other setup is needed.
-
-`matrix-nio` 0.26 replaced libolm with vodozemac, so end-to-end encryption needs no C library
-and the image is a plain `python:3.13-slim`.
-
-## Privacy
-
-Course material and forum text are sent to Google for embedding and answering. In a school
-context that may be worth flagging to whoever administers the Moodle. Assignment submissions,
-grades and gradebook data are **never** crawled, and the bot only ever indexes what its own
-account can already see.
+The plugin has its own PHPUnit suite and README in `moodle/local_llmchat/`; CI runs
+it with `moodle-plugin-ci` against Moodle 4.5 and 5.0. `tests/fixtures/jwt_vectors.json`
+is shared byte-for-byte with the plugin so both sides agree on chat tokens.

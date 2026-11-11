@@ -1,0 +1,60 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/interaction_question
+
+    Interaction kind "question": options as buttons (or checkboxes when multi-select) plus free text.
+
+    Example context (json):
+    {
+        "uniqid": "llmchat-q-1",
+        "question": "Möchtest du nur den Abgabetermin wissen oder auch, wie die Abgabe bewertet wird?",
+        "hasoptions": true,
+        "multiselect": false,
+        "options": [{"value": "Nur den Termin", "index": 0}, {"value": "Termin und Bewertung", "index": 1}]
+    }
+}}
+<div class="card local-llmchat-interaction" data-region="interaction">
+    <div class="card-body">
+        <p class="local-llmchat-question">{{question}}</p>
+        {{#hasoptions}}
+        {{^multiselect}}
+        <div class="d-flex flex-wrap local-llmchat-options">
+            {{#options}}<button type="button" class="btn btn-outline-primary btn-sm" data-action="option" data-value="{{value}}">{{value}}</button>{{/options}}
+        </div>
+        {{/multiselect}}
+        {{#multiselect}}
+        <div class="local-llmchat-options">
+            {{#options}}
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="{{uniqid}}-{{index}}" value="{{value}}" data-region="option">
+                <label class="form-check-label" for="{{uniqid}}-{{index}}">{{value}}</label>
+            </div>
+            {{/options}}
+        </div>
+        {{/multiselect}}
+        {{/hasoptions}}
+    <form class="input-group input-group-sm" data-region="freeform">
+        <label class="sr-only visually-hidden" for="{{uniqid}}-text">{{#str}} answer, local_llmchat {{/str}}</label>
+        <input type="text" class="form-control" id="{{uniqid}}-text" data-region="freetext"
+            placeholder="{{#hasoptions}}{{#str}} other, local_llmchat {{/str}}{{/hasoptions}}{{^hasoptions}}{{#str}} typeanswer, local_llmchat {{/str}}{{/hasoptions}}">
+        <div class="input-group-append">
+            <button type="submit" class="btn btn-primary">{{#str}} answer, local_llmchat {{/str}}</button>
+        </div>
+    </form>
+    </div>
+</div>

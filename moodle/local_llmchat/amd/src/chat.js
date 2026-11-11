@@ -1,0 +1,1155 @@
+// This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+
+/**
+ * Course chat client. Streams tokens, thinking, tool calls and interactions from the API
+ * websocket and renders them with local_llmchat templates (theme-overridable, theme icons).
+ * Reconnects with resume{last_seq}, offers "Continue" after an interrupted turn and shows the
+ * token budget. A fresh chat token is fetched before every send.
+ *
+ * Frames are handled strictly in order through a promise queue, because template rendering is
+ * asynchronous and a stream must never be reordered.
+ *
+ * @module     local_llmchat/chat
+ * @copyright  2026 Matix-Media
+ * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+import Ajax from 'core/ajax';
+import Log from 'core/log';
+import {getStrings} from 'core/str';
+import {add as addToast} from 'core/toast';
+import ReconnectingSocket from 'local_llmchat/socket';
+import * as frames from 'local_llmchat/frames';
+import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
+import {rendererFor} from 'local_llmchat/interactions/registry';
+import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
+import {describeCall, describeResult, linkSegments, STRING_KEYS as TOOL_STRING_KEYS} from 'local_llmchat/tooldetails';
+
+const STRING_KEYS = [
+    'cancelled', 'copied', 'error', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
+    'quota:remainingmonth', 'quota:thismonth', 'quota:today', 'quota:usedof', 'ratelimited:burst', 'ratelimited:site',
+    'ratelimited:user', 'reconnected', 'resume',
+    'turninterrupted', 'unknowninteraction', 'untitled',
+];
+
+const SEQ_STORAGE_KEY = 'local_llmchat_lastseq';
+
+/** Circumference of the token ring (r = 15 in a 36-unit viewBox). */
+const RING_CIRCUMFERENCE = 2 * Math.PI * 15;
+
+/** Space kept below the chat card. */
+const BOTTOM_GAP = 16;
+
+/** Moodle's floating page controls (help button, drawer toggles) that may sit over the card. */
+const FLOATING_CONTROLS = [
+    '.btn-footer-popover', '.drawer-toggles .drawer-toggler', '[data-region="footer-container-popover"] .btn',
+].join(', ');
+
+/** Server frame type => controller method (frame, replay). */
+const FRAME_HANDLERS = {
+    'user_message': 'onUserMessage',
+    'thinking': 'onThinking',
+    'token': 'onToken',
+    'tool_call': 'onToolCall',
+    'tool_progress': 'onToolProgress',
+    'tool_result': 'onToolResult',
+    'question': 'onQuestion',
+    'citations': 'onCitations',
+    'final': 'onFinal',
+    'turn_interrupted': 'onInterrupted',
+    'rate_limited': 'onRateLimited',
+    'quota': 'onQuota',
+    'error': 'onError',
+};
+
+/** Tool name => pix icon, used when the API's tool metadata names no pix icon. */
+const TOOL_ICONS = {
+    'search_content': ['a/search', 'core'],
+    'search_text': ['a/search', 'core'],
+    'search_regex': ['a/search', 'core'],
+    'list_dir': ['i/folder', 'core'],
+    'stat_file': ['i/files', 'core'],
+    'read_file': ['i/files', 'core'],
+    'list_documents': ['i/calendar', 'core'],
+    'current_datetime': ['i/calendar', 'core'],
+    'current_user': ['i/user', 'core'],
+    'ask_user': ['i/question', 'core'],
+};
+
+/**
+ * Fill a {$a} / {$a->x} placeholder string.
+ *
+ * @param {string} template
+ * @param {*} a
+ * @returns {string}
+ */
+const fill = (template, a) => String(template)
+    .replace(/\{\$a->(\w+)\}/g, (m, k) => (a && a[k] !== undefined ? String(a[k]) : ''))
+    .replace(/\{\$a\}/g, a === undefined || a === null ? '' : String(a));
+
+/**
+ * Random id for client_msg_id.
+ *
+ * @returns {string}
+ */
+const uuid = () => (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+/**
+ * Format a timestamp (seconds or ISO string) for display.
+ *
+ * @param {number|string} value
+ * @returns {string}
+ */
+const formatTime = (value) => {
+    if (value === undefined || value === null || value === '') {
+        return '';
+    }
+    const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
+    return isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+};
+
+const formatNumber = (n) => (typeof n === 'number' ? n.toLocaleString() : (n ?? '–'));
+
+/**
+ * Pix icon for a tool: an icon named by the API as "component:key" wins, then the name table.
+ *
+ * @param {string} name
+ * @param {Object} meta tool metadata from ready{tools}
+ * @returns {Array} [key, component]
+ */
+const toolIcon = (name, meta) => {
+    const named = String(meta.icon || '').match(/^([a-z0-9_]+):([a-z0-9_/-]+)$/);
+    if (named) {
+        return [named[2], named[1]];
+    }
+    return TOOL_ICONS[name] || ['tool', 'local_llmchat'];
+};
+
+class ChatController {
+    /**
+     * Constructor.
+     *
+     * @param {HTMLElement} root
+     * @param {Object} config {courseid, userpicture}
+     * @param {Object} strings
+     */
+    constructor(root, config, strings) {
+        this.root = root;
+        this.courseid = Number(config.courseid) || 0;
+        this.userpicture = config.userpicture || '';
+        this.str = strings;
+        this.regions = {};
+        ['messages', 'empty', 'conversations', 'status', 'quota', 'quota-button', 'quota-ring', 'quota-percent', 'quota-panel',
+            'input', 'composer', 'panel', 'sidebar'].forEach((name) => {
+            this.regions[name] = root.querySelector(`[data-region="${name}"]`);
+        });
+        this.sendButton = root.querySelector('[data-action="send"]');
+        this.cancelButton = root.querySelector('[data-action="cancel"]');
+        this.conversationId = null;
+        this.lastSeq = this.loadSeqs();
+        this.tools = new Map();
+        this.turn = null;
+        this.queued = null;
+        this.pendingUserBubbles = new Map();
+        this.queue = Promise.resolve();
+        this.offlineNotice = null;
+        this.wasOffline = false;
+        this.stickToBottom = true;
+        this.pathCache = new Map();
+
+        this.socket = new ReconnectingSocket({
+            credentials: async() => {
+                const t = await this.issueToken();
+                return {wsurl: t.wsurl, token: t.token};
+            },
+            onFrame: (frame) => this.handleFrame(frame, false),
+            onReady: (frame) => this.enqueue(() => this.handleReady(frame)),
+            onStatus: (online) => this.enqueue(() => this.setOnline(online)),
+        });
+        this.bind();
+    }
+
+    /**
+     * Run work after everything queued before it.
+     *
+     * @param {Function} task () => (Promise|void)
+     * @returns {Promise}
+     */
+    enqueue(task) {
+        this.queue = this.queue.then(task).catch((e) => Log.error(e));
+        return this.queue;
+    }
+
+    /**
+     * Wire DOM events.
+     */
+    bind() {
+        const input = this.regions.input;
+        this.regions.composer.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.submit();
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+                e.preventDefault();
+                this.submit();
+            }
+        });
+        input.addEventListener('input', () => this.autosize());
+        this.cancelButton.addEventListener('click', () => {
+            if (this.conversationId) {
+                this.socket.send(frames.cancel({conversationId: this.conversationId}));
+            }
+        });
+        this.regions.messages.addEventListener('scroll', () => {
+            const m = this.regions.messages;
+            this.stickToBottom = m.scrollTop + m.clientHeight >= m.scrollHeight - 48;
+        });
+        this.root.addEventListener('click', (e) => this.onClick(e));
+        // The token panel closes on Escape and on any click outside it.
+        document.addEventListener('click', (e) => {
+            if (!this.regions.quota.contains(e.target)) {
+                this.toggleQuotaPanel(false);
+            }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.regions['quota-panel'].classList.contains('show')) {
+                this.toggleQuotaPanel(false);
+                this.regions['quota-button'].focus();
+            }
+        });
+        window.addEventListener('resize', () => this.fitHeight());
+    }
+
+    /**
+     * Delegated clicks: toggles, suggestions, conversation list, new conversation.
+     *
+     * @param {MouseEvent} e
+     */
+    onClick(e) {
+        const target = e.target.closest('[data-action]');
+        if (!target || !this.root.contains(target)) {
+            return;
+        }
+        const action = target.dataset.action;
+        if (action === 'toggle') {
+            const panel = document.getElementById(target.getAttribute('aria-controls'));
+            if (panel) {
+                const open = panel.classList.toggle('show');
+                target.setAttribute('aria-expanded', open ? 'true' : 'false');
+            }
+        } else if (action === 'quota-toggle') {
+            this.toggleQuotaPanel(!this.regions['quota-panel'].classList.contains('show'));
+        } else if (action === 'suggest') {
+            this.regions.input.value = target.dataset.text;
+            this.submit();
+        } else if (action === 'open-conversation') {
+            this.closeSidebarOnMobile();
+            this.openConversation(target.dataset.id);
+        } else if (action === 'new-conversation') {
+            this.closeSidebarOnMobile();
+            this.openConversation(null);
+        }
+    }
+
+    /**
+     * Open or close the token budget panel behind the ring.
+     *
+     * @param {boolean} open
+     */
+    toggleQuotaPanel(open) {
+        this.regions['quota-panel'].classList.toggle('show', open);
+        this.regions['quota-button'].setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    /**
+     * Collapse the conversation list again after a pick on small screens.
+     */
+    closeSidebarOnMobile() {
+        this.regions.sidebar.classList.remove('show');
+        this.root.querySelectorAll(`[aria-controls="${this.regions.sidebar.id}"]`)
+            .forEach((b) => b.setAttribute('aria-expanded', 'false'));
+    }
+
+    /**
+     * Start.
+     */
+    start() {
+        this.fitHeight();
+        this.socket.connect();
+        this.refreshConversations();
+    }
+
+    /**
+     * Make the chat card fill the window below its top edge, with the composer always in view.
+     */
+    fitHeight() {
+        const panel = this.regions.panel;
+        const box = panel.getBoundingClientRect();
+        const top = box.top + window.scrollY;
+        // Keep the composer clear of floating controls that overlap the card horizontally.
+        let gap = BOTTOM_GAP;
+        document.querySelectorAll(FLOATING_CONTROLS).forEach((control) => {
+            const r = control.getBoundingClientRect();
+            const fixed = window.getComputedStyle(control).position === 'fixed' ||
+                window.getComputedStyle(control.offsetParent || control).position === 'fixed';
+            if (r.width && fixed && r.right > box.left && r.left < box.right) {
+                gap = Math.max(gap, window.innerHeight - r.top + 8);
+            }
+        });
+        const height = Math.max(440, window.innerHeight - top - gap);
+        panel.style.height = `${height}px`;
+        if (window.matchMedia('(min-width: 992px)').matches) {
+            this.regions.sidebar.style.height = `${height}px`;
+        } else {
+            this.regions.sidebar.style.height = '';
+        }
+    }
+
+    /**
+     * Grow the composer with its content, up to a limit.
+     */
+    autosize() {
+        const input = this.regions.input;
+        input.style.height = 'auto';
+        input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+    }
+
+    /**
+     * Fresh chat token (sesskey-protected AJAX).
+     *
+     * @returns {Promise<Object>} {token, expires, apiurl, wsurl}
+     */
+    async issueToken() {
+        const result = await Ajax.call([{methodname: 'local_llmchat_issue_token', args: {courseid: this.courseid}}])[0];
+        this.apiurl = result.apiurl;
+        return result;
+    }
+
+    /**
+     * Last seq per conversation, kept across reloads in sessionStorage.
+     *
+     * @returns {Object}
+     */
+    loadSeqs() {
+        try {
+            return JSON.parse(window.sessionStorage.getItem(SEQ_STORAGE_KEY) || '{}') || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    /**
+     * Persist last seqs.
+     */
+    saveSeqs() {
+        try {
+            window.sessionStorage.setItem(SEQ_STORAGE_KEY, JSON.stringify(this.lastSeq));
+        } catch (e) {
+            // Storage unavailable: resume still works within this page.
+        }
+    }
+
+    /**
+     * Online/offline notice in the status area; a toast once the connection is back.
+     *
+     * @param {boolean} online
+     */
+    async setOnline(online) {
+        if (online) {
+            if (this.offlineNotice) {
+                this.offlineNotice.remove();
+                this.offlineNotice = null;
+            }
+            if (this.wasOffline) {
+                addToast(this.str.reconnected, {type: 'success'});
+                this.wasOffline = false;
+            }
+            return;
+        }
+        this.wasOffline = true;
+        if (!this.offlineNotice) {
+            this.offlineNotice = await renderNode('notice', {
+                type: 'warning', icon: 'offline', component: 'local_llmchat', message: this.str.offline, spinner: true,
+            });
+            this.offlineNotice.classList.add('mb-0', 'rounded-0', 'border-start-0', 'border-end-0');
+            this.regions.status.prepend(this.offlineNotice);
+        }
+    }
+
+    /**
+     * After (re)authentication: remember tools, resume the open conversation, flush the queue.
+     *
+     * @param {Object} frame ready{tools, server_time}
+     */
+    handleReady(frame) {
+        (frame.tools || []).forEach((tool) => this.tools.set(tool.name, tool));
+        if (this.conversationId) {
+            this.socket.send(frames.resume({conversationId: this.conversationId,
+                lastSeq: this.lastSeq[this.conversationId]}));
+        }
+        if (this.queued) {
+            const queued = this.queued;
+            this.queued = null;
+            queued.note.textContent = '';
+            this.dispatchSend(queued.text, queued.clientMsgId);
+        }
+    }
+
+    /**
+     * Composer submit.
+     */
+    submit() {
+        const text = this.regions.input.value.trim();
+        if (!text) {
+            return;
+        }
+        this.regions.input.value = '';
+        this.autosize();
+        const clientMsgId = uuid();
+        this.enqueue(async() => {
+            const bubble = await this.addUserBubble(text);
+            this.pendingUserBubbles.set(clientMsgId, bubble);
+            if (!this.socket.isReady()) {
+                // Offline: keep at most one unsent message.
+                if (this.queued) {
+                    this.queued.bubble.remove();
+                }
+                const note = bubble.querySelector('[data-region="note"]');
+                note.textContent = this.str.queuedmessage;
+                this.queued = {text, clientMsgId, bubble, note};
+                return;
+            }
+            this.dispatchSend(text, clientMsgId);
+        });
+    }
+
+    /**
+     * Send with a fresh token (scope refresh per turn).
+     *
+     * @param {string} text
+     * @param {string} clientMsgId
+     */
+    async dispatchSend(text, clientMsgId) {
+        this.clearStatusErrors();
+        try {
+            const t = await this.issueToken();
+            const sent = this.socket.send(frames.send({text, token: t.token, clientMsgId,
+                conversationId: this.conversationId, courseId: this.courseid}));
+            if (sent) {
+                this.setRunning(true);
+            } else {
+                const bubble = this.pendingUserBubbles.get(clientMsgId);
+                const note = bubble.querySelector('[data-region="note"]');
+                note.textContent = this.str.queuedmessage;
+                this.queued = {text, clientMsgId, bubble, note};
+            }
+        } catch (e) {
+            this.showStatus('error', e && e.message ? e.message : String(e));
+        }
+    }
+
+    /**
+     * Toggle running state: the send button becomes a stop button.
+     *
+     * @param {boolean} running
+     */
+    setRunning(running) {
+        this.running = running;
+        this.cancelButton.classList.toggle('d-none', !running);
+        this.sendButton.classList.toggle('d-none', running);
+    }
+
+    /**
+     * Handle one server frame (in order, after anything queued before).
+     *
+     * @param {Object} frame
+     * @param {boolean} replay true when re-rendering stored history
+     * @returns {Promise}
+     */
+    handleFrame(frame, replay) {
+        return this.enqueue(async() => {
+            if (!this.acceptFrame(frame, replay)) {
+                return;
+            }
+            const handler = FRAME_HANDLERS[frame.type];
+            if (handler) {
+                await this[handler](frame, replay);
+                this.scroll();
+            }
+            // Unknown types are ignored (forward compatibility).
+        });
+    }
+
+    /**
+     * Adopt the conversation id of a new conversation, drop frames of other conversations and
+     * frames already seen (resume replays everything after last_seq; duplicates are skipped).
+     *
+     * @param {Object} frame
+     * @param {boolean} replay
+     * @returns {boolean} whether the frame should be rendered
+     */
+    acceptFrame(frame, replay) {
+        if (frame.conversation_id && !this.conversationId && !replay) {
+            this.conversationId = String(frame.conversation_id);
+            this.refreshConversations();
+        }
+        const convId = frame.conversation_id ? String(frame.conversation_id) : this.conversationId;
+        if (convId && convId !== this.conversationId) {
+            return false;
+        }
+        if (typeof frame.seq === 'number' && convId) {
+            const last = this.lastSeq[convId] || 0;
+            if (!replay && frame.seq <= last) {
+                return false;
+            }
+            this.lastSeq[convId] = Math.max(last, frame.seq);
+            this.saveSeqs();
+        }
+        return true;
+    }
+
+    /**
+     * Scroll to the newest message, unless the user scrolled up to read.
+     *
+     * @param {boolean} [force]
+     */
+    scroll(force = false) {
+        const m = this.regions.messages;
+        if (force || this.stickToBottom) {
+            m.scrollTop = m.scrollHeight;
+        }
+    }
+
+    /**
+     * Append a node to the message list (hiding the empty state).
+     *
+     * @param {HTMLElement} node
+     */
+    appendMessage(node) {
+        this.regions.empty.classList.add('d-none');
+        this.regions.messages.appendChild(node);
+    }
+
+    /**
+     * Add a user bubble.
+     *
+     * @param {string} text
+     * @returns {Promise<HTMLElement>}
+     */
+    async addUserBubble(text) {
+        const bubble = await renderNode('message_user', {text, avatar: this.userpicture});
+        this.appendMessage(bubble);
+        this.turn = null;
+        this.scroll(true);
+        return bubble;
+    }
+
+    /**
+     * Server echo of a user message.
+     *
+     * @param {Object} frame
+     * @param {boolean} replay
+     */
+    async onUserMessage(frame, replay) {
+        const known = frame.client_msg_id && this.pendingUserBubbles.has(frame.client_msg_id);
+        if (known) {
+            this.pendingUserBubbles.delete(frame.client_msg_id);
+        } else {
+            await this.addUserBubble(String(frame.text ?? (frame.message && frame.message.text) ?? ''));
+        }
+        this.turn = null;
+        if (!replay) {
+            // Open the assistant message right away so the typing indicator shows while waiting.
+            this.setRunning(true);
+            await this.currentTurn(frame);
+        }
+    }
+
+    /**
+     * The assistant message of the current turn (rendered on demand).
+     *
+     * @param {Object} frame
+     * @returns {Promise<Object>}
+     */
+    async currentTurn(frame) {
+        const turnId = frame.turn_id ?? null;
+        if (this.turn && (turnId === null || this.turn.id === null || this.turn.id === turnId)) {
+            if (this.turn.id === null) {
+                this.turn.id = turnId;
+            }
+            return this.turn;
+        }
+        const node = await renderNode('message_assistant');
+        this.appendMessage(node);
+        const region = (name) => node.querySelector(`[data-region="${name}"]`);
+        this.turn = {
+            id: turnId, node, body: region('body'), thinkingSlot: region('thinking'), tools: region('tools'),
+            text: region('text'), typing: region('typing'), raw: '', thinking: null, cards: new Map(), citations: [],
+        };
+        return this.turn;
+    }
+
+    /**
+     * Hide the typing indicator once real content arrives.
+     *
+     * @param {Object} turn
+     */
+    contentArrived(turn) {
+        turn.typing.classList.add('d-none');
+    }
+
+    /**
+     * Show the typing indicator again at the end of the turn (e.g. after an answer was sent).
+     *
+     * @param {Object} turn
+     */
+    showTyping(turn) {
+        turn.body.appendChild(turn.typing);
+        turn.typing.classList.remove('d-none');
+    }
+
+    /**
+     * Start a new text segment at the end of the turn (text after an interaction goes below it).
+     *
+     * @param {Object} turn
+     */
+    newTextSegment(turn) {
+        const text = document.createElement('div');
+        text.className = 'local-llmchat-text';
+        turn.body.insertBefore(text, turn.typing);
+        turn.text = text;
+        turn.raw = '';
+    }
+
+    /**
+     * Reasoning delta (text only when the API sends it; otherwise an indicator).
+     *
+     * @param {Object} frame
+     */
+    async onThinking(frame) {
+        const turn = await this.currentTurn(frame);
+        if (!turn.thinking) {
+            const node = await renderNode('thinking', {uniqid: uniqid('llmchat-thinking')});
+            turn.thinkingSlot.appendChild(node);
+            const q = (sel) => node.querySelector(sel);
+            turn.thinking = {
+                node, toggle: q('[data-action="toggle"]'), collapsible: q('[data-region="collapsible"]'),
+                text: q('[data-region="thinking-text"]'), spinner: q('[data-region="spinner"]'),
+                active: q('[data-region="label-active"]'), done: q('[data-region="label-done"]'),
+            };
+            this.contentArrived(turn);
+        }
+        if (frame.delta) {
+            turn.thinking.text.textContent += frame.delta;
+        }
+    }
+
+    /**
+     * Collapse the thinking block once the answer (or a question) starts.
+     *
+     * @param {Object} turn
+     */
+    collapseThinking(turn) {
+        const t = turn.thinking;
+        if (t && !t.spinner.classList.contains('d-none')) {
+            t.collapsible.classList.remove('show');
+            t.toggle.setAttribute('aria-expanded', 'false');
+            t.spinner.classList.add('d-none');
+            t.active.classList.add('d-none');
+            t.done.classList.remove('d-none');
+            if (!t.text.textContent.trim()) {
+                t.node.classList.add('d-none');
+            }
+        }
+    }
+
+    /**
+     * Answer token.
+     *
+     * @param {Object} frame
+     */
+    async onToken(frame) {
+        const turn = await this.currentTurn(frame);
+        this.collapseThinking(turn);
+        this.contentArrived(turn);
+        turn.raw += frame.delta || '';
+        turn.text.innerHTML = renderMarkdown(turn.raw, turn.citations);
+    }
+
+    /**
+     * Strings and locale for local_llmchat/tooldetails.
+     *
+     * @returns {Object}
+     */
+    displayOptions() {
+        return {strings: this.str, locale: document.documentElement.lang || undefined};
+    }
+
+    /**
+     * Tool card.
+     *
+     * @param {Object} frame tool_call{id, name, args}
+     */
+    async onToolCall(frame) {
+        const turn = await this.currentTurn(frame);
+        const meta = this.tools.get(frame.name) || {};
+        const args = frame.args || {};
+        const firstArg = Object.values(args).find((v) => typeof v === 'string') || '';
+        let label;
+        if (meta.summary_template) {
+            label = meta.summary_template.replace(/\{(\w+)\}/g, (m, k) => (args[k] !== undefined ? String(args[k]) : ''));
+        } else {
+            label = `${meta.label || frame.name}${firstArg ? ` „${firstArg}“` : ''}`;
+        }
+        const [icon, component] = toolIcon(frame.name, meta);
+        const call = describeCall(args, this.displayOptions());
+        const node = await renderNode('tool_call', Object.assign({uniqid: uniqid('llmchat-tool'), icon, component, label}, call));
+        turn.tools.classList.remove('d-none');
+        turn.tools.appendChild(node);
+        turn.cards.set(frame.id, node);
+        this.contentArrived(turn);
+        // Not awaited: links arrive when ready and never hold up the stream.
+        this.linkPaths(node, call);
+    }
+
+    /**
+     * Turn the path breadcrumbs of a tool card into links to what the user can open.
+     *
+     * @param {HTMLElement} card
+     * @param {Object} call result of describeCall()
+     */
+    async linkPaths(card, call) {
+        if (!call.paths.length) {
+            return;
+        }
+        try {
+            const resolved = await this.resolvePaths(call.paths);
+            for (const param of call.params.filter((p) => p.ispath)) {
+                const answer = resolved.get(param.path);
+                const holder = [...card.querySelectorAll('[data-region="path"]')].find((h) => h.dataset.path === param.path);
+                if (holder && answer && answer.some((s) => s.url)) {
+                    await renderInto(holder, 'local_llmchat/path_breadcrumb', {segments: linkSegments(param.segments, answer)});
+                }
+            }
+        } catch (e) {
+            Log.debug(e);
+        }
+    }
+
+    /**
+     * Links for paths, resolved on the server for the current user; cached per page.
+     *
+     * @param {string[]} paths
+     * @returns {Promise<Map>} path => [{name, url}]
+     */
+    async resolvePaths(paths) {
+        const missing = paths.filter((p) => !this.pathCache.has(p));
+        if (missing.length) {
+            const request = Ajax.call([{methodname: 'local_llmchat_resolve_paths', args: {paths: missing}}])[0];
+            missing.forEach((path) => {
+                this.pathCache.set(path, request.then((result) => (result.find((r) => r.path === path) || {}).segments)
+                    .catch(() => {
+                        this.pathCache.delete(path);
+                        return undefined;
+                    }));
+            });
+        }
+        const out = new Map();
+        for (const path of paths) {
+            out.set(path, await this.pathCache.get(path));
+        }
+        return out;
+    }
+
+    /**
+     * Intermediate tool progress.
+     *
+     * @param {Object} frame
+     */
+    async onToolProgress(frame) {
+        const card = (await this.currentTurn(frame)).cards.get(frame.id);
+        const text = frame.message || frame.text || frame.summary || '';
+        if (card && text) {
+            card.querySelector('[data-region="summary"]').textContent = String(text);
+        }
+    }
+
+    /**
+     * Tool result: spinner becomes a check mark, summary and citations go into the card.
+     *
+     * @param {Object} frame tool_result{id, summary, citations?, attachments?}
+     */
+    async onToolResult(frame) {
+        const card = (await this.currentTurn(frame)).cards.get(frame.id);
+        if (!card) {
+            return;
+        }
+        card.querySelector('[data-region="spinner"]').classList.add('d-none');
+        card.querySelector('[data-region="done"]').classList.remove('d-none');
+        card.querySelector('[data-region="summary"]').textContent = frame.summary ? String(frame.summary) : '';
+        await renderInto(card.querySelector('[data-region="result"]'), 'local_llmchat/tool_result',
+            describeResult(frame, this.displayOptions()));
+    }
+
+    /**
+     * Interaction (ask_user etc.), rendered by kind.
+     *
+     * @param {Object} frame question{interrupt_id, kind, payload}
+     * @param {boolean} replay
+     */
+    async onQuestion(frame, replay) {
+        const turn = await this.currentTurn(frame);
+        this.collapseThinking(turn);
+        this.contentArrived(turn);
+        const interruptId = String(frame.interrupt_id);
+        turn.body.querySelectorAll('[data-interrupt]').forEach((n) => {
+            if (n.dataset.interrupt === interruptId) {
+                n.remove();
+            }
+        });
+        const renderer = rendererFor(frame.kind);
+        const node = await renderer.render(frame.payload || {}, (response, summary) => {
+            this.answerInteraction(turn, node, interruptId, response, summary);
+        }, {unknowninteraction: this.str.unknowninteraction});
+        node.dataset.interrupt = interruptId;
+        if (frame.error) {
+            const error = document.createElement('div');
+            error.className = 'text-danger small mb-2';
+            error.textContent = String(frame.error);
+            node.querySelector('.card-body')?.prepend(error);
+        }
+        turn.body.insertBefore(node, turn.typing);
+        this.newTextSegment(turn);
+        this.setRunning(false);
+        if (!replay) {
+            (node.querySelector('input[type="text"]') || node.querySelector('button'))?.focus({preventScroll: true});
+        }
+    }
+
+    /**
+     * Send an interaction answer and replace the prompt with a compact summary.
+     *
+     * @param {Object} turn
+     * @param {HTMLElement} node
+     * @param {string} interruptId
+     * @param {Object} response
+     * @param {string} summary
+     */
+    async answerInteraction(turn, node, interruptId, response, summary) {
+        try {
+            const t = await this.issueToken();
+            this.socket.send(frames.answer({conversationId: this.conversationId, interruptId, response, token: t.token}));
+            const answered = await renderNode('interaction_answered', {answer: summary});
+            answered.dataset.interrupt = interruptId;
+            node.replaceWith(answered);
+            this.setRunning(true);
+            this.showTyping(turn);
+            this.scroll();
+        } catch (e) {
+            this.showStatus('error', String(e && e.message ? e.message : e));
+        }
+    }
+
+    /**
+     * Citation list sent ahead of the final answer.
+     *
+     * @param {Object} frame citations{citations}
+     */
+    async onCitations(frame) {
+        (await this.currentTurn(frame)).citations = frame.citations || [];
+    }
+
+    /**
+     * Final answer with sources and actions.
+     *
+     * @param {Object} frame final{text, citations}
+     */
+    async onFinal(frame) {
+        const turn = await this.currentTurn(frame);
+        this.collapseThinking(turn);
+        this.contentArrived(turn);
+        turn.citations = frame.citations || turn.citations || [];
+        turn.raw = frame.text ?? turn.raw;
+        turn.text.innerHTML = renderMarkdown(turn.raw, turn.citations);
+        const footer = await renderNode('answer_footer', {
+            budgetexhausted: Boolean(frame.budget_exhausted || frame.truncated_by_budget),
+            hascitations: turn.citations.length > 0,
+            citations: turn.citations.map((c) => ({
+                index: c.index,
+                title: c.title || c.url || '',
+                meta: [c.course_name, c.page ? `${this.str.page} ${c.page}` : ''].filter(Boolean).join(' · '),
+                url: c.url || '',
+                hasurl: Boolean(c.url),
+            })),
+        });
+        const raw = turn.raw;
+        footer.querySelector('[data-action="copy"]').addEventListener('click', async() => {
+            try {
+                await navigator.clipboard.writeText(raw);
+                addToast(this.str.copied);
+            } catch (e) {
+                Log.debug(e);
+            }
+        });
+        turn.body.insertBefore(footer, turn.typing);
+        this.setRunning(false);
+        this.turn = null;
+        this.refreshConversations();
+    }
+
+    /**
+     * The API restarted mid-turn: offer "Continue".
+     *
+     * @param {Object} frame turn_interrupted{turn_id}
+     */
+    async onInterrupted(frame) {
+        const turn = await this.currentTurn(frame);
+        this.contentArrived(turn);
+        this.setRunning(false);
+        const notice = await renderNode('notice', {
+            type: 'info', icon: 'i/info', component: 'core', message: this.str.turninterrupted,
+            hasaction: true, actionlabel: this.str.resume,
+        });
+        notice.querySelector('[data-action="notice-action"]').addEventListener('click', async() => {
+            const t = await this.issueToken();
+            if (this.socket.send(frames.continueTurn({conversationId: this.conversationId, turnId: frame.turn_id,
+                token: t.token}))) {
+                notice.remove();
+                this.setRunning(true);
+                this.showTyping(turn);
+            }
+        });
+        turn.body.insertBefore(notice, turn.typing);
+    }
+
+    /**
+     * Budget refusal.
+     *
+     * @param {Object} frame rate_limited{scope, used?, limit?, resets_at}
+     */
+    async onRateLimited(frame) {
+        this.setRunning(false);
+        if (this.turn) {
+            this.contentArrived(this.turn);
+        }
+        const scope = ['burst', 'user', 'site'].includes(frame.scope) ? frame.scope : 'user';
+        await this.showStatus('warning', fill(this.str[`ratelimited:${scope}`], formatTime(frame.resets_at)));
+        if (frame.used !== undefined && frame.limit !== undefined) {
+            await this.onQuota({'used_today': frame.used, 'limit_today': frame.limit, 'resets_at': frame.resets_at});
+        }
+    }
+
+    /**
+     * Token budget: a small ring in the header (fullest window), a tooltip, and a details panel.
+     *
+     * @param {Object} frame quota{used_today, limit_today, used_month, limit_month, resets_at, exempt?}
+     */
+    async onQuota(frame) {
+        const {'used_today': usedToday, 'limit_today': limitToday, 'used_month': usedMonth, 'limit_month': limitMonth,
+            'resets_at': resetsAt} = frame;
+        const windows = [
+            [this.str['quota:today'], this.str['quota:remaining'], usedToday, limitToday],
+            [this.str['quota:thismonth'], this.str['quota:remainingmonth'], usedMonth, limitMonth],
+        ].filter(([, , , limit]) => limit !== undefined && limit !== null && limit > 0);
+        const rows = windows.map(([label, , used, limit]) => {
+            const percent = Math.min(100, Math.round(((used || 0) / limit) * 100));
+            return {
+                label, percent, warning: percent >= 80 && percent < 100, danger: percent >= 100,
+                usedof: fill(this.str['quota:usedof'], {used: formatNumber(used || 0), limit: formatNumber(limit)}),
+            };
+        });
+        const exempt = Boolean(frame.exempt);
+        const percent = exempt ? 0 : Math.max(0, ...rows.map((r) => r.percent));
+        const ring = this.regions['quota-ring'];
+        ring.setAttribute('stroke-dasharray', `${(percent / 100) * RING_CIRCUMFERENCE} ${RING_CIRCUMFERENCE}`);
+        // The number inside tells the ring apart from a loading spinner.
+        const label = exempt ? '∞' : `${percent}%`;
+        this.regions['quota-percent'].textContent = label;
+        this.regions['quota-percent'].classList.toggle('local-llmchat-ringlabel-long', label.length > 3);
+        let state = '';
+        if (rows.some((r) => r.danger)) {
+            state = 'danger';
+        } else if (rows.some((r) => r.warning)) {
+            state = 'warning';
+        }
+        this.regions.quota.dataset.state = state;
+        this.regions['quota-button'].title = exempt ? this.str['quota:exemptuser']
+            : windows.map(([, text, used, limit]) => fill(text, {used: formatNumber(used || 0), limit: formatNumber(limit)}))
+                .join(' · ');
+        await renderInto(this.regions['quota-panel'], 'local_llmchat/quota_panel', {
+            exempt, rows, hasresets: Boolean(resetsAt) && !exempt, resets: formatTime(resetsAt),
+        });
+        this.regions.quota.classList.toggle('invisible', !exempt && rows.length === 0);
+    }
+
+    /**
+     * Error frame; a cancelled turn is shown inline instead of as an error.
+     *
+     * @param {Object} frame error{code, message}
+     */
+    async onError(frame) {
+        this.setRunning(false);
+        if (frame.code === 'cancelled') {
+            const turn = await this.currentTurn(frame);
+            this.contentArrived(turn);
+            const note = document.createElement('div');
+            note.className = 'small text-muted';
+            note.textContent = this.str.cancelled;
+            turn.body.insertBefore(note, turn.typing);
+        } else {
+            if (this.turn) {
+                this.contentArrived(this.turn);
+            }
+            await this.showStatus('error', fill(this.str.error, frame.message || frame.code || ''));
+        }
+    }
+
+    /**
+     * Show a dismissible core notification in the chat's status area.
+     *
+     * @param {string} type error|warning|info|success
+     * @param {string} message plain text
+     * @returns {Promise<void>}
+     */
+    async showStatus(type, message) {
+        const holder = document.createElement('div');
+        holder.dataset.statusType = type;
+        this.regions.status.appendChild(holder);
+        await renderInto(holder, `core/notification_${type}`, {
+            message: escapeHtml(message), closebutton: true, announce: true,
+            extraclasses: 'mb-0 rounded-0 border-start-0 border-end-0',
+        });
+    }
+
+    /**
+     * Remove error and warning notifications (before a new send).
+     */
+    clearStatusErrors() {
+        this.regions.status.querySelectorAll('[data-status-type]').forEach((n) => n.remove());
+    }
+
+    /**
+     * GET from the API with the chat token.
+     *
+     * @param {string} path
+     * @returns {Promise<Object>}
+     */
+    async apiGet(path) {
+        const t = await this.issueToken();
+        const response = await fetch(`${t.apiurl}${path}`, {
+            headers: {Authorization: `Bearer ${t.token}`, Accept: 'application/json'},
+            credentials: 'omit',
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Reload the conversation list.
+     */
+    async refreshConversations() {
+        try {
+            const data = await this.apiGet('/api/conversations');
+            const items = Array.isArray(data) ? data : (data.conversations || data.items || []);
+            await renderInto(this.regions.conversations, 'local_llmchat/conversation_list', {
+                hasconversations: items.length > 0,
+                conversations: items.map((c) => ({
+                    id: String(c.id), title: c.title || this.str.untitled, active: String(c.id) === this.conversationId,
+                })),
+            });
+        } catch (e) {
+            // The list is a convenience; the chat works without it.
+            Log.debug(e);
+        }
+    }
+
+    /**
+     * Open a stored conversation (null = new).
+     *
+     * @param {string|null} id
+     */
+    openConversation(id) {
+        this.enqueue(async() => {
+            this.conversationId = id;
+            this.turn = null;
+            // Access may have changed since the links were resolved.
+            this.pathCache.clear();
+            this.regions.messages.replaceChildren(this.regions.empty);
+            this.regions.empty.classList.toggle('d-none', Boolean(id));
+            this.clearStatusErrors();
+            this.setRunning(false);
+            this.regions.input.focus();
+        });
+        this.refreshConversations();
+        if (!id) {
+            return;
+        }
+        this.enqueue(async() => {
+            let data;
+            try {
+                data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+            } catch (e) {
+                await this.showStatus('error', fill(this.str.error, e && e.message ? e.message : String(e)));
+                return;
+            }
+            if (this.conversationId !== id) {
+                return;
+            }
+            const events = data.events || [];
+            events.forEach((frame) => this.handleFrame(Object.assign({'conversation_id': id}, frame), true));
+            if (!events.length) {
+                (data.messages || []).forEach((m) => {
+                    const text = String(m.text ?? m.content ?? '');
+                    this.handleFrame(m.role === 'user' ? {type: 'user_message', text} : {type: 'final', text,
+                        citations: m.citations || []}, true);
+                });
+            }
+            this.enqueue(() => {
+                this.setRunning(false);
+                // Anything newer than history (a running turn, a pending question) arrives via resume.
+                this.socket.send(frames.resume({conversationId: id, lastSeq: this.lastSeq[id]}));
+                this.scroll(true);
+            });
+        });
+    }
+}
+
+/**
+ * Initialise the chat page.
+ *
+ * @param {Object} config {courseid, rootid, userpicture}
+ */
+export const init = async(config) => {
+    const root = document.getElementById(config.rootid);
+    if (!root) {
+        return;
+    }
+    const requests = [...STRING_KEYS, ...TOOL_STRING_KEYS].map((key) => ({key, component: 'local_llmchat'}));
+    requests.push({key: 'page', component: 'core'});
+    const values = await getStrings(requests);
+    const strings = {};
+    requests.forEach(({key}, i) => {
+        strings[key] = values[i];
+    });
+    const controller = new ChatController(root, config, strings);
+    controller.start();
+};
+
+export {ChatController, fill};

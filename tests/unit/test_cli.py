@@ -1,8 +1,4 @@
-"""CLI behaviour that matters when things are misconfigured.
-
-`doctor` is the command you reach for when the configuration is broken, so it is
-exactly the command that must never answer with a traceback.
-"""
+"""CLI entry points."""
 
 from __future__ import annotations
 
@@ -11,58 +7,134 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from bsbot.cli import app
+from moodle_llm_chat.cli import app
 
 runner = CliRunner()
 
 
-@pytest.fixture
-def env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
-    return tmp_path / ".env"
+class TestDoctor:
+    def test_reports_unconfigured_subsystems_without_failing(self) -> None:
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0, result.output
+        assert "chat model" in result.output
+        assert "not configured" in result.output
+        assert "MLC_LLM__PROVIDER" in result.output
+
+    def test_reports_configured_provider_and_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLC_LLM__PROVIDER", "ollama")
+        monkeypatch.setenv("MLC_LLM__MODEL", "qwen3")
+        monkeypatch.setenv("MLC_LLM__THINKING", "medium")
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0, result.output
+        assert "ollama" in result.output
+        assert "qwen3" in result.output
+        assert "medium" in result.output
+
+    def test_never_prints_secrets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLC_LLM__PROVIDER", "gemini")
+        monkeypatch.setenv("MLC_LLM__MODEL", "gemini-x")
+        monkeypatch.setenv("MLC_LLM__API_KEY", "very-secret-value")
+        result = runner.invoke(app, ["doctor"])
+        assert "very-secret-value" not in result.output
 
 
-def test_doctor_reports_a_malformed_url_instead_of_crashing(env_file: Path) -> None:
-    """Regression: a homeserver without a scheme raised a pydantic ValidationError
-    traceback, burying the one line the user needed."""
-    env_file.write_text(
-        "BSBOT_MATRIX__HOMESERVER=matrix.org\n"
-        "BSBOT_MATRIX__USER_ID=@bot:matrix.org\n"
-        "BSBOT_MATRIX__PASSWORD=pw\n"
-    )
-    result = runner.invoke(app, ["doctor"])
-
-    assert result.exit_code == 1
-    assert "Traceback" not in result.output
-    assert "BSBOT_MATRIX__HOMESERVER" in result.output
-    assert "https://" in result.output
-
-
-def test_doctor_lists_configured_subsystems(env_file: Path) -> None:
-    env_file.write_text(
-        "BSBOT_MOODLE__BASE_URL=https://moodle.example.de\nBSBOT_MOODLE__TOKEN=abc\n"
-    )
-    result = runner.invoke(app, ["doctor"])
-
+def test_version() -> None:
+    result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "moodle" in result.output
-    assert "gemini" in result.output
+    assert "0.2.0" in result.output
 
 
-def test_doctor_on_empty_config_still_succeeds(env_file: Path) -> None:
-    env_file.write_text("")
-    result = runner.invoke(app, ["doctor"])
+def test_gen_master_key_prints_a_valid_key() -> None:
+    import base64
+
+    result = runner.invoke(app, ["gen-master-key"])
     assert result.exit_code == 0
-    assert "not configured" in result.output
+    assert len(base64.b64decode(result.output.strip())) == 32
 
 
-def test_bench_rejects_a_malformed_as_of_date(env_file: Path) -> None:
-    """specs/012-benchmarks.md AC-16: fails fast on a bad --as-of, before touching
-    Gemini config at all, so this needs no credentials to exercise."""
-    env_file.write_text("")
-    result = runner.invoke(
-        app, ["bench", "--golden", "config/golden_questions.example.yaml", "--as-of", "2026-13-40"]
-    )
-    assert result.exit_code == 1
-    assert "Traceback" not in result.output
-    assert "--as-of" in result.output
+class TestSiteCommands:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import base64
+        import os
+
+        monkeypatch.setenv("MLC_SECURITY__MASTER_KEY", base64.b64encode(os.urandom(32)).decode())
+        monkeypatch.setenv("MLC_EMBEDDING__DIM", "3")
+
+    def test_add_prints_secret_once_and_list_never_does(self) -> None:
+        added = runner.invoke(
+            app, ["site", "add", "schule-a", "--name", "Schule A", "--url", "https://moodle.a.test"]
+        )
+        assert added.exit_code == 0, added.output
+        secret = next(w for w in added.output.split() if w.startswith("mlc_"))
+        listed = runner.invoke(app, ["site", "list"])
+        assert listed.exit_code == 0
+        assert "schule-a" in listed.output
+        assert secret not in listed.output
+
+    def test_rotate_prints_new_secret(self) -> None:
+        runner.invoke(app, ["site", "add", "s", "--name", "S", "--url", "https://m.test"])
+        result = runner.invoke(app, ["site", "rotate", "s", "--grace", "60"])
+        assert result.exit_code == 0, result.output
+        assert "mlc_" in result.output
+
+    def test_revoke(self) -> None:
+        runner.invoke(app, ["site", "add", "s", "--name", "S", "--url", "https://m.test"])
+        assert runner.invoke(app, ["site", "revoke", "s"]).exit_code == 0
+        assert "revoked" in runner.invoke(app, ["site", "list"]).output
+
+    def test_unknown_site_fails_cleanly(self) -> None:
+        result = runner.invoke(app, ["site", "revoke", "missing"])
+        assert result.exit_code == 1
+        assert "no such site" in result.output
+
+    def test_missing_master_key_fails_cleanly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("MLC_SECURITY__MASTER_KEY")
+        result = runner.invoke(app, ["site", "list"])
+        assert result.exit_code == 1
+        assert "master key" in result.output
+
+
+class TestOperatorCommands:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import base64
+        import os
+
+        monkeypatch.setenv("MLC_SECURITY__MASTER_KEY", base64.b64encode(os.urandom(32)).decode())
+        monkeypatch.setenv("MLC_EMBEDDING__DIM", "3")
+        runner.invoke(app, ["site", "add", "s", "--name", "S", "--url", "https://m.test"])
+
+    def test_site_limits_and_usage(self) -> None:
+        result = runner.invoke(app, ["site", "limits", "s", "--tokens-per-day", "5000"])
+        assert result.exit_code == 0, result.output
+        assert "5000" in result.output
+        usage = runner.invoke(app, ["usage", "--site", "s", "--period", "month"])
+        assert usage.exit_code == 0, usage.output
+
+    def test_status(self) -> None:
+        result = runner.invoke(app, ["status", "--site", "s"])
+        assert result.exit_code == 0, result.output
+        assert "documents" in result.output
+
+    def test_reprocess(self) -> None:
+        result = runner.invoke(app, ["reprocess", "--skipped-only"])
+        assert result.exit_code == 0, result.output
+        assert "0 documents" in result.output
+
+    def test_reembed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MLC_EMBEDDING__DIM", "8")
+        assert runner.invoke(app, ["site", "list"]).exit_code == 1  # dimension changed
+        result = runner.invoke(app, ["reembed", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert runner.invoke(app, ["site", "list"]).exit_code == 0
+
+    def test_rotate_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        new_key = tmp_path / "new.key"
+        assert runner.invoke(app, ["gen-master-key", "--out", str(new_key)]).exit_code == 0
+        assert oct(new_key.stat().st_mode & 0o777) == "0o600"
+        result = runner.invoke(app, ["rotate-keys", "--new-master-key-file", str(new_key)])
+        assert result.exit_code == 0, result.output
+        monkeypatch.delenv("MLC_SECURITY__MASTER_KEY")
+        monkeypatch.setenv("MLC_SECURITY__MASTER_KEY_FILE", str(new_key))
+        assert "s\t" in runner.invoke(app, ["site", "list"]).output

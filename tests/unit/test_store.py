@@ -1,407 +1,400 @@
-"""Verifies spec 004 — storage, manifest, blob cache, chunks and vectors."""
+"""Store v2: encrypted, site-scoped storage of courses, documents, blobs and chunks."""
 
 from __future__ import annotations
 
-import sqlite3
+import hashlib
+import io
 from pathlib import Path
 
 import pytest
+from factories import doc, file_doc, read_disk
 
-from bsbot.index.store import SCHEMA_VERSION, Store, StoreVersionError
-from bsbot.ingest.model import ContentItem, ContentKind, FileRef
+from moodle_llm_chat.crypto.keys import KeyRing
+from moodle_llm_chat.index.db import DatabaseKeyError
+from moodle_llm_chat.index.models import ChunkIn, CourseIn, SegmentIn
+from moodle_llm_chat.index.store import Store, StoreError, SyncStateError
 
-
-def item(doc_id: str = "42:1:0", *, timemodified: int = 100, **kw) -> ContentItem:
-    defaults = dict(
-        doc_id=doc_id,
-        course_id=42,
-        course_name="LF05",
-        section_name="Sec",
-        module_id=1,
-        module_name="Mod",
-        modname="resource",
-        title="Skript",
-        kind=ContentKind.FILE,
-        header_path=["LF05", "Sec", "Mod"],
-        timemodified=timemodified,
-        module_url="https://m.example/mod/resource/view.php?id=1",
-        file=FileRef(
-            url="https://m.example/f.pdf",
-            filename="f.pdf",
-            filesize=10,
-            mimetype="application/pdf",
-            timemodified=timemodified,
-        ),
-    )
-    return ContentItem(**{**defaults, **kw})
+SITE = "site-a"
+OTHER = "site-b"
 
 
-@pytest.fixture
-def store(tmp_path: Path):
-    # vec0 fixes vector width at creation time, so tests that exercise embeddings
-    # use a 2-dimensional store; production uses 768.
-    with Store(tmp_path / "index.db", embed_dim=2) as s:
-        yield s
+def _course(course_id: int = 2, **kw: object) -> CourseIn:
+    base: dict[str, object] = {
+        "course_id": course_id,
+        "fullname": "Netzwerke LF7",
+        "shortname": "LF7",
+        "visible": True,
+        "startdate": 0,
+        "enddate": 0,
+        "timemodified": 1_700_000_000,
+    }
+    base.update(kw)
+    return CourseIn(**base)  # type: ignore[arg-type]
 
 
-class TestSchema:
-    def test_open_creates_schema_and_is_idempotent(self, tmp_path: Path) -> None:
-        """AC-1"""
-        path = tmp_path / "index.db"
-        with Store(path) as s:
-            s.persist_crawl([item()])
-        with Store(path) as s:
-            assert len(s.active_documents()) == 1
+class TestSites:
+    def test_add_returns_secret_once_and_authenticates_it(self, store: Store) -> None:
+        secret = store.add_site(SITE, name="Schule A", url="https://moodle.a.test")
+        assert len(secret) >= 40
+        site = store.authenticate_site(secret)
+        assert site is not None and site.site_id == SITE
+        assert store.authenticate_site("wrong") is None
 
-    def test_newer_schema_is_refused(self, tmp_path: Path) -> None:
-        """AC-2: better to refuse than to silently corrupt."""
-        path = tmp_path / "index.db"
-        with Store(path):
-            pass
-        con = sqlite3.connect(path)
-        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
-        con.commit()
-        con.close()
-        with pytest.raises(StoreVersionError):
-            Store(path).__enter__()
+    def test_secret_is_retrievable_for_callbacks_but_not_stored_in_clear(
+        self, store: Store, tmp_path: Path
+    ) -> None:
+        secret = store.add_site(SITE, name="A", url="https://moodle.a.test")
+        assert store.site_secret(SITE) == secret
+        store.close()
+        assert secret.encode() not in read_disk(tmp_path / "index.db")
 
-    def test_a_database_predating_content_changed_at_is_migrated(self, tmp_path: Path) -> None:
-        """A pre-existing on-disk database must gain the column, not crash on open.
+    def test_revoked_site_no_longer_authenticates(self, store: Store) -> None:
+        secret = store.add_site(SITE, name="A", url="https://moodle.a.test")
+        store.revoke_site(SITE)
+        assert store.authenticate_site(secret) is None
 
-        ``CREATE TABLE IF NOT EXISTS`` never alters a table that already exists, so
-        this column needs its own explicit migration — this pins that behaviour
-        against a documents table shaped like it was before that column existed.
-        """
-        path = tmp_path / "index.db"
-        con = sqlite3.connect(path)
-        con.execute(
-            """
-            CREATE TABLE documents (
-                doc_id           TEXT PRIMARY KEY,
-                course_id        INTEGER NOT NULL,
-                course_name      TEXT NOT NULL,
-                section_name     TEXT NOT NULL DEFAULT '',
-                module_id        INTEGER NOT NULL,
-                module_name      TEXT NOT NULL DEFAULT '',
-                modname          TEXT NOT NULL DEFAULT '',
-                title            TEXT NOT NULL DEFAULT '',
-                kind             TEXT NOT NULL,
-                header_path      TEXT NOT NULL DEFAULT '[]',
-                module_url       TEXT,
-                timemodified     INTEGER NOT NULL DEFAULT 0,
-                text             TEXT,
-                file_url         TEXT,
-                filename         TEXT,
-                filesize         INTEGER NOT NULL DEFAULT 0,
-                mimetype         TEXT,
-                external_url     TEXT,
-                extractable      INTEGER NOT NULL DEFAULT 1,
-                skip_reason      TEXT,
-                text_sha256      TEXT,
-                blob_sha256      TEXT,
-                extract_version  INTEGER,
-                extracted_at     INTEGER,
-                extracted_timemodified INTEGER,
-                first_seen       INTEGER NOT NULL,
-                last_seen        INTEGER NOT NULL,
-                tombstoned_at    INTEGER
-            )
-            """
+    def test_rotation_keeps_old_secret_during_grace(self, store: Store) -> None:
+        old = store.add_site(SITE, name="A", url="https://moodle.a.test")
+        new = store.rotate_site_secret(SITE, grace_s=3600, now=1000)
+        assert new != old
+        assert store.authenticate_site(new, now=1001) is not None
+        assert store.authenticate_site(old, now=1001) is not None
+        assert store.authenticate_site(old, now=1000 + 3601) is None
+        assert store.site_secret(SITE) == new
+        assert store.site_secrets(SITE, now=1001) == [new, old]
+
+    def test_duplicate_site_rejected(self, store: Store) -> None:
+        store.add_site(SITE, name="A", url="https://moodle.a.test")
+        with pytest.raises(StoreError):
+            store.add_site(SITE, name="A", url="https://moodle.a.test")
+
+    def test_list_sites(self, store: Store) -> None:
+        store.add_site(SITE, name="A", url="https://moodle.a.test")
+        store.add_site(OTHER, name="B", url="https://moodle.b.test")
+        assert [s.site_id for s in store.sites()] == [SITE, OTHER]
+
+
+class TestDocuments:
+    def test_upsert_and_read_back_decrypted(self, store: Store) -> None:
+        store.upsert_courses(SITE, [_course()])
+        changed = store.upsert_documents(SITE, [doc()])
+        assert changed == ["2:10:intro"]
+        got = store.document(SITE, "2:10:intro")
+        assert got.title == "Einführung"
+        assert got.text == "Willkommen im Kurs Netzwerke."
+        assert got.header_path == ["Netzwerke", "Woche 1", "Einführung"]
+        assert got.needs_extraction
+
+    def test_unchanged_content_hash_is_skipped(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc()])
+        store.record_extraction(SITE, "2:10:intro", extract_version=1)
+        assert store.upsert_documents(SITE, [doc()]) == []
+        assert not store.document(SITE, "2:10:intro").needs_extraction
+
+    def test_changed_content_requires_reextraction(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc()])
+        store.record_extraction(SITE, "2:10:intro", extract_version=1)
+        assert store.upsert_documents(SITE, [doc(text="Neu", content_hash="h2")]) == ["2:10:intro"]
+        assert store.document(SITE, "2:10:intro").needs_extraction
+
+    def test_sites_are_isolated(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc()])
+        with pytest.raises(StoreError):
+            store.document(OTHER, "2:10:intro")
+
+    def test_payload_is_not_on_disk_in_clear(self, store: Store, tmp_path: Path) -> None:
+        store.upsert_courses(SITE, [_course(fullname="Geheimkurs Sicherheit")])
+        store.upsert_documents(SITE, [doc(text="Klausur-Lösung: 42 geheim")])
+        store.close()
+        disk = read_disk(tmp_path / "index.db")
+        assert b"Klausur" not in disk
+        assert b"Geheimkurs" not in disk
+
+    def test_tombstone_removes_chunks_and_hides_document(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc()])
+        store.replace_content(
+            SITE,
+            "2:10:intro",
+            [SegmentIn(ordinal=0, text="Willkommen")],
+            [ChunkIn(ordinal=0, text="Willkommen", header_text="Netzwerke")],
         )
-        con.commit()
-        con.close()
+        store.tombstone_documents(SITE, ["2:10:intro"])
+        assert store.live_documents(SITE) == []
+        assert store.chunk_count(SITE) == 0
 
-        with Store(path) as s:
-            s.persist_crawl([item("a")])
-            s.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
-            assert _content_changed_at(s, "a") == 1000
-
-    def test_extensions_and_pragmas_are_active(self, store: Store) -> None:
-        """AC-3 / AC-4: fail at startup, not mid-query."""
-        assert store.connection.execute("select vec_version()").fetchone()[0]
-        store.connection.execute("select * from chunks_fts limit 1")
-        assert store.connection.execute("pragma journal_mode").fetchone()[0].lower() == "wal"
-        assert store.connection.execute("pragma foreign_keys").fetchone()[0] == 1
-
-
-class TestManifest:
-    def test_crawl_is_persisted(self, store: Store) -> None:
-        """AC-5"""
-        store.persist_crawl([item("a"), item("b")])
-        assert {d.doc_id for d in store.active_documents()} == {"a", "b"}
-
-    def test_repersisting_updates_in_place(self, store: Store) -> None:
-        """AC-6: no duplicates, and first_seen survives."""
-        store.persist_crawl([item("a", timemodified=100)])
-        first_seen = store.document("a").first_seen
-        store.persist_crawl([item("a", timemodified=200)])
-        docs = store.active_documents()
-        assert len(docs) == 1
-        assert docs[0].timemodified == 200
-        assert store.document("a").first_seen == first_seen
-
-    def test_absent_documents_are_tombstoned_not_deleted(self, store: Store) -> None:
-        """AC-7"""
-        store.persist_crawl([item("a"), item("b")])
-        store.persist_crawl([item("a")])
-        assert {d.doc_id for d in store.active_documents()} == {"a"}
-        assert store.document("b").tombstoned_at is not None
-
-    def test_reappearing_document_is_revived(self, store: Store) -> None:
-        """AC-8"""
-        store.persist_crawl([item("a"), item("b")])
-        store.persist_crawl([item("a")])
-        store.persist_crawl([item("a"), item("b")])
-        assert {d.doc_id for d in store.active_documents()} == {"a", "b"}
-        assert store.document("b").tombstoned_at is None
-
-    def test_pending_extraction_covers_new_changed_and_stale_version(self, store: Store) -> None:
-        """AC-9: the three reasons a document needs re-extraction."""
-        store.persist_crawl([item("new"), item("changed"), item("stale"), item("current")])
-        for doc_id in ("changed", "stale", "current"):
-            store.record_extraction(doc_id, text_sha256="x", extract_version=1)
-        store.persist_crawl(
-            [item("new"), item("changed", timemodified=999), item("stale"), item("current")]
-        )
-        pending = {d.doc_id for d in store.documents_needing_extraction(extract_version=1)}
-        assert pending == {"new", "changed"}
-        stale = {d.doc_id for d in store.documents_needing_extraction(extract_version=2)}
-        assert "stale" in stale and "current" in stale
-
-    def test_inline_text_is_round_tripped(self, store: Store) -> None:
-        """Inline label text needs no fetching, so it must survive persistence."""
-        store.persist_crawl(
-            [item("i", kind=ContentKind.INLINE, file=None, text="Klausur am 15.03.2026")]
-        )
-        assert store.document("i").text == "Klausur am 15.03.2026"
-
-
-class TestBlobCache:
-    def test_blob_is_content_addressed_and_shared(self, store: Store, tmp_path: Path) -> None:
-        """AC-10: two modules linking the same PDF share one copy on disk."""
-        digest = store.put_blob(b"hello world")
-        again = store.put_blob(b"hello world")
-        assert digest == again
-        assert store.blob_path(digest).parts[-2] == digest[:2]
-        assert store.blob_path(digest).read_bytes() == b"hello world"
-        assert store.blob_count() == 1
-
-    def test_fetch_metadata_round_trips(self, store: Store) -> None:
-        """AC-11"""
-        store.record_fetch(
-            "https://m.example/f.pdf",
-            sha256="abc",
-            etag='W/"1"',
-            last_modified="Wed, 21 Oct 2026 07:28:00 GMT",
-            moodle_timemodified=123,
-            fetched_at=1000,
-            checked_at=1000,
-        )
-        rec = store.fetch_record("https://m.example/f.pdf")
-        assert rec is not None
-        assert rec.etag == 'W/"1"' and rec.sha256 == "abc" and rec.moodle_timemodified == 123
-
-    def test_failed_fetch_is_remembered(self, store: Store) -> None:
-        """AC-12: don't retry a 403 on every single sync."""
-        store.record_fetch_failure("https://m.example/gone.pdf", error="HTTP 404", checked_at=5)
-        rec = store.fetch_record("https://m.example/gone.pdf")
-        assert rec is not None and rec.error == "HTTP 404" and rec.sha256 is None
-
-    def test_unreferenced_blobs_are_reported_not_deleted(self, store: Store) -> None:
-        """AC-13: pruning must be explicit."""
-        keep = store.put_blob(b"keep")
-        orphan = store.put_blob(b"orphan")
-        store.persist_crawl([item("a")])
-        store.record_extraction("a", text_sha256="t", extract_version=1, blob_sha256=keep)
-        assert set(store.unreferenced_blobs()) == {orphan}
-        assert store.blob_path(orphan).exists()
-
-
-class TestChunks:
-    def test_chunks_are_replaced_atomically(self, store: Store) -> None:
-        """AC-14: never a window with both old and new chunks visible."""
-        store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("erste fassung", None, {"ordinal": 0})])
-        store.replace_chunks(
-            "a", [("zweite fassung", None, {"ordinal": 0}), ("mehr", None, {"ordinal": 1})]
-        )
-        texts = [c.text for c in store.chunks_for("a")]
-        assert texts == ["zweite fassung", "mehr"]
-
-    def test_tombstoning_removes_chunks_from_every_index(self, store: Store) -> None:
-        """AC-15: chunks, FTS and vectors must go together."""
-        store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("Netzwerkgrundlagen", None, {"ordinal": 0})])
-        chunk_id = store.chunks_for("a")[0].chunk_id
-        store.set_embedding(chunk_id, [0.6, 0.8])
-
-        store.persist_crawl([])  # 'a' disappears -> tombstoned
-
-        assert store.chunks_for("a") == []
-        con = store.connection
-        assert con.execute("select count(*) from chunks_fts").fetchone()[0] == 0
-        assert con.execute("select count(*) from chunks_vec").fetchone()[0] == 0
-
-    def test_fts_index_is_populated(self, store: Store) -> None:
-        store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("Die Abschlussprüfung ist im März", None, {"ordinal": 0})])
-        hits = store.connection.execute(
-            "select count(*) from chunks_fts where chunks_fts match ?", ("Abschlussprüfung",)
-        ).fetchone()[0]
-        assert hits == 1
-
-
-class TestEmbeddings:
-    def test_embedding_cache_is_keyed_by_text_and_model(self, store: Store) -> None:
-        """AC-16: re-chunking must not re-pay for unchanged text."""
-        store.cache_embedding(
-            "sha-1", "gemini-embedding-001", 768, "RETRIEVAL_DOCUMENT", [1.0, 0.0]
-        )
-        assert store.cached_embedding("sha-1", "gemini-embedding-001", 768, "RETRIEVAL_DOCUMENT")
-        assert (
-            store.cached_embedding("sha-1", "gemini-embedding-001", 768, "RETRIEVAL_QUERY") is None
-        )
-        assert store.cached_embedding("sha-1", "other-model", 768, "RETRIEVAL_DOCUMENT") is None
-
-    def test_vectors_are_normalised_on_write(self, store: Store) -> None:
-        """AC-17: Gemini returns un-normalised vectors at 768 dims (norm ~0.58).
-
-        Storing them raw would make cosine ranking subtly wrong, which is the kind
-        of bug that degrades answers without ever raising an error.
-        """
-        store.persist_crawl([item("a")])
-        store.replace_chunks("a", [("text", None, {"ordinal": 0})])
-        chunk_id = store.chunks_for("a")[0].chunk_id
-        store.set_embedding(chunk_id, [3.0, 4.0])  # norm 5.0
-
-        stored = store.embedding_for(chunk_id)
-        assert stored is not None
-        assert pytest.approx(sum(v * v for v in stored), abs=1e-6) == 1.0
-        assert pytest.approx(stored[0], abs=1e-6) == 0.6
-
-
-class TestOcrCache:
-    def test_transcription_is_cached_per_image(self, store: Store) -> None:
-        """Spec 006 AC-11: a scanned page is paid for exactly once."""
-        assert store.cached_ocr("img-1", "ocr-v1") is None
-        store.cache_ocr("img-1", "ocr-v1", "Aufgabe 1: Berechnen Sie ...")
-        assert store.cached_ocr("img-1", "ocr-v1") == "Aufgabe 1: Berechnen Sie ..."
-        assert store.cached_ocr("img-1", "ocr-v2") is None
-
-
-def _content_changed_at(store: Store, doc_id: str) -> int | None:
-    row = store.connection.execute(
-        "SELECT content_changed_at FROM documents WHERE doc_id=?", (doc_id,)
-    ).fetchone()
-    return row[0]
-
-
-class TestContentChangedAt:
-    """Moodle's own timemodified only reflects reality for content Moodle owns —
-    for an external adapter (TaskCards, YouTube...) it reflects when the *link*
-    was pasted in. content_changed_at is the substitute: it only advances when the
-    extracted text actually differs from what was stored before, so it is a
-    trustworthy "last really changed" signal for every source type, including ones
-    with no freshness metadata of their own.
-    """
-
-    def test_first_extraction_sets_it(self, store: Store) -> None:
-        store.persist_crawl([item("a")])
-        store.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
-        assert _content_changed_at(store, "a") == 1000
-
-    def test_unchanged_text_does_not_advance_it(self, store: Store) -> None:
-        store.persist_crawl([item("a")])
-        store.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
-        # A later re-extraction (e.g. a periodic external re-check) that finds the
-        # exact same text must not look like a fresh change.
-        store.record_extraction("a", text_sha256="x", extract_version=1, now=2000)
-        assert _content_changed_at(store, "a") == 1000
-
-    def test_genuinely_changed_text_advances_it(self, store: Store) -> None:
-        store.persist_crawl([item("a")])
-        store.record_extraction("a", text_sha256="x", extract_version=1, now=1000)
-        store.record_extraction("a", text_sha256="y", extract_version=1, now=2000)
-        assert _content_changed_at(store, "a") == 2000
-
-
-class TestExtractionReset:
-    def test_documents_with_no_chunks_can_be_retried(self, store: Store) -> None:
-        """Needed when a capability arrives later (OCR) that would now succeed.
-
-        Without this, 70 scanned PDFs stay permanently marked 'extracted' with zero
-        text, and enabling OCR would require re-processing the entire corpus.
-        """
-        store.persist_crawl([item("empty"), item("full")])
-        for doc_id in ("empty", "full"):
-            store.record_extraction(doc_id, text_sha256="x", extract_version=2)
-        store.replace_chunks("full", [("hat text", None, {"ordinal": 0})])
-
-        assert store.documents_needing_extraction(extract_version=2) == []
-        reset = store.reset_extraction_for_empty_documents()
-
-        assert reset == 1
-        pending = {d.doc_id for d in store.documents_needing_extraction(extract_version=2)}
-        assert pending == {"empty"}
-
-
-class TestTargetedExtractionReset:
-    """Spec 007 AC-22: editing the alias file must not force a full re-index."""
-
-    def test_only_named_documents_are_reset(self, store: Store) -> None:
-        store.persist_crawl([item("a"), item("b"), item("c")])
-        for doc_id in ("a", "b", "c"):
-            store.record_extraction(doc_id, text_sha256="x", extract_version=1)
-        assert store.documents_needing_extraction(extract_version=1) == []
-
-        reset = store.reset_extraction_for_doc_ids(["a", "c"])
-
-        assert reset == 2
-        pending = {d.doc_id for d in store.documents_needing_extraction(extract_version=1)}
-        assert pending == {"a", "c"}
-
-    def test_unknown_doc_ids_are_silently_ignored(self, store: Store) -> None:
-        store.persist_crawl([item("a")])
-        assert store.reset_extraction_for_doc_ids(["does-not-exist"]) == 0
-
-
-class TestMatrixModeratorMessages:
-    def test_index_and_prune_matrix_messages(self, store: Store) -> None:
-        room_id = "!klasse:example.org"
-        chunk_ids = store.index_matrix_message(
-            room_id=room_id,
-            event_id="$msg1",
-            sender="@lehrer:example.org",
-            text="Die Klausur findet am Montag statt.",
-            timemodified=1000,
-            room_name="IT4",
-        )
-        assert len(chunk_ids) == 1
-        doc = store.document(f"matrix:{room_id}:$msg1")
-        assert doc.course_name == "Matrix: IT4"
-        assert doc.module_url == f"https://matrix.to/#/{room_id}/$msg1"
-        assert doc.timemodified == 1000
-
-        # Index 10 more messages to exceed max_history_per_room=10
-        for i in range(2, 12):
-            store.index_matrix_message(
-                room_id=room_id,
-                event_id=f"$msg{i}",
-                sender="@lehrer:example.org",
-                text=f"Mitteilung {i}",
-                timemodified=1000 + i,
-                room_name="IT4",
-                max_history_per_room=10,
-            )
-
-        active = [
-            r["doc_id"]
-            for r in store.connection.execute(
-                "SELECT doc_id FROM documents "
-                "WHERE doc_id LIKE 'matrix:%' AND tombstoned_at IS NULL"
-            ).fetchall()
+    def test_documents_needing_extraction(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a"), doc("2:11:b")])
+        store.record_extraction(SITE, "2:10:a", extract_version=1)
+        assert [d.doc_id for d in store.documents_needing_extraction(extract_version=1)] == [
+            "2:11:b"
         ]
-        assert len(active) == 10
-        assert f"matrix:{room_id}:$msg1" not in active
-        assert f"matrix:{room_id}:$msg11" in active
-        assert store.chunks_for(f"matrix:{room_id}:$msg1") == []
+        assert len(store.documents_needing_extraction(extract_version=2)) == 2
+
+    def test_courses_upsert_and_tombstone(self, store: Store) -> None:
+        store.upsert_courses(SITE, [_course(2), _course(3, fullname="Mathe")])
+        store.upsert_documents(SITE, [doc("3:5:x")])
+        store.tombstone_courses(SITE, [3])
+        assert [c.course_id for c in store.courses(SITE)] == [2]
+        assert store.live_documents(SITE) == []
+
+
+class TestSyncRuns:
+    def test_full_sync_tombstones_unseen_documents(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a"), doc("2:11:b")], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        store.upsert_documents(SITE, [doc("2:10:a", content_hash="new")], now=110)
+        result = store.finish_sync(SITE, "s1", now=200)
+        assert result.tombstoned == ["2:11:b"]
+        assert [d.doc_id for d in store.live_documents(SITE)] == ["2:10:a"]
+
+    def test_manifest_marks_unchanged_as_seen_and_reports_needed(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a"), doc("2:11:b")], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        need = store.apply_manifest(
+            SITE,
+            "s1",
+            {"2:10:a": "h-2:10:a", "2:11:b": "changed", "2:12:new": "h-new"},
+            now=110,
+        )
+        assert need == ["2:11:b", "2:12:new"]
+        store.upsert_documents(SITE, [doc("2:11:b", content_hash="changed")], now=115)
+        result = store.finish_sync(SITE, "s1", now=120)
+        assert result.tombstoned == []
+
+    def test_documents_pushed_during_the_run_survive_without_sync_id(self, store: Store) -> None:
+        """The plugin sends no sync_id with documents; activity during the run counts."""
+        store.upsert_documents(SITE, [doc("2:10:old"), doc("2:11:changed")], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        store.apply_manifest(SITE, "s1", {"2:11:changed": "h2", "2:12:new": "h3"}, now=105)
+        store.upsert_documents(
+            SITE,
+            [doc("2:11:changed", content_hash="h2"), doc("2:12:new", content_hash="h3")],
+            now=110,
+        )
+        result = store.finish_sync(SITE, "s1", now=120)
+        assert result.tombstoned == ["2:10:old"]
+        assert {d.doc_id for d in store.live_documents(SITE)} == {"2:11:changed", "2:12:new"}
+
+    def test_listed_document_the_plugin_failed_to_send_is_kept(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a")], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        assert store.apply_manifest(SITE, "s1", {"2:10:a": "changed"}, now=105) == ["2:10:a"]
+        assert store.finish_sync(SITE, "s1", now=120).tombstoned == []
+
+    def test_stale_run_never_tombstones(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a")], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        with pytest.raises(SyncStateError, match="stale"):
+            store.finish_sync(SITE, "s1", now=100 + 25 * 3600)
+        assert [d.doc_id for d in store.live_documents(SITE)] == ["2:10:a"]
+
+    def test_incremental_finish_does_not_tombstone(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a")], now=50)
+        store.start_sync(SITE, "s1", mode="incremental", now=100)
+        assert store.finish_sync(SITE, "s1", now=101).tombstoned == []
+
+    def test_unknown_sync_rejected(self, store: Store) -> None:
+        with pytest.raises(SyncStateError):
+            store.finish_sync(SITE, "nope", now=1)
+
+    def test_full_sync_tombstones_unseen_courses(self, store: Store) -> None:
+        store.upsert_courses(SITE, [_course(2), _course(3)], now=50)
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        store.upsert_courses(SITE, [_course(2)], now=105)  # no sync_id, like the plugin
+        store.finish_sync(SITE, "s1", now=110)
+        assert [c.course_id for c in store.courses(SITE)] == [2]
+
+
+class TestBlobs:
+    def test_needs_blob_until_uploaded(self, store: Store) -> None:
+        data = b"%PDF-1.4 geheimer inhalt"
+        sha = hashlib.sha256(data).hexdigest()
+        store.upsert_documents(SITE, [file_doc("2:20:file", sha)])
+        assert store.missing_blobs([sha]) == [sha]
+        store.put_blob(io.BytesIO(data), expected_sha256=sha)
+        assert store.missing_blobs([sha]) == []
+        assert store.read_blob(sha) == data
+
+    def test_blob_is_encrypted_on_disk(self, store: Store, tmp_path: Path) -> None:
+        data = b"Lehrer-Musterloesung vertraulich"
+        sha = hashlib.sha256(data).hexdigest()
+        store.put_blob(io.BytesIO(data), expected_sha256=sha)
+        assert b"Musterloesung" not in read_disk(tmp_path / "index.db")
+
+    def test_digest_mismatch_is_rejected_and_leaves_nothing(self, store: Store) -> None:
+        with pytest.raises(StoreError, match="digest"):
+            store.put_blob(io.BytesIO(b"abc"), expected_sha256="0" * 64)
+        assert store.missing_blobs(["0" * 64]) == ["0" * 64]
+        assert list(store.blobs_dir.rglob("*.tmp")) == []
+
+    def test_size_limit(self, store: Store) -> None:
+        data = b"x" * 100
+        with pytest.raises(StoreError, match="large"):
+            store.put_blob(
+                io.BytesIO(data), expected_sha256=hashlib.sha256(data).hexdigest(), max_bytes=10
+            )
+
+    def test_reupload_is_a_noop(self, store: Store) -> None:
+        data = b"same"
+        sha = hashlib.sha256(data).hexdigest()
+        store.put_blob(io.BytesIO(data), expected_sha256=sha)
+        store.put_blob(io.BytesIO(data), expected_sha256=sha)
+        assert store.read_blob(sha) == data
+
+
+class TestContent:
+    def _index(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc()])
+        store.replace_content(
+            SITE,
+            "2:10:intro",
+            [
+                SegmentIn(ordinal=0, page=1, text="Seite eins über Subnetze."),
+                SegmentIn(ordinal=1, page=2, text="Seite zwei über Routing."),
+            ],
+            [
+                ChunkIn(ordinal=0, page=1, text="Subnetze und Prüfungen", header_text="LF7"),
+                ChunkIn(ordinal=1, page=2, text="Routing Tabellen", header_text="LF7"),
+            ],
+        )
+
+    def test_segments_round_trip(self, store: Store) -> None:
+        self._index(store)
+        segs = store.segments(SITE, "2:10:intro")
+        assert [(s.page, s.text) for s in segs] == [
+            (1, "Seite eins über Subnetze."),
+            (2, "Seite zwei über Routing."),
+        ]
+
+    def test_fts_finds_words_with_diacritic_folding(self, store: Store) -> None:
+        self._index(store)
+        ids = store.fts_chunk_ids(SITE, '"prufungen"', limit=5)
+        assert len(ids) == 1
+        (chunk,) = store.chunks(SITE, ids)
+        assert chunk.text == "Subnetze und Prüfungen"
+        assert chunk.doc_id == "2:10:intro"
+
+    def test_fts_is_site_scoped(self, store: Store) -> None:
+        self._index(store)
+        assert store.fts_chunk_ids(OTHER, "Routing", limit=5) == []
+
+    def test_replace_content_is_atomic_swap(self, store: Store) -> None:
+        self._index(store)
+        store.replace_content(
+            SITE, "2:10:intro", [SegmentIn(ordinal=0, text="neu")], [ChunkIn(ordinal=0, text="neu")]
+        )
+        assert store.chunk_count(SITE) == 1
+        assert store.fts_chunk_ids(SITE, "Routing", limit=5) == []
+
+    def test_chunk_text_not_on_disk_in_clear(self, store: Store, tmp_path: Path) -> None:
+        self._index(store)
+        store.close()
+        assert b"Subnetze" not in read_disk(tmp_path / "index.db")
+
+    def test_embeddings_and_pending(self, store: Store) -> None:
+        self._index(store)
+        pending = store.chunks_without_vectors(limit=10)
+        assert len(pending) == 2
+        store.set_embedding(pending[0].chunk_id, [1.0, 0.0, 0.0])
+        assert len(store.chunks_without_vectors(limit=10)) == 1
+        hits = store.vector_chunk_ids(SITE, [1.0, 0.0, 0.0], limit=1)
+        assert hits == [pending[0].chunk_id]
+
+
+class TestCaches:
+    def test_embedding_cache_round_trip(self, store: Store) -> None:
+        store.cache_embedding("a" * 64, "p:m:3:document", [0.1, 0.2, 0.3])
+        got = store.cached_embedding("a" * 64, "p:m:3:document")
+        assert got == pytest.approx([0.1, 0.2, 0.3])
+        assert store.cached_embedding("a" * 64, "p:m:3:query") is None
+
+    def test_ocr_cache_round_trip_and_encrypted(self, store: Store, tmp_path: Path) -> None:
+        store.cache_ocr("b" * 64, "tag", "Transkript geheim")
+        assert store.cached_ocr("b" * 64, "tag") == "Transkript geheim"
+        store.close()
+        assert b"Transkript" not in read_disk(tmp_path / "index.db")
+
+
+class TestReopen:
+    def test_data_survives_reopen_with_same_key(self, tmp_path: Path, ring: KeyRing) -> None:
+        with Store(tmp_path / "x.db", ring, embed_dim=3) as s:
+            secret = s.add_site(SITE, name="A", url="https://moodle.a.test")
+            s.upsert_documents(SITE, [doc()])
+        with Store(tmp_path / "x.db", KeyRing(ring_master(ring)), embed_dim=3) as s:
+            assert s.authenticate_site(secret) is not None
+            assert s.document(SITE, "2:10:intro").text == "Willkommen im Kurs Netzwerke."
+
+    def test_embedding_dim_change_is_refused(self, tmp_path: Path, ring: KeyRing) -> None:
+        with Store(tmp_path / "x.db", ring, embed_dim=3):
+            pass
+        with (
+            pytest.raises(StoreError, match="dimension"),
+            Store(tmp_path / "x.db", ring, embed_dim=4),
+        ):
+            pass
+
+
+def ring_master(ring: KeyRing) -> bytes:
+    """Recover the master bytes for a 'fresh process' reopen."""
+    return ring._master
+
+
+class TestOrphanCleanup:
+    def test_unreferenced_blobs_are_deleted_and_their_keys_shredded(self, store: Store) -> None:
+        keep, drop = b"keep me", b"drop me"
+        keep_sha, drop_sha = (hashlib.sha256(x).hexdigest() for x in (keep, drop))
+        store.upsert_documents(SITE, [file_doc("2:1:a", keep_sha), file_doc("2:2:b", drop_sha)])
+        store.put_blob(io.BytesIO(keep), expected_sha256=keep_sha)
+        store.put_blob(io.BytesIO(drop), expected_sha256=drop_sha)
+        store.tombstone_documents(SITE, ["2:2:b"])
+        assert store.delete_orphan_blobs() == [drop_sha]
+        assert store.blob_exists(keep_sha)
+        assert not store.blob_exists(drop_sha)
+        assert not store.blob_path(drop_sha).exists()
+        assert store.wrapped_key("blob", drop_sha) is None
+
+    def test_blob_shared_by_another_site_is_kept(self, store: Store) -> None:
+        data = b"shared"
+        sha = hashlib.sha256(data).hexdigest()
+        store.upsert_documents(SITE, [file_doc("2:1:a", sha)])
+        store.upsert_documents(OTHER, [file_doc("2:1:a", sha)])
+        store.put_blob(io.BytesIO(data), expected_sha256=sha)
+        store.tombstone_documents(SITE, ["2:1:a"])
+        assert store.delete_orphan_blobs() == []
+
+
+class TestMaintenance:
+    def test_reset_extraction_all_and_failed_only(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:1:a"), doc("2:2:b")])
+        store.record_extraction(SITE, "2:1:a", extract_version=1)
+        store.record_extraction(SITE, "2:2:b", extract_version=1, skip_reason="fetch: 503")
+        assert store.reset_extraction(only_skipped=True) == 1
+        assert store.document(SITE, "2:2:b").needs_extraction
+        assert not store.document(SITE, "2:1:a").needs_extraction
+        assert store.reset_extraction() == 1  # b is already pending; a gets reset
+
+    def test_reembed_after_dimension_change(self, tmp_path: Path, ring: KeyRing) -> None:
+        with Store(tmp_path / "x.db", ring, embed_dim=3) as s:
+            s.upsert_documents(SITE, [doc()])
+            (cid,) = s.replace_content(SITE, "2:10:intro", [], [ChunkIn(ordinal=0, text="t")])
+            s.set_embedding(cid, [1.0, 0.0, 0.0])
+            s.cache_embedding("h" * 64, "k", [1.0, 0.0, 0.0])
+        with Store(tmp_path / "x.db", ring, embed_dim=5, reset_embeddings=True) as s:
+            assert s.pending_vector_count() == 1
+            assert s.cached_embedding("h" * 64, "k") is None
+        with Store(tmp_path / "x.db", ring, embed_dim=5) as s:
+            assert s.embed_dim == 5
+
+    def test_rotate_master_key(self, tmp_path: Path, ring: KeyRing) -> None:
+        import os
+
+        new = KeyRing(os.urandom(32))
+        with Store(tmp_path / "x.db", ring, embed_dim=3) as s:
+            secret = s.add_site(SITE, name="A", url="https://moodle.a.test")
+            s.upsert_documents(SITE, [doc()])
+            assert s.rotate_master_key(new) > 0
+        with Store(tmp_path / "x.db", new, embed_dim=3) as s:
+            assert s.authenticate_site(secret) is not None
+            assert s.document(SITE, "2:10:intro").text == "Willkommen im Kurs Netzwerke."
+        with pytest.raises(DatabaseKeyError), Store(tmp_path / "x.db", ring, embed_dim=3):
+            pass

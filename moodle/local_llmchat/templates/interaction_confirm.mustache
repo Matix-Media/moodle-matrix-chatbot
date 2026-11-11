@@ -1,0 +1,37 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/interaction_confirm
+
+    Interaction kind "confirm": question, optional explanation, yes / no.
+
+    Example context (json):
+    {
+        "question": "Soll die Datei gelöscht werden?",
+        "explanation": "Das kann nicht rückgängig gemacht werden."
+    }
+}}
+<div class="card local-llmchat-interaction" data-region="interaction">
+    <div class="card-body">
+        <p class="local-llmchat-question">{{question}}</p>
+        {{#explanation}}<p class="small text-muted">{{explanation}}</p>{{/explanation}}
+        <div class="d-flex local-llmchat-options">
+            <button type="button" class="btn btn-primary btn-sm" data-action="confirm" data-value="1">{{#str}} confirm:yes, local_llmchat {{/str}}</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-action="confirm" data-value="0">{{#str}} confirm:no, local_llmchat {{/str}}</button>
+        </div>
+    </div>
+</div>

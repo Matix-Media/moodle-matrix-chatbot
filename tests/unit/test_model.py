@@ -1,4 +1,4 @@
-"""Verifies spec 003/006 — file classification (``classify_file``).
+"""file classification (``classify_file``).
 
 Regression coverage for a real gap found while wiring image OCR support: removing
 "image/" from BINARY_MIME_PREFIXES entirely (to let PNG/JPEG through) would have
@@ -8,7 +8,7 @@ arrives with a mimetype but no recognisable extension.
 
 from __future__ import annotations
 
-from bsbot.ingest.model import FileRef, classify_file
+from moodle_llm_chat.ingest.model import FileRef, classify_file
 
 MAX_BYTES = 25 * 1024 * 1024
 
@@ -45,7 +45,7 @@ class TestOtherImageTypesStillExcluded:
     """Regression: the carve-out for PNG/JPEG must not leak to other image types."""
 
     def test_gif_by_extension_is_still_binary(self) -> None:
-        """WEBP was added deliberately (spec 006 AC-24); GIF stays the control
+        """WEBP was added deliberately; GIF stays the control
         case proving the carve-out did not leak to formats we still don't support."""
         extractable, reason = classify_file(ref(filename="anim.gif"), MAX_BYTES)
         assert extractable is False and reason == "binary-type"

@@ -1,290 +1,173 @@
-"""Verifies spec 007 AC-7..AC-15 — hybrid retrieval."""
+"""Scoped retrieval: hybrid (FTS + vectors), text-only, always within an access scope."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
+from factories import doc
 
-from bsbot.index.search import HybridSearcher, fts5_escape, reciprocal_rank_fusion
-from bsbot.index.store import Store
-from bsbot.ingest.model import ContentItem, ContentKind
+from moodle_llm_chat.access.scope import AccessScope, Capability
+from moodle_llm_chat.index.models import ChunkIn, SegmentIn
+from moodle_llm_chat.index.search import Searcher, fts5_query, reciprocal_rank_fusion
+from moodle_llm_chat.index.store import Store
+
+S = "site-a"
 
 
-def doc(doc_id: str, **kw) -> ContentItem:
-    defaults = dict(
-        doc_id=doc_id,
-        course_id=1,
-        course_name="LF05IT",
-        section_name="Lernfeld 5",
-        module_id=1,
-        module_name="Skript",
-        modname="resource",
-        title="Skript",
-        kind=ContentKind.INLINE,
-        header_path=["LF05IT", "Lernfeld 5", "Skript"],
-        timemodified=100,
-        module_url="https://m.example/mod/page/view.php?id=1",
+def scope(*cmids: int, site: str = S) -> AccessScope:
+    return AccessScope(
+        site_id=site,
+        user_id=1,
+        course_ids=frozenset({2, 3}),
+        cmids=frozenset(cmids),
+        caps=frozenset({Capability.READ}),
     )
-    return ContentItem(**{**defaults, **kw})
 
 
-@pytest.fixture
-def store(tmp_path: Path):
-    with Store(tmp_path / "index.db", embed_dim=3) as s:
-        yield s
+class FakeEmbedder:
+    """Maps a handful of known words onto fixed directions."""
+
+    AXES: ClassVar[dict[str, list[float]]] = {
+        "vlan": [1.0, 0.0, 0.0],
+        "routing": [0.0, 1.0, 0.0],
+        "prüfung": [0.0, 0.0, 1.0],
+    }
+
+    async def embed_query(self, text: str) -> list[float]:
+        for word, vector in self.AXES.items():
+            if word in text.lower():
+                return vector
+        return [0.5, 0.5, 0.5]
+
+
+def index(
+    store: Store, doc_id: str, cmid: int, text: str, *, vector: list[float] | None = None, **kw: Any
+) -> int:
+    store.upsert_documents(S, [doc(doc_id, cmid=cmid, **kw)])
+    (cid,) = store.replace_content(
+        S,
+        doc_id,
+        [SegmentIn(ordinal=0, text=text)],
+        [ChunkIn(ordinal=0, text=text, header_text="LF7")],
+    )
+    if vector is not None:
+        store.set_embedding(cid, vector)
+    return cid
 
 
 @pytest.fixture
 def populated(store: Store) -> Store:
-    corpus = {
-        "exam": ("Die Abschlussprüfung Teil 1 findet am 15.03.2026 statt.", [1.0, 0.0, 0.0]),
-        "net": ("Netzwerke und Protokolle: TCP/IP Grundlagen im Lernfeld 9.", [0.0, 1.0, 0.0]),
-        "cake": ("Das Rezept für Apfelkuchen benötigt 200g Mehl.", [0.0, 0.0, 1.0]),
-    }
-    store.persist_crawl([doc(d) for d in corpus])
-    for doc_id, (text, vector) in corpus.items():
-        ids = store.replace_chunks(doc_id, [(text, None, {"ordinal": 0})], header_text="LF05IT › X")
-        store.set_embedding(ids[0], vector)
+    index(
+        store,
+        "2:10:a",
+        10,
+        "Ein VLAN trennt Broadcast-Domänen im Netzwerk.",
+        vector=[1, 0, 0],
+        timemodified=100,
+    )
+    index(
+        store,
+        "2:11:b",
+        11,
+        "Statisches Routing mit Routingtabellen.",
+        vector=[0, 1, 0],
+        timemodified=200,
+    )
+    index(
+        store,
+        "3:20:c",
+        20,
+        "Die Abschlussprüfung findet im Mai statt.",
+        vector=[0, 0, 1],
+        timemodified=300,
+    )
+    index(
+        store, "3:21:hidden", 21, "Geheime VLAN Musterlösung.", vector=[1, 0, 0], timemodified=400
+    )
     return store
 
 
 class TestFusion:
-    def test_rrf_rewards_agreement(self) -> None:
-        """AC-10: found by both retrievers beats found by one."""
-        fused = reciprocal_rank_fusion([["a", "b", "c"], ["b", "a", "d"]], k=60)
-        assert fused[0][0] in ("a", "b")
-        assert dict(fused)["a"] > dict(fused)["c"]
-        assert dict(fused)["b"] > dict(fused)["d"]
+    def test_agreement_ranks_first(self) -> None:
+        fused = reciprocal_rank_fusion([[1, 2, 3], [2, 1, 4]])
+        assert [k for k, _ in fused][:2] in ([1, 2], [2, 1])
+        assert dict(fused)[2] > dict(fused)[3]
 
-    def test_single_list_hit_still_ranks(self) -> None:
-        """AC-9: fusion must not require agreement."""
-        fused = dict(reciprocal_rank_fusion([["a"], ["b"]], k=60))
-        assert "a" in fused and "b" in fused
-
-    def test_empty_lists_are_safe(self) -> None:
-        assert reciprocal_rank_fusion([[], []], k=60) == []
+    def test_empty(self) -> None:
+        assert reciprocal_rank_fusion([[], []]) == []
 
 
-class TestFts5Escaping:
+class TestQuerySyntax:
     @pytest.mark.parametrize(
-        "raw",
-        [
-            'Wann ist die "Prüfung"?',
-            "LF5 AND NOT OR",
-            "Was NEAR bedeutet *",
-            'quote " unbalanced',
-            "col:on and (parens)",
-            "-minus +plus",
-            "",
-        ],
+        "raw", ["Was NEAR bedeutet *", 'a"b', "-", "AND OR NOT", "col:val", "(((", ""]
     )
-    def test_user_input_never_breaks_the_query(self, populated: Store, raw: str) -> None:
-        """AC-12: a student's question is not FTS5 syntax."""
-        searcher = HybridSearcher(populated, embedder=None)
-        searcher.search(raw, limit=5)  # must not raise
+    def test_user_input_never_breaks_fts(self, populated: Store, raw: str) -> None:
+        match = fts5_query(raw)
+        if match:
+            populated.fts_chunk_ids(S, match, limit=5)
 
-    def test_escaping_preserves_terms(self) -> None:
-        assert "Prüfung" in fts5_escape('Die "Prüfung"')
+    def test_phrase_mode(self) -> None:
+        assert fts5_query("statisches routing", mode="phrase") == '"statisches routing"'
 
-
-class TestKeywordSearch:
-    def test_exact_identifier_is_found(self, populated: Store) -> None:
-        """AC-7: the case embeddings are bad at."""
-        hits = HybridSearcher(populated, embedder=None).search("15.03.2026", limit=3)
-        assert hits[0].doc_id == "exam"
-
-    def test_umlaut_folding_both_directions(self, populated: Store) -> None:
-        """AC-13: students routinely type 'Abschlussprufung' without the umlaut."""
-        searcher = HybridSearcher(populated, embedder=None)
-        assert searcher.search("Abschlussprufung", limit=3)[0].doc_id == "exam"
-        assert searcher.search("Abschlussprüfung", limit=3)[0].doc_id == "exam"
-
-    def test_prefix_matching_handles_german_inflection(self, populated: Store) -> None:
-        """AC-13b: 'Netzwerk' must find 'Netzwerke'; German inflects constantly."""
-        hits = HybridSearcher(populated, embedder=None).search("Netzwerk", limit=3)
-        assert hits and hits[0].doc_id == "net"
-
-    def test_compound_suffix_is_left_to_the_vector_retriever(self, populated: Store) -> None:
-        """Documents the deliberate division of labour.
-
-        FTS5 tokenises whole words, so keyword search cannot see 'Prüfung' inside
-        'Abschlussprüfung'. That is exactly the gap the embedding retriever closes —
-        it is a design boundary, not a bug, and this test pins it down so a future
-        change to one retriever does not silently assume the other's job.
-        """
-        assert HybridSearcher(populated, embedder=None).search("Prüfung", limit=3) == []
-
-        class Embedder:
-            def embed_query(self, text: str) -> list[float]:
-                return [1.0, 0.0, 0.0]  # points at 'exam'
-
-        hits = HybridSearcher(populated, embedder=Embedder()).search("Prüfung", limit=3)
-        assert hits[0].doc_id == "exam"
-
-    def test_works_without_embedder(self, populated: Store) -> None:
-        """AC-14: no API key must not mean no answers."""
-        hits = HybridSearcher(populated, embedder=None).search("Netzwerke", limit=3)
-        assert hits and hits[0].doc_id == "net"
+    def test_all_mode_requires_every_term(self) -> None:
+        assert " AND " in fts5_query("statisches routing", mode="all")
 
 
-class TestHybridSearch:
-    def test_vector_only_match_is_found(self, populated: Store) -> None:
-        """AC-9: semantic hit with no lexical overlap at all."""
+class TestHybrid:
+    async def test_out_of_scope_documents_never_surface(self, populated: Store) -> None:
+        hits = await Searcher(populated, FakeEmbedder()).hybrid(scope(10, 11, 20), "VLAN", k=10)
+        assert "3:21:hidden" not in {h.document.doc_id for h in hits}
+        assert hits[0].document.doc_id == "2:10:a"
 
-        class Embedder:
-            def embed_query(self, text: str) -> list[float]:
-                return [0.0, 1.0, 0.0]  # points at 'net'
-
-        hits = HybridSearcher(populated, embedder=Embedder()).search("Datenübertragung", limit=3)
-        assert any(h.doc_id == "net" for h in hits)
-
-    def test_results_carry_citation_provenance(self, populated: Store) -> None:
-        """AC-15"""
-        hit = HybridSearcher(populated, embedder=None).search("Abschlussprüfung", limit=1)[0]
-        assert hit.course_name == "LF05IT"
-        assert hit.module_url == "https://m.example/mod/page/view.php?id=1"
-        assert hit.header_text
-        assert hit.text
-
-    def test_native_document_reports_moodle_timemodified_as_source_date(self, store: Store) -> None:
-        """A Moodle-owned file's own timemodified is trustworthy — use it directly."""
-        store.persist_crawl([doc("a", timemodified=555)])
-        ids = store.replace_chunks("a", [("Inhalt.", None, {"ordinal": 0})], header_text="X")
-        store.set_embedding(ids[0], [1.0, 0.0, 0.0])
-        hit = HybridSearcher(store, embedder=None).search("Inhalt", limit=1)[0]
-        assert hit.source_date == 555
-
-    def test_external_document_reports_content_changed_at_not_timemodified(
-        self, store: Store
-    ) -> None:
-        """external_url set = reached through an adapter (TaskCards, YouTube...).
-
-        Moodle's timemodified there is when the *link* was pasted in, not when the
-        destination content changed — content_changed_at (spec: only advances on a
-        genuine text diff, see Store.record_extraction) is the honest signal.
-        """
-        store.persist_crawl(
-            [doc("a", timemodified=111, external_url="https://taskcards.de/#/board/x")]
+    async def test_other_sites_never_surface(self, populated: Store) -> None:
+        hits = await Searcher(populated, FakeEmbedder()).hybrid(
+            scope(10, site="other"), "VLAN", k=5
         )
-        store.record_extraction("a", text_sha256="t", extract_version=1, now=777)
-        ids = store.replace_chunks("a", [("Inhalt.", None, {"ordinal": 0})], header_text="X")
-        store.set_embedding(ids[0], [1.0, 0.0, 0.0])
-        hit = HybridSearcher(store, embedder=None).search("Inhalt", limit=1)[0]
-        assert hit.source_date == 777
+        assert hits == []
 
-    def test_tombstoned_documents_never_surface(self, populated: Store) -> None:
-        """AC-11: stale answers are worse than missing ones."""
-        populated.persist_crawl([doc("net"), doc("cake")])  # 'exam' disappears
-        hits = HybridSearcher(populated, embedder=None).search("Abschlussprüfung", limit=5)
-        assert all(h.doc_id != "exam" for h in hits)
+    async def test_vector_only_match(self, populated: Store) -> None:
+        """'Prüfung' alone does not hit 'Abschlussprüfung' lexically; the vector does."""
+        hits = await Searcher(populated, FakeEmbedder()).hybrid(scope(10, 11, 20), "Prüfung", k=3)
+        assert hits[0].document.doc_id == "3:20:c"
+        assert "vector" in hits[0].sources
 
-    def test_limit_is_respected(self, populated: Store) -> None:
-        assert len(HybridSearcher(populated, embedder=None).search("Lernfeld", limit=1)) <= 1
+    async def test_works_without_embedder(self, populated: Store) -> None:
+        hits = await Searcher(populated, None).hybrid(scope(10, 11, 20), "Routing", k=3)
+        assert [h.document.doc_id for h in hits] == ["2:11:b"]
 
-    def test_no_match_returns_empty(self, populated: Store) -> None:
-        assert HybridSearcher(populated, embedder=None).search("Quantenchromodynamik") == []
-
-
-class TestNeighbors:
-    """A document like a Blockplan is one continuous source arbitrarily cut into
-    fixed-size chunks — an adjacent chunk is often topically continuous even when
-    it individually ranks far outside the retrieval window for a question's
-    wording. See AnswerPipeline._expanded_body for how this gets used.
-    """
-
-    def test_returns_chunks_within_radius_in_document_order(self, store: Store) -> None:
-        store.persist_crawl([doc("a")])
-        ids = store.replace_chunks(
-            "a",
-            [(f"chunk {i}", None, {"ordinal": i, "body": f"body {i}"}) for i in range(5)],
-            header_text="LF05IT › X",
+    async def test_time_filter(self, populated: Store) -> None:
+        hits = await Searcher(populated, FakeEmbedder()).hybrid(
+            scope(10, 11, 20), "Netzwerk Routing Prüfung", k=10, since=150
         )
-        neighbors = HybridSearcher(store, embedder=None).neighbors(ids[2], radius=1)
-        assert [n.chunk_id for n in neighbors] == ids[1:4]
+        assert {h.document.doc_id for h in hits} == {"2:11:b", "3:20:c"}
 
-    def test_radius_is_clamped_at_document_boundaries(self, store: Store) -> None:
-        store.persist_crawl([doc("a")])
-        ids = store.replace_chunks(
-            "a",
-            [(f"chunk {i}", None, {"ordinal": i, "body": f"body {i}"}) for i in range(3)],
-            header_text="LF05IT › X",
+    async def test_doc_id_filter(self, populated: Store) -> None:
+        hits = await Searcher(populated, FakeEmbedder()).hybrid(
+            scope(10, 11, 20), "VLAN Routing", k=10, doc_ids=["2:11:b"]
         )
-        neighbors = HybridSearcher(store, embedder=None).neighbors(ids[0], radius=5)
-        assert [n.chunk_id for n in neighbors] == ids
+        assert [h.document.doc_id for h in hits] == ["2:11:b"]
 
-    def test_does_not_cross_into_a_different_document(self, store: Store) -> None:
-        store.persist_crawl([doc("a"), doc("b")])
-        a_ids = store.replace_chunks(
-            "a", [("a0", None, {"ordinal": 0}), ("a1", None, {"ordinal": 1})], header_text="X"
-        )
-        b_ids = store.replace_chunks("b", [("b0", None, {"ordinal": 0})], header_text="X")
-        neighbors = HybridSearcher(store, embedder=None).neighbors(a_ids[-1], radius=5)
-        assert all(n.doc_id == "a" for n in neighbors)
-        assert b_ids[0] not in [n.chunk_id for n in neighbors]
+    async def test_limit(self, populated: Store) -> None:
+        hits = await Searcher(populated, FakeEmbedder()).hybrid(scope(10, 11, 20), "das", k=1)
+        assert len(hits) <= 1
 
-    def test_unknown_chunk_id_returns_nothing(self, store: Store) -> None:
-        assert HybridSearcher(store, embedder=None).neighbors(999999, radius=2) == []
-
-    def test_body_is_populated_separately_from_the_prefixed_text(self, store: Store) -> None:
-        store.persist_crawl([doc("a")])
-        ids = store.replace_chunks(
-            "a",
-            [("Kurs › X\n\nNur der Inhalt.", None, {"ordinal": 0, "body": "Nur der Inhalt."})],
-            header_text="X",
-        )
-        neighbors = HybridSearcher(store, embedder=None).neighbors(ids[0], radius=0)
-        assert neighbors[0].body == "Nur der Inhalt."
+    async def test_hits_carry_decrypted_text_and_metadata(self, populated: Store) -> None:
+        (hit, *_) = await Searcher(populated, FakeEmbedder()).hybrid(scope(10), "VLAN", k=1)
+        assert "Broadcast" in hit.chunk.text
+        assert hit.document.module_url
 
 
-class TestChannelScopedRetrieval:
-    def test_channel_scoping_retrieval(self, store: Store) -> None:
-        # Moodle doc
-        store.persist_crawl([doc("moodle_doc", title="Allgemeines Skript")])
-        store.replace_chunks(
-            "moodle_doc",
-            [("LF05IT › Skript\n\nPrüfungsthemen für alle Klassen.", None, {"ordinal": 0})],
-            header_text="LF05IT › Skript",
-        )
+class TestText:
+    async def test_umlaut_folding(self, populated: Store) -> None:
+        hits = await Searcher(populated, None).text(scope(10, 11, 20), "Domanen", k=5)
+        assert [h.document.doc_id for h in hits] == ["2:10:a"]
 
-        # Moderator message in Room A
-        store.index_matrix_message(
-            room_id="!roomA:example.org",
-            event_id="$msgA",
-            sender="@lehrerA:example.org",
-            text="Klasse A hat die Prüfung am Montag.",
-            timemodified=1000,
-            room_name="Klasse A",
-        )
+    async def test_prefix_absorbs_inflection(self, populated: Store) -> None:
+        hits = await Searcher(populated, None).text(scope(10, 11, 20), "Routingtabelle", k=5)
+        assert [h.document.doc_id for h in hits] == ["2:11:b"]
 
-        # Moderator message in Room B
-        store.index_matrix_message(
-            room_id="!roomB:example.org",
-            event_id="$msgB",
-            sender="@lehrerB:example.org",
-            text="Klasse B hat die Prüfung am Dienstag.",
-            timemodified=1000,
-            room_name="Klasse B",
-        )
-
-        searcher = HybridSearcher(store, embedder=None)
-
-        # Query from Room A: should get Moodle doc + Room A msg, but NOT Room B msg
-        hits_a = searcher.search("Prüfung", room_id="!roomA:example.org")
-        doc_ids_a = {h.doc_id for h in hits_a}
-        assert "moodle_doc" in doc_ids_a
-        assert "matrix:!roomA:example.org:$msgA" in doc_ids_a
-        assert "matrix:!roomB:example.org:$msgB" not in doc_ids_a
-
-        # Query from Room B: should get Moodle doc + Room B msg, but NOT Room A msg
-        hits_b = searcher.search("Prüfung", room_id="!roomB:example.org")
-        doc_ids_b = {h.doc_id for h in hits_b}
-        assert "moodle_doc" in doc_ids_b
-        assert "matrix:!roomB:example.org:$msgB" in doc_ids_b
-        assert "matrix:!roomA:example.org:$msgA" not in doc_ids_b
-
-        # Query with no room_id: should get Moodle doc, but no matrix messages
-        hits_none = searcher.search("Prüfung", room_id=None)
-        doc_ids_none = {h.doc_id for h in hits_none}
-        assert "moodle_doc" in doc_ids_none
-        assert not any(d.startswith("matrix:") for d in doc_ids_none)
+    async def test_phrase(self, populated: Store) -> None:
+        searcher = Searcher(populated, None)
+        assert await searcher.text(scope(10, 11), "Routing mit", k=5, mode="phrase")
+        assert not await searcher.text(scope(10, 11), "mit Routing", k=5, mode="phrase")

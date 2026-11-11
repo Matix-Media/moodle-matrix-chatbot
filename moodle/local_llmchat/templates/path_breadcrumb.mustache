@@ -1,0 +1,36 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/path_breadcrumb
+
+    A course path as a breadcrumb. Segments the current user can open are links (resolved by
+    local_llmchat_resolve_paths); the others stay plain text.
+
+    Example context (json):
+    {
+        "segments": [
+            {"name": "LF7", "url": "https://moodle.example/course/view.php?id=2", "hasurl": true, "last": false},
+            {"name": "Subnetting-Projekt", "url": "https://moodle.example/course/section.php?id=7", "hasurl": true, "last": false},
+            {"name": "Bewertungsraster.txt", "url": "", "hasurl": false, "last": true}
+        ]
+    }
+}}
+<ol class="breadcrumb local-llmchat-path">
+    {{#segments}}
+    <li class="breadcrumb-item{{#last}} active{{/last}}">{{#hasurl}}<a href="{{url}}" target="_blank" rel="noopener">{{name}}</a>{{/hasurl}}{{^hasurl}}{{name}}{{/hasurl}}</li>
+    {{/segments}}
+</ol>

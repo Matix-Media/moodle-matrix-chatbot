@@ -1,113 +1,25 @@
-# Two ways config reaches the container, both supported at once:
-#  - a real .env file (self-hosted VPS: `env_file` below loads it), or
-#  - variables injected straight into the environment `docker compose` itself
-#    runs in (Dokploy: it sets BSBOT_* directly rather than writing a .env
-#    file). The bare `environment:` entries below pass those straight through.
-# `env_file`'s `required: false` is what stops Compose refusing to start at all
-# when no .env file exists — Dokploy's normal case. Both lists are harmless
-# where they don't apply: an unset optional variable just resolves to nothing.
-x-env-file: &env-file
-  - path: .env
-    required: false
-
-x-environment: &environment
-  - BSBOT_DATA_DIR=/data
-  - BSBOT_MOODLE__BASE_URL
-  - BSBOT_MOODLE__USERNAME
-  - BSBOT_MOODLE__PASSWORD
-  - BSBOT_MOODLE__TOKEN
-  - BSBOT_MOODLE__SERVICE
-  - BSBOT_GEMINI__API_KEY
-  - BSBOT_GEMINI__ANSWER_MODEL
-  - BSBOT_GEMINI__UTILITY_MODEL
-  - BSBOT_GEMINI__EMBED_MODEL
-  - BSBOT_GEMINI__EMBED_DIM
-  - BSBOT_PII__ENABLED
-  - BSBOT_PII__SPACY_MODEL
-  - BSBOT_MATRIX__HOMESERVER
-  - BSBOT_MATRIX__USER_ID
-  - BSBOT_MATRIX__PASSWORD
-  - BSBOT_MATRIX__ACCESS_TOKEN
-  - BSBOT_MATRIX__DEVICE_ID
-  - BSBOT_MATRIX__LOGIN_IDENTIFIER
-  - BSBOT_MATRIX__REFRESH_TOKEN
-  - BSBOT_MATRIX__OAUTH_CLIENT_ID
-  - BSBOT_MATRIX__OAUTH_TOKEN_ENDPOINT
-  - BSBOT_MATRIX__ROOM_IDS
-  - BSBOT_SYNC_INTERVAL_MINUTES
-  - BSBOT_LOG_LEVEL
-  - BSBOT_WEB__API_TOKEN
-
+# The API is the only service: Moodle (with the local_llmchat plugin) pushes content to
+# it and the browser chat connects to it over a websocket. Put a TLS-terminating reverse
+# proxy in front of it — the plugin refuses plain-http API URLs.
 services:
-  # Always listening in the Matrix room. Talks to `api` over HTTP for
-  # everything (answering, mod-message embedding) — never opens the SQLite
-  # index itself (specs/019-microservice-split.md). Its own volume, just for
-  # the E2EE session store (matrix_store/ + rotated tokens) — that still
-  # needs to survive a restart; the RAG index does not live here anymore.
-  matrix:
-    build: .
-    restart: unless-stopped
-    env_file: *env-file
-    environment: *environment
-    volumes:
-      - matrix-session:/data
-    command: ["serve"]
-    depends_on:
-      - api
-
-  # The recurring crawl -> fetch/extract -> (api chunks+embeds+stores) loop
-  # (BSBOT_SYNC_INTERVAL_MINUTES between cycles, default 180). Its own
-  # container so a crawl never blocks the bot. No volume at all — cron never
-  # opens the SQLite index either; it only ever calls `api` over HTTP.
-  cron:
-    build: .
-    restart: unless-stopped
-    env_file: *env-file
-    environment: *environment
-    command: ["cron"]
-    depends_on:
-      - api
-
-  # One-shot maintenance run, e.g. right after editing config/document_aliases.yaml.
-  # Use with:  docker compose run --rm sync   (needs `api` already running —
-  # it does the actual storing/embedding now, see specs/019-microservice-split.md)
-  sync:
-    build: .
-    profiles: ["tools"]
-    env_file: *env-file
-    environment: *environment
-    command: ["cron", "--once"]
-    depends_on:
-      - api
-
-  # Internal HTTP API (spec 014). The only service that opens the SQLite
-  # index (specs/019-microservice-split.md) — `web`, `matrix`, and `cron` are
-  # all HTTP clients of it. No `ports:` published — reachable only as
-  # http://api:8000 from other containers on this compose network.
   api:
     build: .
-    restart: unless-stopped
-    env_file: *env-file
-    environment: *environment
-    volumes:
-      - bsbot-data:/data
-    command: ["serve-api"]
-
-  # Nuxt 4 chat UI for people outside the Matrix room. Gated by
-  # CHAT_ACCESS_TOKEN (see .env.example); its Nitro server validates that
-  # token and forwards questions to `api`, authenticating itself with
-  # BSBOT_WEB__API_TOKEN. No `ports:` published — wire up external routing
-  # (Dokploy domain config / reverse proxy) yourself.
-  web:
-    build: ./web
-    restart: unless-stopped
+    command: ["serve"]
+    env_file: .env
     environment:
-      - NUXT_CHAT_ACCESS_TOKEN=${CHAT_ACCESS_TOKEN}
-      - NUXT_BSBOT_API_URL=http://api:8000
-      - NUXT_BSBOT_API_TOKEN=${BSBOT_WEB__API_TOKEN}
-    depends_on:
-      - api
+      MLC_DATA_DIR: /data
+    volumes:
+      - mlc-data:/data
+    # The master key is mounted as a secret, never baked into an env file.
+    secrets:
+      - mlc_master_key
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+secrets:
+  mlc_master_key:
+    file: ./secrets/master.key
 
 volumes:
-  bsbot-data:
-  matrix-session:
+  mlc-data:

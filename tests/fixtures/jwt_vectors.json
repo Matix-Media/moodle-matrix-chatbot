@@ -1,0 +1,63 @@
+{
+  "description": "Shared HS256 chat-token vectors. key = HKDF-SHA256(ikm=secret, salt=None/zeros, info='chat-token', L=32); header {alg: HS256, typ: JWT, kid: site_id}. Consumed by tests/unit/test_tokens.py and the local_llmchat PHPUnit suite.",
+  "cases": [
+    {
+      "secret": "mlc_test-secret-one",
+      "derived_key_hex": "a7f591082da50106c11c52a423097b334d8935ae0e21c4ca5e2a07188f2501bc",
+      "site_id": "site-a",
+      "claims": {
+        "iss": "https://moodle.test",
+        "sub": "42",
+        "name": "Erika Muster",
+        "lang": "de",
+        "caps": [
+          "read",
+          "interact"
+        ],
+        "courses": [
+          2
+        ],
+        "roles": {
+          "2": [
+            "student"
+          ]
+        },
+        "cmids": [
+          10,
+          11
+        ],
+        "quota": {
+          "day": 50000,
+          "month": 500000,
+          "exempt": false
+        },
+        "jti": "vector-1",
+        "iat": 1800000000,
+        "exp": 1800000600
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsImtpZCI6InNpdGUtYSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL21vb2RsZS50ZXN0Iiwic3ViIjoiNDIiLCJuYW1lIjoiRXJpa2EgTXVzdGVyIiwibGFuZyI6ImRlIiwiY2FwcyI6WyJyZWFkIiwiaW50ZXJhY3QiXSwiY291cnNlcyI6WzJdLCJyb2xlcyI6eyIyIjpbInN0dWRlbnQiXX0sImNtaWRzIjpbMTAsMTFdLCJxdW90YSI6eyJkYXkiOjUwMDAwLCJtb250aCI6NTAwMDAwLCJleGVtcHQiOmZhbHNlfSwianRpIjoidmVjdG9yLTEiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDYwMH0.mrZ-Iiw3dFjcY-7M8jSs9e218Q4Q2M_5VOmQdCrdSIo"
+    },
+    {
+      "secret": "mlc_Ünïcödé-secret-two",
+      "derived_key_hex": "f925ccecfc189f5a05362dd1c6f0515835ff7eb1b4a450c3c3ff5587cc04b4d8",
+      "site_id": "site-a",
+      "claims": {
+        "iss": "https://moodle.test",
+        "sub": "7",
+        "name": "Lehrkraft",
+        "lang": "de",
+        "caps": [
+          "read"
+        ],
+        "courses": [],
+        "roles": {},
+        "cmids": [],
+        "jti": "vector-2",
+        "iat": 1800000000,
+        "exp": 1800000300,
+        "course": 5
+      },
+      "token": "eyJhbGciOiJIUzI1NiIsImtpZCI6InNpdGUtYSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL21vb2RsZS50ZXN0Iiwic3ViIjoiNyIsIm5hbWUiOiJMZWhya3JhZnQiLCJsYW5nIjoiZGUiLCJjYXBzIjpbInJlYWQiXSwiY291cnNlcyI6W10sInJvbGVzIjp7fSwiY21pZHMiOltdLCJqdGkiOiJ2ZWN0b3ItMiIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMzAwLCJjb3Vyc2UiOjV9.nDGcy9BrlCICiZVtvgGN7ZpZ7l1VWnMC6H3EAO0HCcA"
+    }
+  ]
+}

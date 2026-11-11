@@ -1,4 +1,4 @@
-"""Verifies spec 006 AC-1..AC-12 — text extraction.
+"""text extraction.
 
 Fixtures are generated in-process rather than committed as binaries, so the tests
 stay readable and no school material ends up in the repo.
@@ -10,7 +10,7 @@ import io
 
 import pytest
 
-from bsbot.ingest.extract import ExtractionError, extract, extractor_for
+from moodle_llm_chat.ingest.extract import ExtractionError, extract, extractor_for
 
 
 def make_pdf(pages: list[str]) -> bytes:

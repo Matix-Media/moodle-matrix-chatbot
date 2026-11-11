@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 
-# Runtime data (Moodle cache, sqlite index, Matrix E2EE store)
+# Runtime data (encrypted index, blobs) and local secrets
 /data/
 *.db
 *.db-wal
@@ -19,16 +19,17 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
-dist/
-build/
+/dist/
+/build/
 
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
-bsbot.log
+moodle-llm-chat.log
 
 # Exported Moodle content
 /moodle_export/
 /chunks/
 all_content*
+/secrets/

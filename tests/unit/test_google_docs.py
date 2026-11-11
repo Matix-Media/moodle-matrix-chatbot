@@ -1,4 +1,4 @@
-"""Verifies spec 011 AC-3..AC-6 — Google Docs/Slides/Sheets export URLs.
+"""Google Docs/Slides/Sheets export URLs.
 
 Every real link in the corpus (verified by direct query) is one of these three
 types. Export URLs work with no auth only for documents shared "anyone with the
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from bsbot.ingest.google_docs import GoogleDocsUnsupported, google_export_url
+from moodle_llm_chat.ingest.google_docs import GoogleDocsUnsupported, google_export_url
 
 
 class TestDocument:

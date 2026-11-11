@@ -1,0 +1,5 @@
+**
+!pyproject.toml
+!tests/**
+tests/e2e/artifacts
+**/__pycache__

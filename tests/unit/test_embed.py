@@ -1,284 +1,269 @@
-"""Verifies spec 007 AC-1..AC-6 — embeddings."""
+"""CachingEmbedder: content-hash cache, batching, throttling, retries, normalisation."""
 
 from __future__ import annotations
 
-from pathlib import Path
+import math
+from typing import Any
 
 import pytest
+import structlog
+from langchain_core.embeddings import Embeddings
 
-from bsbot.index.store import Store
-from bsbot.llm.embed import GeminiEmbedder
+from moodle_llm_chat.llm.embed import (
+    CachingEmbedder,
+    EmbeddingDimensionError,
+    content_sha256,
+)
 
-
-class FakeGenAI:
-    """Records requests; returns a deterministic vector per text."""
-
-    def __init__(self, fail_on: set[str] | None = None, dim: int = 4) -> None:
-        self.batches: list[list[str]] = []
-        self.task_types: list[str] = []
-        self._fail_on = fail_on or set()
-        self._dim = dim
-
-    def embed(self, *, texts: list[str], task_type: str, dim: int) -> list[list[float]]:
-        self.batches.append(list(texts))
-        self.task_types.append(task_type)
-        if any(t in self._fail_on for t in texts):
-            raise RuntimeError("500 backend error")
-        # Un-normalised on purpose: this is what Gemini does at reduced dims.
-        return [[float(len(t)), 1.0, 0.0, 0.0] for t in texts]
+DIM = 3
 
 
-@pytest.fixture
-def store(tmp_path: Path):
-    with Store(tmp_path / "index.db", embed_dim=4) as s:
-        yield s
+class FakeEmbeddings(Embeddings):
+    """Deterministic, un-normalised vectors; records every request."""
+
+    def __init__(self, tag: float = 1.0, *, dim: int = DIM) -> None:
+        self.tag = tag
+        self.dim = dim
+        self.calls: list[list[str]] = []
+
+    def _vec(self, text: str) -> list[float]:
+        return [float(len(text)), self.tag, 2.0][: self.dim] + [0.0] * max(0, self.dim - 3)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        return [self._vec(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
 
 
-def make(store: Store, api: FakeGenAI, **kw) -> GeminiEmbedder:
-    # sleep is stubbed out: tests must never actually wait on retry backoff.
-    defaults = dict(
-        model="gemini-embedding-001",
-        dim=4,
-        batch_size=2,
-        rpm=0,
-        sleep=lambda _: None,
-        max_retries=2,
+class DictCache:
+    def __init__(self) -> None:
+        self.data: dict[tuple[str, str], list[float]] = {}
+
+    def cached_embedding(self, text_sha256: str, key: str) -> list[float] | None:
+        return self.data.get((text_sha256, key))
+
+    def cache_embedding(self, text_sha256: str, key: str, vector: list[float]) -> None:
+        self.data[(text_sha256, key)] = list(vector)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def make(
+    *,
+    query: Embeddings | None = None,
+    document: Embeddings | None = None,
+    cache: DictCache | None = None,
+    clock: FakeClock | None = None,
+    **kw: Any,
+) -> tuple[CachingEmbedder, FakeEmbeddings, FakeEmbeddings, DictCache, FakeClock]:
+    q = query or FakeEmbeddings(tag=1.0)
+    d = document or FakeEmbeddings(tag=5.0)
+    c = cache or DictCache()
+    clk = clock or FakeClock()
+    defaults: dict[str, Any] = {"batch_size": 2, "rpm": 0, "items_per_minute": 0}
+    defaults.update(kw)
+    emb = CachingEmbedder(
+        query_api=q,
+        document_api=d,
+        cache=c,
+        provider="fake",
+        model="m",
+        dim=DIM,
+        sleep=clk.sleep,
+        clock=clk.time,
+        **defaults,
     )
-    return GeminiEmbedder(api, store=store, **{**defaults, **kw})  # type: ignore[arg-type]
+    assert isinstance(q, FakeEmbeddings) and isinstance(d, FakeEmbeddings)
+    return emb, q, d, c, clk
 
 
-class TestTaskTypes:
-    def test_documents_and_queries_use_different_task_types(self, store: Store) -> None:
-        """AC-1: using one task type for both measurably degrades retrieval."""
-        api = FakeGenAI()
-        embedder = make(store, api)
-        embedder.embed_documents(["ein dokument"])
-        embedder.embed_query("eine frage")
-        assert api.task_types == ["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
+def _norm(v: list[float]) -> float:
+    return math.sqrt(sum(x * x for x in v))
 
 
-class TestNormalisation:
-    def test_vectors_are_normalised(self, store: Store) -> None:
-        """AC-2: Gemini returns norm ~0.58 at 768 dims; cosine needs unit vectors."""
-        vector = make(store, FakeGenAI()).embed_documents(["abcdefgh"])[0]
-        assert pytest.approx(sum(v * v for v in vector), abs=1e-6) == 1.0
+class TestTasks:
+    async def test_queries_and_documents_use_separate_clients(self) -> None:
+        emb, q, d, _, _ = make()
+        await emb.embed_query("frage")
+        await emb.embed_documents(["chunk"])
+        assert q.calls == [["frage"]]
+        assert d.calls == [["chunk"]]
+
+    async def test_vectors_are_normalised(self) -> None:
+        emb, *_ = make()
+        vec = await emb.embed_query("abc")
+        assert _norm(vec) == pytest.approx(1.0)
+
+    async def test_wrong_dimension_is_an_error(self) -> None:
+        emb, *_ = make(document=FakeEmbeddings(dim=5))
+        with pytest.raises(EmbeddingDimensionError):
+            await emb.embed_documents(["x"])
 
 
 class TestBatching:
-    def test_texts_are_batched(self, store: Store) -> None:
-        """AC-3: the API caps a request at 250 inputs / 20k tokens."""
-        api = FakeGenAI()
-        make(store, api, batch_size=2).embed_documents(["a", "b", "c", "d", "e"])
-        assert [len(b) for b in api.batches] == [2, 2, 1]
+    async def test_texts_are_batched(self) -> None:
+        emb, _, d, _, _ = make(batch_size=2)
+        await emb.embed_documents(["a", "b", "c"])
+        assert d.calls == [["a", "b"], ["c"]]
 
-    def test_empty_input_makes_no_request(self, store: Store) -> None:
-        api = FakeGenAI()
-        assert make(store, api).embed_documents([]) == []
-        assert api.batches == []
+    async def test_empty_input_makes_no_request(self) -> None:
+        emb, _, d, _, _ = make()
+        assert await emb.embed_documents([]) == []
+        assert d.calls == []
 
 
 class TestCaching:
-    def test_repeated_text_is_not_re_embedded(self, store: Store) -> None:
-        """AC-5: re-indexing unchanged text must cost nothing."""
-        api = FakeGenAI()
-        embedder = make(store, api)
-        embedder.embed_documents(["wiederholt"])
-        embedder.embed_documents(["wiederholt"])
-        assert len(api.batches) == 1
+    async def test_repeated_text_is_not_re_embedded(self) -> None:
+        emb, _, d, _, _ = make()
+        first = await emb.embed_documents(["same"])
+        second = await emb.embed_documents(["same"])
+        assert d.calls == [["same"]]
+        assert first == second
 
-    def test_cache_is_scoped_to_task_type(self, store: Store) -> None:
-        """AC-5: a document vector must not be served for a query."""
-        api = FakeGenAI()
-        embedder = make(store, api)
-        embedder.embed_documents(["gleicher text"])
-        embedder.embed_query("gleicher text")
-        assert len(api.batches) == 2
+    async def test_cache_is_scoped_to_task(self) -> None:
+        emb, q, d, _, _ = make()
+        await emb.embed_documents(["t"])
+        await emb.embed_query("t")
+        assert d.calls == [["t"]] and q.calls == [["t"]]
 
-    def test_partial_cache_hit_only_requests_the_rest(self, store: Store) -> None:
-        api = FakeGenAI()
-        embedder = make(store, api, batch_size=10)
-        embedder.embed_documents(["a"])
-        embedder.embed_documents(["a", "b"])
-        assert api.batches == [["a"], ["b"]]
+    async def test_cache_key_includes_provider_model_and_dim(self) -> None:
+        cache = DictCache()
+        emb, *_ = make(cache=cache)
+        await emb.embed_documents(["t"])
+        ((digest, key),) = cache.data
+        assert digest == content_sha256("t")
+        assert key == "fake:m:3:document"
 
-    def test_results_stay_aligned_with_input_order(self, store: Store) -> None:
-        """A cache hit in the middle must not shuffle the results."""
-        api = FakeGenAI()
-        embedder = make(store, api, batch_size=10)
-        embedder.embed_documents(["bb"])
-        vectors = embedder.embed_documents(["a", "bb", "ccc"])
-        assert len(vectors) == 3
-        lengths = [1, 2, 3]
-        for vector, length in zip(vectors, lengths, strict=True):
-            expected = length / (length**2 + 1) ** 0.5
-            assert pytest.approx(vector[0], abs=1e-6) == expected
+    async def test_partial_hit_requests_only_the_rest(self) -> None:
+        emb, _, d, _, _ = make(batch_size=10)
+        await emb.embed_documents(["a"])
+        await emb.embed_documents(["a", "b"])
+        assert d.calls == [["a"], ["b"]]
+
+    async def test_results_stay_aligned_with_input_order(self) -> None:
+        emb, *_ = make(batch_size=1)
+        await emb.embed_documents(["bb"])
+        out = await emb.embed_documents(["a", "bb", "cccc"])
+        lens = [v[0] / _norm(v) for v in out if v is not None]
+        expected = [n / _norm([n, 5.0, 2.0]) for n in (1.0, 2.0, 4.0)]
+        assert lens == pytest.approx(expected)
 
 
 class TestResilience:
-    def test_one_failed_batch_does_not_lose_the_others(self, store: Store) -> None:
-        """AC-6"""
-        api = FakeGenAI(fail_on={"boom"})
-        embedder = make(store, api, batch_size=1)
-        results = embedder.embed_documents(["ok1", "boom", "ok2"], skip_failures=True)
-        assert results[0] is not None
-        assert results[1] is None
-        assert results[2] is not None
+    async def test_failed_batch_does_not_lose_the_others(self) -> None:
+        class FailsOnB(FakeEmbeddings):
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                if "b" in texts:
+                    raise RuntimeError("400 bad request")
+                return super().embed_documents(texts)
 
-    def test_failure_raises_by_default(self, store: Store) -> None:
-        embedder = make(store, FakeGenAI(fail_on={"boom"}), batch_size=1)
+        emb, *_ = make(document=FailsOnB(), batch_size=1)
+        out = await emb.embed_documents(["a", "b", "c"], skip_failures=True)
+        assert out[0] is not None and out[1] is None and out[2] is not None
+
+    async def test_failure_raises_by_default(self) -> None:
+        class Boom(FakeEmbeddings):
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                raise RuntimeError("400 bad request")
+
+        emb, *_ = make(document=Boom())
         with pytest.raises(RuntimeError):
-            embedder.embed_documents(["boom"])
+            await emb.embed_documents(["a"])
 
+    async def test_rate_limit_is_retried_with_suggested_delay(self) -> None:
+        class Flaky(FakeEmbeddings):
+            failures = 2
 
-class TestRateLimiting:
-    def test_requests_are_throttled_to_the_configured_rpm(self, store: Store) -> None:
-        """AC-4: the free tier allows 100 RPM."""
-        slept: list[float] = []
-        api = FakeGenAI()
-        rpm_ticks = iter(i * 0.1 for i in range(10000))
-        embedder = GeminiEmbedder(
-            api,
-            store=store,
-            model="m",
-            dim=4,
-            batch_size=1,
-            rpm=60,  # type: ignore[arg-type]
-            sleep=slept.append,
-            clock=lambda: next(rpm_ticks),
-        )
-        embedder.embed_documents(["a", "b", "c"])
-        assert any(s > 0 for s in slept), "expected throttling between requests"
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                if self.failures:
+                    self.failures -= 1
+                    raise RuntimeError("429 RESOURCE_EXHAUSTED. Please retry in 7.5s.")
+                return super().embed_documents(texts)
 
+        emb, _, d, _, clk = make(document=Flaky())
+        out = await emb.embed_documents(["a"])
+        assert out[0] is not None
+        assert clk.sleeps == [7.5, 7.5]
+        assert d.calls == [["a"]]
 
-class TestQuotaHandling:
-    """Regression tests for a real failure against the live API.
+    async def test_retries_are_bounded(self) -> None:
+        class Always(FakeEmbeddings):
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                raise RuntimeError("503 UNAVAILABLE")
 
-    The first full embed run sent 40 batches x 100 texts while throttling only on
-    *requests per minute*. Google's quota counts embedded *items* per minute
-    (3000), so the run burned through it in seconds and lost 952 chunks.
-    """
+        emb, _, _, _, clk = make(document=Always(), max_retries=2)
+        with pytest.raises(RuntimeError, match="503"):
+            await emb.embed_documents(["a"])
+        assert len(clk.sleeps) == 2
 
-    def test_throttle_accounts_for_batch_size(self, store: Store) -> None:
-        slept: list[float] = []
-        ticks = iter([float(i) * 0.001 for i in range(200)])
-        embedder = GeminiEmbedder(
-            FakeGenAI(),
-            store=store,
-            model="m",
-            dim=4,  # type: ignore[arg-type]
-            batch_size=100,
-            rpm=0,
-            items_per_minute=300,
-            sleep=slept.append,
-            clock=lambda: next(ticks),
-        )
-        embedder.embed_documents([f"text {i}" for i in range(400)])
-        assert any(s > 0 for s in slept), "expected item-based throttling to engage"
-
-    def test_rate_limit_error_is_retried(self, store: Store) -> None:
-        class FlakyAPI(FakeGenAI):
-            def __init__(self) -> None:
-                super().__init__()
-                self.attempts = 0
-
-            def embed(self, *, texts, task_type, dim):  # type: ignore[no-untyped-def]
-                self.attempts += 1
-                if self.attempts == 1:
-                    raise RuntimeError("429 RESOURCE_EXHAUSTED quota exceeded")
-                return super().embed(texts=texts, task_type=task_type, dim=dim)
-
-        api = FlakyAPI()
-        embedder = GeminiEmbedder(
-            api,
-            store=store,
-            model="m",
-            dim=4,
-            batch_size=10,
-            rpm=0,  # type: ignore[arg-type]
-            sleep=lambda _: None,
-        )
-        results = embedder.embed_documents(["a", "b"])
-        assert api.attempts == 2
-        assert all(r is not None for r in results)
-
-    def test_retries_are_bounded(self, store: Store) -> None:
-        class AlwaysLimited(FakeGenAI):
-            def embed(self, *, texts, task_type, dim):  # type: ignore[no-untyped-def]
-                self.batches.append(list(texts))
-                raise RuntimeError("429 RESOURCE_EXHAUSTED")
-
-        api = AlwaysLimited()
-        embedder = GeminiEmbedder(
-            api,
-            store=store,
-            model="m",
-            dim=4,
-            batch_size=10,
-            rpm=0,  # type: ignore[arg-type]
-            max_retries=2,
-            sleep=lambda _: None,
-        )
-        results = embedder.embed_documents(["a"], skip_failures=True)
-        assert results == [None]
-        assert len(api.batches) == 3  # initial + 2 retries
-
-    def test_non_retryable_error_is_not_retried(self, store: Store) -> None:
-        class BadRequest(FakeGenAI):
-            def embed(self, *, texts, task_type, dim):  # type: ignore[no-untyped-def]
-                self.batches.append(list(texts))
+    async def test_non_retryable_error_is_not_retried(self) -> None:
+        class Bad(FakeEmbeddings):
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
                 raise RuntimeError("400 INVALID_ARGUMENT")
 
-        api = BadRequest()
-        embedder = GeminiEmbedder(
-            api,
-            store=store,
-            model="m",
-            dim=4,
-            batch_size=10,
-            rpm=0,  # type: ignore[arg-type]
-            max_retries=3,
-            sleep=lambda _: None,
-        )
-        embedder.embed_documents(["a"], skip_failures=True)
-        assert len(api.batches) == 1
+        emb, _, _, _, clk = make(document=Bad())
+        with pytest.raises(RuntimeError):
+            await emb.embed_documents(["a"])
+        assert clk.sleeps == []
+
+    async def test_status_code_attribute_is_recognised(self) -> None:
+        class RateLimited(Exception):
+            status_code = 429
+
+        class Flaky(FakeEmbeddings):
+            failed = False
+
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                if not self.failed:
+                    self.failed = True
+                    raise RateLimited("slow down")
+                return super().embed_documents(texts)
+
+        emb, _, _, _, clk = make(document=Flaky())
+        await emb.embed_documents(["a"])
+        assert len(clk.sleeps) == 1
 
 
-class TestTransparencyLogging:
-    """The user asked for this directly: httpx's 'HTTP Request: POST ... 200 OK'
-    line says nothing about what actually happened. The log should show the real
-    strings being embedded instead of a transport-level status line.
-    """
+class TestThrottling:
+    async def test_requests_per_minute(self) -> None:
+        emb, _, _, _, clk = make(rpm=60, batch_size=1)
+        await emb.embed_documents(["a", "b", "c"])
+        # One request per second: the 2nd and 3rd wait a full interval.
+        assert clk.sleeps == pytest.approx([1.0, 1.0])
 
-    def test_embed_request_logs_the_actual_texts(self, store: Store) -> None:
-        import structlog
+    async def test_items_per_minute_accounts_for_batch_size(self) -> None:
+        emb, _, _, _, clk = make(items_per_minute=4, batch_size=3)
+        await emb.embed_documents(["a", "b", "c", "d", "e", "f"])
+        assert len(clk.sleeps) == 1
+        assert clk.sleeps[0] == pytest.approx(60.0)
 
-        embedder = make(store, FakeGenAI(), batch_size=10)
+    async def test_cache_hits_cost_nothing(self) -> None:
+        emb, _, _, _, clk = make(items_per_minute=2, batch_size=2)
+        await emb.embed_documents(["a", "b"])
+        await emb.embed_documents(["a", "b"])
+        assert clk.sleeps == []
+
+
+class TestLogging:
+    async def test_request_log_never_contains_text(self) -> None:
+        """Content is encrypted at rest; logs must not become a plaintext copy."""
+        emb, *_ = make()
         with structlog.testing.capture_logs() as logs:
-            embedder.embed_documents(["Die Klausur ist am 15.03.2026.", "Zweiter Text."])
-
-        events = [e for e in logs if e.get("event") == "embed.request"]
-        assert events, f"expected an embed.request log event, got {logs}"
-        assert events[0]["task_type"] == "RETRIEVAL_DOCUMENT"
-        assert events[0]["count"] == 2
-        assert "Die Klausur ist am 15.03.2026." in events[0]["texts"]
-
-    def test_long_text_is_truncated_in_the_log_preview(self, store: Store) -> None:
-        import structlog
-
-        embedder = make(store, FakeGenAI(), batch_size=10)
-        long_text = "A" * 500
-        with structlog.testing.capture_logs() as logs:
-            embedder.embed_documents([long_text])
-
-        events = [e for e in logs if e.get("event") == "embed.request"]
-        assert len(events[0]["texts"][0]) < 500
-
-    def test_cache_hits_are_not_re_logged_as_requests(self, store: Store) -> None:
-        import structlog
-
-        embedder = make(store, FakeGenAI(), batch_size=10)
-        embedder.embed_documents(["wiederholt"])
-        with structlog.testing.capture_logs() as logs:
-            embedder.embed_documents(["wiederholt"])
-
-        assert not [e for e in logs if e.get("event") == "embed.request"]
+            await emb.embed_documents(["Prüfungstermin für Max Mustermann"])
+        assert logs, "expected an embed.request event"
+        assert "Mustermann" not in repr(logs)
+        request = next(e for e in logs if e["event"] == "embed.request")
+        assert request["count"] == 1
