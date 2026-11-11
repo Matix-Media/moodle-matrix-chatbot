@@ -19,7 +19,7 @@ x-api-env: &api-env
   MLC_EMBEDDING__MODEL: mock-embed
   MLC_EMBEDDING__DIM: "64"
   MLC_EMBEDDING__BASE_URL: http://mock-llm:9000/v1
-  MLC_AGENT__SHOW_THINKING: indicator
+  MLC_AGENT__SHOW_THINKING: full
   MLC_SERVER__BURST_PER_MINUTE: "200"
   MLC_LOG_LEVEL: INFO
 

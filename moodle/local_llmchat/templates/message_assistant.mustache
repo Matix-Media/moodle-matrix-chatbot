@@ -17,8 +17,9 @@
 {{!
     @template local_llmchat/message_assistant
 
-    One assistant turn: the regions the client streams into (thinking, tool cards, text,
-    interaction, footer).
+    One assistant turn: a body the client streams into in order — thinking blocks, groups of
+    tool cards, text segments, interactions, footer — always above the working indicator, which
+    shows whenever the model works with nothing streaming.
 
     Example context (json):
     {}
@@ -26,8 +27,6 @@
 <div class="local-llmchat-msg local-llmchat-msg-assistant" data-role="assistant">
     <div class="local-llmchat-body local-llmchat-minw0" data-region="body">
         <span class="sr-only visually-hidden">{{#str}} assistant, local_llmchat {{/str}}:</span>
-        <div data-region="thinking"></div>
-        <div class="list-group local-llmchat-tools d-none" data-region="tools"></div>
         <div class="local-llmchat-text" data-region="text"></div>
         <div class="local-llmchat-typing" data-region="typing" role="status">
             <span class="spinner-grow spinner-grow-sm" aria-hidden="true"></span>

@@ -32,6 +32,7 @@ import Log from 'core/log';
 import {getStrings} from 'core/str';
 import {add as addToast} from 'core/toast';
 import ReconnectingSocket from 'local_llmchat/socket';
+import * as activity from 'local_llmchat/activity';
 import * as frames from 'local_llmchat/frames';
 import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
@@ -72,6 +73,7 @@ const FRAME_HANDLERS = {
     'question': 'onQuestion',
     'citations': 'onCitations',
     'final': 'onFinal',
+    'cancelled': 'onCancelled',
     'turn_interrupted': 'onInterrupted',
     'rate_limited': 'onRateLimited',
     'quota': 'onQuota',
@@ -686,29 +688,53 @@ class ChatController {
         this.appendMessage(node);
         const region = (name) => node.querySelector(`[data-region="${name}"]`);
         this.turn = {
-            id: turnId, node, body: region('body'), thinkingSlot: region('thinking'), tools: region('tools'),
-            text: region('text'), typing: region('typing'), raw: '', thinking: null, cards: new Map(), citations: [],
+            id: turnId, node, body: region('body'), text: region('text'), typing: region('typing'), raw: '',
+            thinking: null, toolGroup: null, cards: new Map(), citations: [], activity: activity.initial(),
         };
         return this.turn;
     }
 
     /**
-     * Hide the typing indicator once real content arrives.
+     * Track what the turn is doing (local_llmchat/activity): close the live thinking block when the
+     * step moves on, and show the working indicator whenever the model works with nothing streaming
+     * (e.g. after the last tool result, while it decides what to do next).
      *
      * @param {Object} turn
+     * @param {string} type frame type, or 'user_answer' / 'continue' for what the client sent
+     * @returns {Object} {before, after} activity states
      */
-    contentArrived(turn) {
-        turn.typing.classList.add('d-none');
+    advance(turn, type) {
+        const before = turn.activity;
+        const after = activity.step(before, type);
+        turn.activity = after;
+        if (activity.endsThinking(before, after)) {
+            this.collapseThinking(turn);
+        }
+        turn.typing.classList.toggle('d-none', !activity.showsIndicator(after));
+        return {before, after};
     }
 
     /**
-     * Show the typing indicator again at the end of the turn (e.g. after an answer was sent).
+     * Insert a node at the end of the turn, above the working indicator (content stays in stream order).
      *
      * @param {Object} turn
+     * @param {HTMLElement} node
      */
-    showTyping(turn) {
-        turn.body.appendChild(turn.typing);
-        turn.typing.classList.remove('d-none');
+    place(turn, node) {
+        turn.body.insertBefore(node, turn.typing);
+    }
+
+    /**
+     * The text segment for answer text: the current one if nothing was placed after it, else a new one.
+     *
+     * @param {Object} turn
+     * @returns {HTMLElement}
+     */
+    textSegment(turn) {
+        if (turn.text.nextElementSibling !== turn.typing) {
+            this.newTextSegment(turn);
+        }
+        return turn.text;
     }
 
     /**
@@ -719,28 +745,29 @@ class ChatController {
     newTextSegment(turn) {
         const text = document.createElement('div');
         text.className = 'local-llmchat-text';
-        turn.body.insertBefore(text, turn.typing);
+        this.place(turn, text);
         turn.text = text;
         turn.raw = '';
     }
 
     /**
-     * Reasoning delta (text only when the API sends it; otherwise an indicator).
+     * Reasoning delta (text only when the API sends it; otherwise an indicator). Every model step
+     * that thinks gets its own block, placed in stream order between the tool cards.
      *
      * @param {Object} frame
      */
     async onThinking(frame) {
         const turn = await this.currentTurn(frame);
-        if (!turn.thinking) {
+        const {before, after} = this.advance(turn, 'thinking');
+        if (activity.startsThinking(before, after) || !turn.thinking) {
             const node = await renderNode('thinking', {uniqid: uniqid('llmchat-thinking')});
-            turn.thinkingSlot.appendChild(node);
+            this.place(turn, node);
             const q = (sel) => node.querySelector(sel);
             turn.thinking = {
                 node, toggle: q('[data-action="toggle"]'), collapsible: q('[data-region="collapsible"]'),
                 text: q('[data-region="thinking-text"]'), spinner: q('[data-region="spinner"]'),
                 active: q('[data-region="label-active"]'), done: q('[data-region="label-done"]'),
             };
-            this.contentArrived(turn);
         }
         if (frame.delta) {
             turn.thinking.text.textContent += frame.delta;
@@ -748,7 +775,7 @@ class ChatController {
     }
 
     /**
-     * Collapse the thinking block once the answer (or a question) starts.
+     * Collapse the live thinking block once the step moves on (answer, tool call, question, end).
      *
      * @param {Object} turn
      */
@@ -773,10 +800,10 @@ class ChatController {
      */
     async onToken(frame) {
         const turn = await this.currentTurn(frame);
-        this.collapseThinking(turn);
-        this.contentArrived(turn);
+        this.advance(turn, 'token');
+        const text = this.textSegment(turn);
         turn.raw += frame.delta || '';
-        turn.text.innerHTML = renderMarkdown(turn.raw, turn.citations);
+        text.innerHTML = renderMarkdown(turn.raw, turn.citations);
     }
 
     /**
@@ -807,12 +834,27 @@ class ChatController {
         const [icon, component] = toolIcon(frame.name, meta);
         const call = describeCall(args, this.displayOptions());
         const node = await renderNode('tool_call', Object.assign({uniqid: uniqid('llmchat-tool'), icon, component, label}, call));
-        turn.tools.classList.remove('d-none');
-        turn.tools.appendChild(node);
+        this.advance(turn, 'tool_call');
+        this.toolGroup(turn).appendChild(node);
         turn.cards.set(frame.id, node);
-        this.contentArrived(turn);
         // Not awaited: links arrive when ready and never hold up the stream.
         this.linkPaths(node, call);
+    }
+
+    /**
+     * The list group for tool cards: the current one if nothing was placed after it, else a new one.
+     *
+     * @param {Object} turn
+     * @returns {HTMLElement}
+     */
+    toolGroup(turn) {
+        if (!turn.toolGroup || turn.toolGroup.nextElementSibling !== turn.typing) {
+            turn.toolGroup = document.createElement('div');
+            turn.toolGroup.className = 'list-group local-llmchat-tools';
+            turn.toolGroup.dataset.region = 'tools';
+            this.place(turn, turn.toolGroup);
+        }
+        return turn.toolGroup;
     }
 
     /**
@@ -883,10 +925,12 @@ class ChatController {
      * @param {Object} frame tool_result{id, summary, citations?, attachments?}
      */
     async onToolResult(frame) {
-        const card = (await this.currentTurn(frame)).cards.get(frame.id);
+        const turn = await this.currentTurn(frame);
+        const card = turn.cards.get(frame.id);
         if (!card) {
             return;
         }
+        this.advance(turn, 'tool_result');
         card.querySelector('[data-region="spinner"]').classList.add('d-none');
         card.querySelector('[data-region="done"]').classList.remove('d-none');
         card.querySelector('[data-region="summary"]').textContent = frame.summary ? String(frame.summary) : '';
@@ -902,8 +946,7 @@ class ChatController {
      */
     async onQuestion(frame, replay) {
         const turn = await this.currentTurn(frame);
-        this.collapseThinking(turn);
-        this.contentArrived(turn);
+        this.advance(turn, 'question');
         const interruptId = String(frame.interrupt_id);
         turn.body.querySelectorAll('[data-interrupt]').forEach((n) => {
             if (n.dataset.interrupt === interruptId) {
@@ -921,7 +964,7 @@ class ChatController {
             error.textContent = String(frame.error);
             node.querySelector('.card-body')?.prepend(error);
         }
-        turn.body.insertBefore(node, turn.typing);
+        this.place(turn, node);
         this.newTextSegment(turn);
         this.setRunning(false);
         if (!replay) {
@@ -946,7 +989,7 @@ class ChatController {
             answered.dataset.interrupt = interruptId;
             node.replaceWith(answered);
             this.setRunning(true);
-            this.showTyping(turn);
+            this.advance(turn, 'user_answer');
             this.scroll();
         } catch (e) {
             this.showStatus('error', String(e && e.message ? e.message : e));
@@ -969,11 +1012,11 @@ class ChatController {
      */
     async onFinal(frame) {
         const turn = await this.currentTurn(frame);
-        this.collapseThinking(turn);
-        this.contentArrived(turn);
+        this.advance(turn, 'final');
         turn.citations = frame.citations || turn.citations || [];
+        const text = this.textSegment(turn);
         turn.raw = frame.text ?? turn.raw;
-        turn.text.innerHTML = renderMarkdown(turn.raw, turn.citations);
+        text.innerHTML = renderMarkdown(turn.raw, turn.citations);
         const footer = await renderNode('answer_footer', {
             budgetexhausted: Boolean(frame.budget_exhausted || frame.truncated_by_budget),
             hascitations: turn.citations.length > 0,
@@ -994,7 +1037,7 @@ class ChatController {
                 Log.debug(e);
             }
         });
-        turn.body.insertBefore(footer, turn.typing);
+        this.place(turn, footer);
         this.setRunning(false);
         this.turn = null;
         this.refreshConversations();
@@ -1007,7 +1050,7 @@ class ChatController {
      */
     async onInterrupted(frame) {
         const turn = await this.currentTurn(frame);
-        this.contentArrived(turn);
+        this.advance(turn, 'turn_interrupted');
         this.setRunning(false);
         const notice = await renderNode('notice', {
             type: 'info', icon: 'i/info', component: 'core', message: this.str.turninterrupted,
@@ -1019,10 +1062,10 @@ class ChatController {
                 token: t.token}))) {
                 notice.remove();
                 this.setRunning(true);
-                this.showTyping(turn);
+                this.advance(turn, 'continue');
             }
         });
-        turn.body.insertBefore(notice, turn.typing);
+        this.place(turn, notice);
     }
 
     /**
@@ -1033,7 +1076,7 @@ class ChatController {
     async onRateLimited(frame) {
         this.setRunning(false);
         if (this.turn) {
-            this.contentArrived(this.turn);
+            this.advance(this.turn, 'rate_limited');
         }
         const scope = ['burst', 'user', 'site'].includes(frame.scope) ? frame.scope : 'user';
         await this.showStatus('warning', fill(this.str[`ratelimited:${scope}`], formatTime(frame.resets_at)));
@@ -1091,20 +1134,31 @@ class ChatController {
      * @param {Object} frame error{code, message}
      */
     async onError(frame) {
-        this.setRunning(false);
         if (frame.code === 'cancelled') {
-            const turn = await this.currentTurn(frame);
-            this.contentArrived(turn);
-            const note = document.createElement('div');
-            note.className = 'small text-muted';
-            note.textContent = this.str.cancelled;
-            turn.body.insertBefore(note, turn.typing);
-        } else {
-            if (this.turn) {
-                this.contentArrived(this.turn);
-            }
-            await this.showStatus('error', fill(this.str.error, frame.message || frame.code || ''));
+            await this.onCancelled(frame);
+            return;
         }
+        this.setRunning(false);
+        if (this.turn) {
+            this.advance(this.turn, 'error');
+        }
+        await this.showStatus('error', fill(this.str.error, frame.message || frame.code || ''));
+    }
+
+    /**
+     * The user stopped the turn: say so inline.
+     *
+     * @param {Object} frame cancelled{turn_id}
+     */
+    async onCancelled(frame) {
+        this.setRunning(false);
+        const turn = await this.currentTurn(frame);
+        this.advance(turn, 'cancelled');
+        const note = document.createElement('div');
+        note.className = 'small text-muted';
+        note.textContent = this.str.cancelled;
+        this.place(turn, note);
+        this.turn = null;
     }
 
     /**
