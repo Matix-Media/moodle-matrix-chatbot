@@ -113,6 +113,36 @@ a minute. Add your own courses as admin; they sync the same way.
 * A model on your machine (Ollama, LM Studio) is reachable as `host.docker.internal`.
 * `… logs -f api` shows the agent; `… down -v` wipes all data.
 
+#### Real course data
+
+The two e2e courses are tiny. To try the assistant on real material and a realistic
+workload, seed the dev Moodle with a dataset. It becomes ordinary Moodle content, so the
+plugin ingests it like a real site's. A dataset can be the legacy deployment's content
+index, Moodle course backups (`.mbz`, from any Moodle), or a hand-written
+`manifest.json`. [dev/seed/README.md](dev/seed/README.md) describes all three, the
+manifest format and the `seed.toml` rules.
+
+```bash
+dev/seed/fetch-legacy.sh "ssh user@legacy-host" <api-container>   # or: backups/*.mbz
+python dev/seed/build_manifest.py dev/dataset
+docker compose -f dev/docker-compose.yml up -d --build --wait     # running: … restart moodle
+```
+
+With the default rules the courses land in the *Legacy dataset* category:
+* `teacher` teaches all of them, `student` is in three of four and `student2` in every
+  other one.
+* Every generated course hides one thing from students: a module, or a section that
+  stays restricted until 2099. Teachers see both.
+
+`MLC_DATASET_DIR=./datasets/<name>` (relative to `dev/`) seeds another dataset next to
+the first; give it its own `prefix`. Keep datasets inside the checkout so Docker can see
+them. Seeding is idempotent and only adds.
+
+`dev/dataset/` and `dev/datasets/` are gitignored and must stay out of the repository:
+they hold real school material that names real people. Once synced, every file is
+extracted and embedded with the model in `dev/.env` (the legacy dataset alone is about
+560 files and 6k chunks), so mind the cost.
+
 ### Tests
 
 Tests are the specification — write the failing test first.

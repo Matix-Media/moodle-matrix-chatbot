@@ -18,5 +18,8 @@ COPY moodle/local_llmchat /var/www/html/local/llmchat
 COPY dev/moodle/config.php /var/www/html/config.php
 COPY tests/e2e/moodle/seed.php /opt/e2e/seed.php
 COPY tests/e2e/moodle/entrypoint.sh /docker-entrypoint.d/50-e2e-setup.sh
-RUN chmod +x /docker-entrypoint.d/50-e2e-setup.sh \
+# Optional real dataset (dev/dataset/, bind-mounted at /opt/dataset): see dev/seed/.
+COPY dev/moodle/seed-dataset.php /opt/dev/seed-dataset.php
+COPY dev/moodle/dataset.sh /docker-entrypoint.d/60-dataset.sh
+RUN chmod +x /docker-entrypoint.d/50-e2e-setup.sh /docker-entrypoint.d/60-dataset.sh \
  && chown -R www-data:www-data /var/moodledata /var/www/html
