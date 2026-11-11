@@ -9,97 +9,18 @@ recreate with its own generators.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
-import sqlite3
-import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "build_manifest", ROOT / "dev" / "seed" / "build_manifest.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["build_manifest"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-bm = _load()
-
-SITE = "https://moodle.example.invalid"
-
-
-class Legacy:
-    """A legacy dataset directory: documents.db plus blobs/<aa>/<sha256>."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        (root / "blobs").mkdir(parents=True)
-        self.db = sqlite3.connect(root / "documents.db")
-        self.db.execute(
-            """CREATE TABLE documents (
-                doc_id TEXT PRIMARY KEY, course_id INTEGER, course_name TEXT,
-                section_name TEXT, module_id INTEGER, module_name TEXT, modname TEXT,
-                title TEXT, kind TEXT, text TEXT, file_url TEXT, filename TEXT,
-                filesize INTEGER DEFAULT 0, mimetype TEXT, external_url TEXT,
-                blob_sha256 TEXT, tombstoned_at INTEGER)"""
-        )
-
-    def blob(self, data: bytes) -> str:
-        sha = hashlib.sha256(data).hexdigest()
-        (self.root / "blobs" / sha[:2]).mkdir(exist_ok=True)
-        (self.root / "blobs" / sha[:2] / sha).write_bytes(data)
-        return sha
-
-    def doc(self, doc_id: str, **fields: Any) -> None:
-        course, cmid, _ = doc_id.split(":")
-        row = {
-            "doc_id": doc_id,
-            "course_id": int(course),
-            "course_name": f"Course {course}",
-            "section_name": "Allgemeines",
-            "module_id": int(cmid),
-            "module_name": f"Module {cmid}",
-            "modname": "page",
-            "title": "",
-            "kind": "inline",
-            **fields,
-        }
-        cols = ", ".join(row)
-        marks = ", ".join("?" for _ in row)
-        self.db.execute(f"INSERT INTO documents ({cols}) VALUES ({marks})", list(row.values()))
-        self.db.commit()
-
-    def build(self, config: str | None = None) -> dict[str, Any]:
-        parsed = bm.parse_config(config) if config is not None else None
-        manifest: dict[str, Any] = bm.build_manifest(self.root, parsed)
-        return manifest
-
-    def backup(self, name: str, data: bytes = b"mbz") -> Path:
-        (self.root / "backups").mkdir(exist_ok=True)
-        path = self.root / "backups" / name
-        path.write_bytes(data)
-        return path
+from support.dev_seed import ROOT, Legacy, bm, file_url
 
 
 @pytest.fixture
 def legacy(tmp_path: Path) -> Legacy:
     return Legacy(tmp_path / "dataset")
-
-
-def file_url(context: int, component: str, path: str) -> str:
-    return (
-        f"{SITE}/webservice/pluginfile.php/{context}/{component}/content/3/{path}?forcedownload=1"
-    )
 
 
 def only_module(manifest: dict[str, Any]) -> dict[str, Any]:

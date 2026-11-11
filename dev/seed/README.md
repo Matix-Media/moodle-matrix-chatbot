@@ -63,6 +63,24 @@ Seeding is idempotent and only adds. Each course and module is keyed by its
 restrictions. Datasets with different prefixes can share one Moodle. To replace a
 dataset that has the same prefix, run `down -v` first.
 
+## Bundles: one file to carry a dataset between checkouts
+
+Each worktree starts without `dev/dataset/`. A bundle packs a built dataset into one
+`.tar.gz` that any checkout can seed from without the server it came from. It holds the
+manifest, `seed.toml`, `documents.db` (so it can be rebuilt with other rules), the
+backups and plain files, and only the blobs something refers to.
+
+```bash
+python dev/seed/dataset_bundle.py pack dev/dataset ~/.local/share/moodle-llm-chat/datasets/<name>.tar.gz
+python dev/seed/dataset_bundle.py unpack ~/.local/share/moodle-llm-chat/datasets/<name>.tar.gz dev/dataset
+docker compose -f dev/docker-compose.yml up -d --build --wait     # running: … restart moodle
+```
+
+Unpacking verifies every blob against its hash. It refuses members outside the target,
+and it refuses to replace an existing dataset unless you pass `--force`. Keep bundles
+outside the repository and outside synced folders such as iCloud `~/Documents`: they
+hold real data.
+
 ## seed.toml
 
 Rules for `build_manifest.py`, all optional. Unknown keys are an error. Every key is
