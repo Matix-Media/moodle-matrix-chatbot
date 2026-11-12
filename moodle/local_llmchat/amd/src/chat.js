@@ -1000,14 +1000,19 @@ class ChatController {
         const calls = Ajax.call(chunks.map((chunk) => ({
             methodname: 'local_llmchat_resolve_refs', args: {refs: chunk.map((p) => p.ref)},
         })));
-        chunks.forEach((chunk, i) => Promise.resolve(calls[i]).then((result) => {
+        chunks.forEach(async(chunk, i) => {
+            let result;
+            try {
+                result = await calls[i];
+            } catch (e) {
+                chunk.forEach((p) => {
+                    this.linkCache.delete(refKey(p.ref));
+                    p.resolve('');
+                });
+                return;
+            }
             chunk.forEach((p) => p.resolve((result.find((r) => refKey(r) === refKey(p.ref)) || {}).url || ''));
-        }).catch(() => {
-            chunk.forEach((p) => {
-                this.linkCache.delete(refKey(p.ref));
-                p.resolve('');
-            });
-        }));
+        });
     }
 
     /**
