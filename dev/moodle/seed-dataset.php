@@ -9,6 +9,8 @@
 //
 // Idempotent and convergent: everything carries the manifest's idnumber, a restart
 // creates only what is missing and re-applies visibility and section restrictions.
+// Sections have no idnumber, so a restart finds each one through the seeded modules it
+// holds, never by its number: sections a teacher inserts or moves keep their names.
 // Deleting a course in the UI therefore makes the next start recreate it. Seeding only
 // ever adds: switching to another dataset with the same prefix needs `down -v` first.
 //
@@ -158,12 +160,32 @@ function dataset_visibility(stdClass $course, array $m): bool {
 }
 
 /**
+ * The Moodle section a manifest section lives in, or null if that can't be told.
+ *
+ * Sections have no idnumber, and their numbers shift when someone inserts or moves a
+ * section in the UI, so an existing course's section is found through the seeded
+ * modules it holds. Only a course created in this run is matched by number.
+ */
+function dataset_section(stdClass $course, int $num, array $s, bool $fresh): ?stdClass {
+    global $DB;
+    if ($fresh) {
+        course_create_sections_if_missing($course, $num);
+        return $DB->get_record('course_sections', ['course' => $course->id, 'section' => $num], '*', MUST_EXIST);
+    }
+    foreach ($s['modules'] as $m) {
+        $sectionid = $DB->get_field('course_modules', 'section', ['course' => $course->id, 'idnumber' => $m['idnumber']]);
+        if ($sectionid) {
+            return $DB->get_record('course_sections', ['id' => $sectionid], '*', MUST_EXIST);
+        }
+    }
+    return null;
+}
+
+/**
  * Converge a section's access restriction: shown greyed out, opening on a date that
  * never arrives. Teachers bypass it (moodle/course:ignoreavailabilityrestrictions).
  */
-function dataset_availability(stdClass $course, int $num, array $s): bool {
-    global $DB;
-    $section = $DB->get_record('course_sections', ['course' => $course->id, 'section' => $num], '*', MUST_EXIST);
+function dataset_availability(stdClass $course, stdClass $section, array $s): bool {
     $want = isset($s['available_from']) ? json_encode([
         'op' => '&',
         'c' => [['type' => 'date', 'd' => '>=', 't' => (int)$s['available_from']]],
@@ -251,7 +273,8 @@ $created = $restored = $changed = 0;
 $started = time();
 foreach ($manifest['courses'] as $c) {
     $course = $DB->get_record('course', ['idnumber' => $c['idnumber']]);
-    if (!$course) {
+    $fresh = !$course;
+    if ($fresh) {
         $course = $generator->create_course([
             'fullname' => $c['fullname'],
             'shortname' => $c['shortname'],
@@ -263,24 +286,28 @@ foreach ($manifest['courses'] as $c) {
         ]);
     }
     foreach ($c['sections'] as $num => $s) {
-        $section = $DB->get_record('course_sections', ['course' => $course->id, 'section' => $num]);
-        if (!$section) {
-            course_create_sections_if_missing($course, $num);
-            $section = $DB->get_record('course_sections', ['course' => $course->id, 'section' => $num]);
-        }
-        if ($section->name !== $s['name']) {
+        $section = dataset_section($course, $num, $s, $fresh);
+        if ($section && $section->name !== $s['name']) {
             course_update_section($course, $section, ['name' => $s['name']]);
         }
+        // A section none of whose modules exist any more can't be told apart from one a
+        // teacher added: recreate its modules at the manifest's position, rename nothing.
+        if (!$section) {
+            course_create_sections_if_missing($course, $num);
+        }
+        $target = $section ? (int)$section->section : $num;
         foreach ($s['modules'] as $m) {
             try {
-                $created += dataset_module($generator, $root, $course, $num, $m) ? 1 : 0;
+                $created += dataset_module($generator, $root, $course, $target, $m) ? 1 : 0;
             } catch (Throwable $e) {
                 cli_problem("course {$c['idnumber']} module {$m['idnumber']} ({$m['modname']}): "
                     . $e->getMessage());
             }
             $changed += dataset_visibility($course, $m) ? 1 : 0;
         }
-        $changed += dataset_availability($course, $num, $s) ? 1 : 0;
+        if ($section) {
+            $changed += dataset_availability($course, $section, $s) ? 1 : 0;
+        }
     }
     dataset_enrol($generator, $users, $course->id, $c['enrol']);
 }
