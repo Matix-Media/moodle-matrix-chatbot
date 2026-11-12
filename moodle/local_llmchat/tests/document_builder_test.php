@@ -216,7 +216,34 @@ final class document_builder_test extends \advanced_testcase {
     public function test_manifest_entry_shape(): void {
         $page = local_llmchat_test_create_module('page', ['course' => $this->course->id, 'intro' => '']);
         $doc = array_values($this->build($page->cmid))[0];
-        $this->assertSame(['doc_id', 'timemodified', 'content_hash'], array_keys($doc->manifest_entry()));
+        $this->assertSame(
+            ['doc_id', 'timemodified', 'content_hash', 'placement_hash'],
+            array_keys($doc->manifest_entry())
+        );
+        $this->assertSame($doc->to_wire()['placement_hash'], $doc->manifest_entry()['placement_hash']);
+    }
+
+    public function test_placement_hash_follows_section_but_not_content(): void {
+        $page = local_llmchat_test_create_module('page', [
+            'course' => $this->course->id, 'section' => 1, 'name' => 'Blockplan',
+            'content' => '<p>Montag: LF11</p>', 'intro' => '',
+        ]);
+        $id = "{$this->course->id}:{$page->cmid}:page";
+        $before = $this->build($page->cmid)[$id]->to_wire();
+        $this->assertSame(64, strlen($before['placement_hash']));
+        $this->assertSame($before['placement_hash'], $this->build($page->cmid)[$id]->to_wire()['placement_hash']);
+
+        $section = get_fast_modinfo($this->course->id)->get_section_info(1);
+        course_update_section($this->course, $section, ['name' => 'Lernfeld 11']);
+        $renamed = $this->build($page->cmid)[$id]->to_wire();
+        $this->assertNotSame($before['placement_hash'], $renamed['placement_hash']);
+        $this->assertSame($before['content_hash'], $renamed['content_hash']);
+
+        $cm = get_fast_modinfo($this->course->id)->get_cm($page->cmid);
+        moveto_module($cm, get_fast_modinfo($this->course->id)->get_section_info(2));
+        $moved = $this->build($page->cmid)[$id]->to_wire();
+        $this->assertNotSame($renamed['placement_hash'], $moved['placement_hash']);
+        $this->assertSame($before['content_hash'], $moved['content_hash']);
     }
 
     public function test_sha256_is_cached_by_contenthash(): void {

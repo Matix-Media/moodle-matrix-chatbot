@@ -41,8 +41,10 @@ class DocumentIn(BaseModel):
     """One answerable unit of course content, as the plugin builds it.
 
     ``doc_id`` is ``"{course_id}:{cmid}:{part}"``. ``content_hash`` is computed by the
-    plugin over everything that affects the text (metadata, inline text, file hash),
-    so an unchanged document is skipped without re-extraction.
+    plugin over the content (inline text, file hash, external URL), so an unchanged
+    document is skipped without re-extraction. ``placement_hash`` covers where it sits
+    (section, names, header path): when only that changes, the store updates the
+    placement and keeps the extracted content.
     """
 
     doc_id: str = Field(min_length=1, max_length=255)
@@ -62,6 +64,8 @@ class DocumentIn(BaseModel):
     file: FileRef | None = None
     external_url: str | None = None
     content_hash: str = Field(min_length=1, max_length=128)
+    #: Older plugins send none; placement is then compared field by field.
+    placement_hash: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def _payload_matches_kind(self) -> DocumentIn:

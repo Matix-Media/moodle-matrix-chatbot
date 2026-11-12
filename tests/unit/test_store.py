@@ -91,6 +91,33 @@ class TestDocuments:
         assert store.upsert_documents(SITE, [doc()]) == []
         assert not store.document(SITE, "2:10:intro").needs_extraction
 
+    def test_moved_document_takes_its_new_placement_without_reextraction(
+        self, store: Store
+    ) -> None:
+        """A section inserted above shifts this one down; only its position changed."""
+        store.upsert_documents(SITE, [doc(section_id=83, section_order=2)])
+        store.record_extraction(SITE, "2:10:intro", extract_version=1)
+        result = store.upsert_documents_detailed(
+            SITE, [doc(section_id=83, section_order=3, placement_hash="p2")]
+        )
+        assert result.changed == [] and result.relocated == []
+        d = store.document(SITE, "2:10:intro")
+        assert (d.section_id, d.section_order) == (83, 3)
+        assert not d.needs_extraction
+
+    def test_renamed_section_relocates_without_reextraction(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc()])
+        store.record_extraction(SITE, "2:10:intro", extract_version=1)
+        renamed = doc(
+            section_name="Woche 1 (neu)", header_path=["Netzwerke", "Woche 1 (neu)", "Einführung"]
+        )
+        result = store.upsert_documents_detailed(SITE, [renamed])
+        assert result.changed == [] and result.relocated == ["2:10:intro"]
+        d = store.document(SITE, "2:10:intro")
+        assert d.section_name == "Woche 1 (neu)"
+        assert d.header_path == ["Netzwerke", "Woche 1 (neu)", "Einführung"]
+        assert not d.needs_extraction
+
     def test_changed_content_requires_reextraction(self, store: Store) -> None:
         store.upsert_documents(SITE, [doc()])
         store.record_extraction(SITE, "2:10:intro", extract_version=1)
@@ -160,6 +187,29 @@ class TestSyncRuns:
         store.upsert_documents(SITE, [doc("2:11:b", content_hash="changed")], now=115)
         result = store.finish_sync(SITE, "s1", now=120)
         assert result.tombstoned == []
+
+    def test_manifest_requests_documents_whose_placement_changed(self, store: Store) -> None:
+        store.upsert_documents(
+            SITE,
+            [doc("2:10:a", placement_hash="p1"), doc("2:11:b", placement_hash="p1"), doc("2:12:c")],
+        )
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        need = store.apply_manifest(
+            SITE,
+            "s1",
+            {
+                "2:10:a": ("h-2:10:a", "p1"),  # unchanged
+                "2:11:b": ("h-2:11:b", "p2"),  # moved
+                "2:12:c": ("h-2:12:c", "p1"),  # stored before placement hashes existed
+            },
+            now=110,
+        )
+        assert need == ["2:11:b", "2:12:c"]
+
+    def test_manifest_without_placement_hash_compares_content_only(self, store: Store) -> None:
+        store.upsert_documents(SITE, [doc("2:10:a", placement_hash="p1")])
+        store.start_sync(SITE, "s1", mode="full", now=100)
+        assert store.apply_manifest(SITE, "s1", {"2:10:a": ("h-2:10:a", None)}, now=110) == []
 
     def test_documents_pushed_during_the_run_survive_without_sync_id(self, store: Store) -> None:
         """The plugin sends no sync_id with documents; activity during the run counts."""
@@ -332,6 +382,22 @@ class TestReopen:
             Store(tmp_path / "x.db", ring, embed_dim=4),
         ):
             pass
+
+    def test_v1_index_gains_placement_hash(self, tmp_path: Path, ring: KeyRing) -> None:
+        with Store(tmp_path / "x.db", ring, embed_dim=3) as s:
+            s.upsert_documents(SITE, [doc()])
+            con = s.connection
+            con.execute("ALTER TABLE documents DROP COLUMN placement_hash")
+            con.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+            con.commit()
+        with Store(tmp_path / "x.db", ring, embed_dim=3) as s:
+            s.upsert_documents(SITE, [doc(placement_hash="p1")])
+            s.start_sync(SITE, "s1", mode="full", now=100)
+            assert s.apply_manifest(SITE, "s1", {"2:10:intro": ("h-2:10:intro", "p1")}) == []
+            version = s.connection.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            assert version == "2"
 
 
 def ring_master(ring: KeyRing) -> bytes:

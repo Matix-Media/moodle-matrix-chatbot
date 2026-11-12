@@ -27,6 +27,7 @@ import secrets
 import struct
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import Any, BinaryIO, Self
@@ -61,9 +62,29 @@ from moodle_llm_chat.index.models import (
 
 log = structlog.get_logger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 #: A sync run with no activity for this long can no longer tombstone anything.
 SYNC_STALE_AFTER_S = 24 * 3600
+
+#: Placement fields kept in a document's sealed payload (the rest are plain columns).
+_SEALED_PLACEMENT = ("section_name", "module_name", "title", "header_path", "module_url")
+
+
+@dataclass(frozen=True)
+class UpsertResult:
+    #: Content changed: extract (or fetch) again.
+    changed: list[str] = field(default_factory=list)
+    #: Only the header path changed: re-chunk from the stored segments.
+    relocated: list[str] = field(default_factory=list)
+
+
+def _migrate(con: Any, from_version: int) -> None:
+    """Bring an index written by an older build up to :data:`SCHEMA_VERSION`."""
+    if from_version < 2:
+        columns = {r[1] for r in con.execute("PRAGMA table_info(documents)").fetchall()}
+        if "placement_hash" not in columns:
+            con.execute("ALTER TABLE documents ADD COLUMN placement_hash TEXT")
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -111,6 +132,7 @@ CREATE TABLE IF NOT EXISTS documents (
     first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, sync_id TEXT,
     seen_seq INTEGER NOT NULL DEFAULT 0,
     tombstoned_at INTEGER,
+    placement_hash TEXT,
     PRIMARY KEY (site_id, doc_id)
 );
 CREATE INDEX IF NOT EXISTS documents_course ON documents(site_id, course_id);
@@ -372,6 +394,7 @@ class Store:
                     f"{self.path} has schema version {version}; this build supports "
                     f"{SCHEMA_VERSION}. Upgrade rather than risk corrupting the index."
                 )
+            _migrate(con, version)
             stored_dim = meta.get("embed_dim")
             if self._reset_embeddings:
                 con.execute("DELETE FROM chunk_vectors")
@@ -707,47 +730,75 @@ class Store:
         now: int | None = None,
     ) -> list[str]:
         """Upsert documents; return the ids whose content changed (need extraction)."""
+        return self.upsert_documents_detailed(site_id, docs, sync_id=sync_id, now=now).changed
+
+    def upsert_documents_detailed(
+        self,
+        site_id: str,
+        docs: Iterable[DocumentIn],
+        *,
+        sync_id: str | None = None,
+        now: int | None = None,
+    ) -> UpsertResult:
+        """Upsert documents; report which need extraction and which only re-chunking.
+
+        A document whose content is unchanged keeps its extraction, but always takes
+        its new placement: inserting a section shifts every later one, and a stale
+        section order files documents under the wrong section.
+        """
         stamp = _now(now)
-        changed: list[str] = []
+        result = UpsertResult()
         con = self.connection
         with con:
             for d in docs:
                 existing = con.execute(
-                    "SELECT content_hash, tombstoned_at FROM documents "
-                    "WHERE site_id=? AND doc_id=?",
+                    "SELECT content_hash, tombstoned_at, section_id, section_order, payload, "
+                    "placement_hash FROM documents WHERE site_id=? AND doc_id=?",
                     (site_id, d.doc_id),
                 ).fetchone()
+                payload_fields = self._document_payload(d)
                 if (
                     existing is not None
                     and existing["content_hash"] == d.content_hash
                     and existing["tombstoned_at"] is None
                 ):
+                    stored = self._open_json(
+                        self._course_dek(site_id, d.course_id),
+                        existing["payload"],
+                        bound_to=aad("documents", site_id, d.doc_id),
+                    )
+                    moved = (existing["section_id"], existing["section_order"]) != (
+                        d.section_id,
+                        d.section_order,
+                    ) or any(stored.get(k) != payload_fields[k] for k in _SEALED_PLACEMENT)
+                    if moved:
+                        con.execute(
+                            "UPDATE documents SET section_id=?, section_order=?, payload=? "
+                            "WHERE site_id=? AND doc_id=?",
+                            (
+                                d.section_id,
+                                d.section_order,
+                                self._seal_document(site_id, d, payload_fields),
+                                site_id,
+                                d.doc_id,
+                            ),
+                        )
+                        if stored.get("header_path") != payload_fields["header_path"]:
+                            result.relocated.append(d.doc_id)
                     con.execute(
                         "UPDATE documents SET last_seen=?, seen_seq=?, "
-                        "sync_id=COALESCE(?, sync_id) WHERE site_id=? AND doc_id=?",
-                        (stamp, self._seq(), sync_id, site_id, d.doc_id),
+                        "sync_id=COALESCE(?, sync_id), "
+                        "placement_hash=COALESCE(?, placement_hash) WHERE site_id=? AND doc_id=?",
+                        (stamp, self._seq(), sync_id, d.placement_hash, site_id, d.doc_id),
                     )
                     continue
-                payload = self._seal_json(
-                    self._course_dek(site_id, d.course_id),
-                    {
-                        "title": d.title,
-                        "section_name": d.section_name,
-                        "module_name": d.module_name,
-                        "header_path": d.header_path,
-                        "module_url": d.module_url,
-                        "external_url": d.external_url,
-                        "text": d.text,
-                        "filename": d.file.filename if d.file else None,
-                    },
-                    bound_to=aad("documents", site_id, d.doc_id),
-                )
                 con.execute(
                     "INSERT INTO documents (site_id, doc_id, course_id, section_id, "
                     "section_order, cmid, modname, kind, payload, mimetype, filesize, "
                     "blob_sha256, timemodified, content_hash, extract_version, extracted_at, "
-                    "skip_reason, first_seen, last_seen, sync_id, seen_seq, tombstoned_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,NULL) "
+                    "skip_reason, first_seen, last_seen, sync_id, seen_seq, tombstoned_at, "
+                    "placement_hash) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,NULL,?) "
                     "ON CONFLICT(site_id, doc_id) DO UPDATE SET course_id=excluded.course_id, "
                     "section_id=excluded.section_id, section_order=excluded.section_order, "
                     "cmid=excluded.cmid, modname=excluded.modname, kind=excluded.kind, "
@@ -756,7 +807,8 @@ class Store:
                     "timemodified=excluded.timemodified, content_hash=excluded.content_hash, "
                     "extract_version=NULL, skip_reason=NULL, last_seen=excluded.last_seen, "
                     "seen_seq=excluded.seen_seq, "
-                    "sync_id=COALESCE(excluded.sync_id, documents.sync_id), tombstoned_at=NULL",
+                    "sync_id=COALESCE(excluded.sync_id, documents.sync_id), tombstoned_at=NULL, "
+                    "placement_hash=excluded.placement_hash",
                     (
                         site_id,
                         d.doc_id,
@@ -766,7 +818,7 @@ class Store:
                         d.cmid,
                         d.modname,
                         d.kind.value,
-                        payload,
+                        self._seal_document(site_id, d, payload_fields),
                         d.file.mimetype if d.file else None,
                         d.file.filesize if d.file else len((d.text or "").encode("utf-8")),
                         d.file.sha256 if d.file else None,
@@ -776,12 +828,33 @@ class Store:
                         stamp,
                         sync_id,
                         self._seq(),
+                        d.placement_hash,
                     ),
                 )
-                changed.append(d.doc_id)
+                result.changed.append(d.doc_id)
         if sync_id:
             self._touch_sync(site_id, sync_id, stamp)
-        return changed
+        return result
+
+    @staticmethod
+    def _document_payload(d: DocumentIn) -> dict[str, Any]:
+        return {
+            "title": d.title,
+            "section_name": d.section_name,
+            "module_name": d.module_name,
+            "header_path": d.header_path,
+            "module_url": d.module_url,
+            "external_url": d.external_url,
+            "text": d.text,
+            "filename": d.file.filename if d.file else None,
+        }
+
+    def _seal_document(self, site_id: str, d: DocumentIn, payload: dict[str, Any]) -> bytes:
+        return self._seal_json(
+            self._course_dek(site_id, d.course_id),
+            payload,
+            bound_to=aad("documents", site_id, d.doc_id),
+        )
 
     def document(self, site_id: str, doc_id: str) -> Document:
         row = self.connection.execute(
@@ -915,11 +988,15 @@ class Store:
         self,
         site_id: str,
         sync_id: str,
-        entries: Mapping[str, str],
+        entries: Mapping[str, str | tuple[str, str | None]],
         *,
         now: int | None = None,
     ) -> list[str]:
         """Mark every listed document as seen in this run; return the ids to send.
+
+        An entry is a content hash, or ``(content_hash, placement_hash)``. A document
+        is needed when its content changed or, if the plugin sends one, its placement
+        hash differs from the stored one (a moved or renamed section).
 
         Listed-but-changed documents count as seen too: if the plugin then fails to
         push one, the old version is kept rather than deleted.
@@ -929,13 +1006,19 @@ class Store:
         need: list[str] = []
         con = self.connection
         with con:
-            for doc_id, content_hash in entries.items():
+            for doc_id, entry in entries.items():
+                content_hash, placement_hash = entry if isinstance(entry, tuple) else (entry, None)
                 row = con.execute(
-                    "SELECT content_hash, tombstoned_at FROM documents "
+                    "SELECT content_hash, tombstoned_at, placement_hash FROM documents "
                     "WHERE site_id=? AND doc_id=?",
                     (site_id, doc_id),
                 ).fetchone()
-                if row is None or row["tombstoned_at"] is not None or row[0] != content_hash:
+                if (
+                    row is None
+                    or row["tombstoned_at"] is not None
+                    or row["content_hash"] != content_hash
+                    or (placement_hash is not None and row["placement_hash"] != placement_hash)
+                ):
                     need.append(doc_id)
                 if row is not None and row["tombstoned_at"] is None:
                     con.execute(
@@ -1474,6 +1557,26 @@ class Store:
     # ------------------------------------------------------------------ #
     # Jobs (the processing pipeline's persisted queue)
     # ------------------------------------------------------------------ #
+
+    def requeue_failed_jobs(
+        self, stage: str, *, older_than_s: int, priority: int = 1, now: int | None = None
+    ) -> int:
+        """Re-arm ``stage`` jobs that ran out of retries at least ``older_than_s`` ago.
+
+        Only state ``failed`` (temporary errors that exhausted their attempts) is
+        re-armed; ``skipped`` jobs failed for good (404, too large, unsupported).
+        Documents removed since are left alone.
+        """
+        stamp = _now(now)
+        with self.connection as con:
+            n = con.execute(
+                "UPDATE jobs SET state='queued', attempts=0, priority=?, next_attempt_at=?, "
+                "enqueued_at=? WHERE stage=? AND state='failed' AND finished_at<=? "
+                "AND EXISTS (SELECT 1 FROM documents d WHERE d.site_id=jobs.site_id "
+                "  AND d.doc_id=jobs.doc_id AND d.tombstoned_at IS NULL)",
+                (priority, stamp, stamp, stage, stamp - older_than_s),
+            ).rowcount
+        return int(n or 0)
 
     def enqueue_job(
         self,

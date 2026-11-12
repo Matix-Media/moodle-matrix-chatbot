@@ -108,12 +108,17 @@ class CourseTree:
             if d.course_id in course_nodes:
                 grouped.setdefault((d.course_id, d.cmid), []).append(d)
 
-        section_nodes: dict[tuple[int, int], Node] = {}
-        ordered = sorted(grouped.items(), key=lambda kv: (kv[1][0].section_order, kv[1][0].doc_id))
+        # Keyed by id as well as order: until a resync lands, a newly inserted section can
+        # share its order with the section it pushed down.
+        section_nodes: dict[tuple[int, int, int], Node] = {}
+        ordered = sorted(
+            grouped.items(),
+            key=lambda kv: (kv[1][0].section_order, kv[1][0].section_id, kv[1][0].doc_id),
+        )
         for (course_id, _cmid), docs in ordered:
             course_node = course_nodes[course_id]
             first = docs[0]
-            key = (course_id, first.section_order)
+            key = (course_id, first.section_id, first.section_order)
             section = section_nodes.get(key)
             if section is None:
                 name = _unique(
