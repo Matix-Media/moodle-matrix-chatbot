@@ -334,7 +334,7 @@ const BLOCKS = {
         return {
             name: String(entry.name || ''), ref: location.length ? refOf(location[location.length - 1]) : '',
             isfolder: type === 'folder',
-            // Filled where links are resolved: the page (linkEntries) or the server-side renderer.
+            // Filled once the links are resolved (ChatController.linkEntries).
             url: '', hasurl: false,
             detail: String(entry.detail || ''),
             meta: [strings[`toolentry:${type}`] || humanise(type), ...size, formatWhen(entry.modified, strings, locale)]
@@ -443,7 +443,7 @@ export const linkSegments = (segments, links) => segments.map((segment) => {
 
 /**
  * The tool card's title: the first string argument, or for a path argument the name of the place
- * it resolved to (as the server-side renderer does).
+ * it resolved to.
  *
  * @param {Object} args
  * @param {Object} locations

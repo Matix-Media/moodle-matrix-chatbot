@@ -56,6 +56,7 @@ $string['error:userunavailable'] = 'Die Person existiert nicht oder ist gesperrt
 $string['llmchat:manage'] = 'Kurs-Chat verwalten (Synchronisation, Kontingente)';
 $string['llmchat:unlimited'] = 'Kurs-Chat ohne persönliches Token-Limit nutzen';
 $string['llmchat:use'] = 'Kurs-Chat nutzen';
+$string['loadingconversation'] = 'Unterhaltung wird geladen…';
 $string['message'] = 'Nachricht';
 $string['messages'] = 'Nachrichten';
 $string['newconversation'] = 'Neue Unterhaltung';

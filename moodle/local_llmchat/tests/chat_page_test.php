@@ -103,7 +103,7 @@ final class chat_page_test extends \advanced_testcase {
         $this->setUser($user);
         [, $config] = $this->export();
         $this->assertSame(['courseid', 'rootid', 'conversationid', 'preloaded'], array_keys($config));
-        $this->assertSame(['list' => false, 'conversationid' => '', 'lastseq' => 0], $config['preloaded']);
+        $this->assertSame(['list' => false], $config['preloaded']);
         $this->assertStringNotContainsString('lena@example.org', json_encode($config));
     }
 
@@ -285,7 +285,7 @@ final class chat_page_test extends \advanced_testcase {
         global $PAGE;
         $output = $PAGE->get_renderer('core');
         $page = new chat_page(0, '', $conversationid);
-        $page->preload($output);
+        $page->preload();
         $html = $output->render_from_template('local_llmchat/chat_page', $page->export_for_template($output));
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
@@ -294,19 +294,22 @@ final class chat_page_test extends \advanced_testcase {
         return [new \DOMXPath($dom), $page->js_config()];
     }
 
-    public function test_page_arrives_with_the_list_and_the_open_conversation(): void {
+    /**
+     * Whether a region of the rendered page is hidden.
+     *
+     * @param \DOMXPath $x
+     * @param string $region
+     * @return bool
+     */
+    private static function hidden(\DOMXPath $x, string $region): bool {
+        $node = $x->query('//*[@data-region="' . $region . '"]')->item(0);
+        return in_array('d-none', explode(' ', $node->getAttribute('class')), true);
+    }
+
+    public function test_page_arrives_with_the_list_and_leaves_the_conversation_to_the_client(): void {
         $t = $this->fake_api();
         $t->routes['GET /api/conversations'] = fake_transport::json([
             ['id' => 'c1', 'title' => 'Raumfrage'], ['id' => 'c2', 'title' => ''],
-        ]);
-        $t->routes['GET /api/conversations/c1'] = fake_transport::json([
-            'conversation' => ['id' => 'c1'],
-            'events' => [
-                ['seq' => 1, 'turn_id' => 't1', 'type' => 'user_message', 'text' => 'Wo ist der Unterricht?'],
-                ['seq' => 4, 'turn_id' => 't1', 'type' => 'final', 'text' => 'In Raum B204.', 'citations' => []],
-            ],
-            'last_seq' => 4,
-            'tools' => [],
         ]);
         [$x, $config] = $this->preloaded_page('c1');
 
@@ -316,20 +319,25 @@ final class chat_page_test extends \advanced_testcase {
         $this->assertStringContainsString(get_string('untitled', 'local_llmchat'), $items->item(1)->textContent);
         $this->assertSame(0, $x->query('//*[@data-region="conversations"]//*[contains(., "'
             . get_string('noconversations', 'local_llmchat') . '")]')->length);
-        $messages = $x->query('//*[@data-region="messages"]')->item(0);
-        $this->assertStringContainsString('In Raum B204.', $messages->textContent);
-        $this->assertStringContainsString('d-none', $x->query('//*[@data-region="empty"]')->item(0)->getAttribute('class'));
-        $this->assertSame(['list' => true, 'conversationid' => 'c1', 'lastseq' => 4], $config['preloaded']);
+        $this->assertSame(['list' => true], $config['preloaded']);
+        $this->assertSame('c1', $config['conversationid']);
 
-        // The user's chat token, never the site secret, and the stored history.
-        foreach ($t->requests as $req) {
-            $this->assertStringNotContainsString('site-secret-value', implode("\n", $req['headers']));
-            $this->assertMatchesRegularExpression('/^Authorization: Bearer [\w-]+\.[\w-]+\.[\w-]+$/', $req['headers'][0]);
-        }
-        $this->assertStringEndsWith('/api/conversations/c1', $t->requests[1]['url']);
+        // Only the list: the chat is the client's, which shows it loading until then.
+        $this->assertSame(['GET /api/conversations'], $t->sequence());
+        $this->assertSame(0, $x->query('//*[@data-region="messages"]//*[contains(@class, "local-llmchat-msg")]')->length);
+        $this->assertTrue(self::hidden($x, 'empty'), 'no empty state for a conversation that is about to load');
+        $this->assertFalse(self::hidden($x, 'loading'));
+        $this->assertStringContainsString(
+            get_string('loadingconversation', 'local_llmchat'),
+            $x->query('//*[@data-region="loading"]')->item(0)->textContent
+        );
+
+        // The user's chat token, never the site secret.
+        $this->assertStringNotContainsString('site-secret-value', implode("\n", $t->requests[0]['headers']));
+        $this->assertMatchesRegularExpression('/^Authorization: Bearer [\w-]+\.[\w-]+\.[\w-]+$/', $t->requests[0]['headers'][0]);
     }
 
-    public function test_without_a_conversation_only_the_list_is_fetched(): void {
+    public function test_without_a_conversation_the_page_shows_the_empty_state(): void {
         $t = $this->fake_api();
         $t->routes['GET /api/conversations'] = fake_transport::json([]);
         [$x, $config] = $this->preloaded_page();
@@ -338,38 +346,29 @@ final class chat_page_test extends \advanced_testcase {
             get_string('noconversations', 'local_llmchat'),
             $x->query('//*[@data-region="conversations"]')->item(0)->textContent
         );
-        $this->assertStringNotContainsString('d-none', $x->query('//*[@data-region="empty"]')->item(0)->getAttribute('class'));
-        $this->assertSame(['list' => true, 'conversationid' => '', 'lastseq' => 0], $config['preloaded']);
+        $this->assertFalse(self::hidden($x, 'empty'));
+        $this->assertTrue(self::hidden($x, 'loading'));
+        $this->assertSame(['list' => true], $config['preloaded']);
     }
 
-    public function test_api_down_leaves_everything_to_the_client(): void {
+    public function test_api_down_leaves_the_list_to_the_client(): void {
         $t = $this->fake_api();
         $t->handler = fn() => new response(0, '', 'connection refused');
         [$x, $config] = $this->preloaded_page('c1');
         $this->assertDebuggingCalled();
-        $this->assertSame(['list' => false, 'conversationid' => '', 'lastseq' => 0], $config['preloaded']);
+        $this->assertSame(['list' => false], $config['preloaded']);
         $this->assertStringContainsString(
             get_string('noconversations', 'local_llmchat'),
             $x->query('//*[@data-region="conversations"]')->item(0)->textContent
         );
-        $this->assertSame(['GET /api/conversations'], $t->sequence(), 'no second wait once the API failed');
-    }
-
-    public function test_unknown_conversation_is_left_to_the_client(): void {
-        $t = $this->fake_api();
-        $t->routes['GET /api/conversations'] = fake_transport::json([['id' => 'c1', 'title' => 'Meins']]);
-        $t->routes['GET /api/conversations/zz'] = fake_transport::json(['detail' => 'not found'], 404);
-        [$x, $config] = $this->preloaded_page('zz');
-        $this->assertDebuggingCalled();
-        $this->assertSame(['list' => true, 'conversationid' => '', 'lastseq' => 0], $config['preloaded']);
-        $this->assertStringNotContainsString('d-none', $x->query('//*[@data-region="empty"]')->item(0)->getAttribute('class'));
+        $this->assertFalse(self::hidden($x, 'loading'), 'the client still opens the conversation');
+        $this->assertSame(['GET /api/conversations'], $t->sequence());
     }
 
     public function test_compact_block_never_waits_for_the_api(): void {
-        global $PAGE;
         $t = $this->fake_api();
         $page = new chat_page(0, '', 'c1', true, 'block-llmchat-3');
-        $page->preload($PAGE->get_renderer('core'));
+        $page->preload();
         $this->assertSame([], $t->requests);
         $this->assertFalse($page->js_config()['preloaded']['list']);
     }

@@ -1,5 +1,5 @@
 {
-  "$comment": "Shared by tests/js/tooldetails.test.mjs and tests/tool_display_test.php: the PHP port (classes/output/tool_display.php) must describe tool calls exactly like amd/src/tooldetails.js. Locale-dependent values (dates, numbers >= 1000) are tested on each side separately.",
+  "$comment": "Vectors for tests/js/tooldetails.test.mjs: how amd/src/tooldetails.js describes tool calls. Locale-dependent values (dates, numbers >= 1000) are tested separately.",
   "strings": {
     "toolarg:query": "Search for",
     "toolarg:k": "Max. results",

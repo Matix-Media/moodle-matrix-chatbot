@@ -1,5 +1,5 @@
 {
-  "$comment": "Shared by tests/js/markdown.test.mjs and tests/markdown_test.php: the PHP port must render exactly what amd/src/markdown.js renders. URLs are given already normalised (the JS resolves them with new URL()).",
+  "$comment": "Vectors for tests/js/markdown.test.mjs: what amd/src/markdown.js renders. URLs are given already normalised (the JS resolves them with new URL()).",
   "vectors": [
     {
       "name": "plain",

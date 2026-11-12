@@ -13,8 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
-// Tests for local_llmchat/markdown against the vectors the PHP port is tested with too
-// (tests/fixtures/markdown_vectors.json). Run: node --test moodle/local_llmchat/tests/js/
+// Tests for local_llmchat/markdown against tests/fixtures/markdown_vectors.json. Run: node --test moodle/local_llmchat/tests/js/
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';

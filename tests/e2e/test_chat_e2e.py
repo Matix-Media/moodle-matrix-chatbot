@@ -167,7 +167,7 @@ class TestStudentChat:
         conversation.first.click()
         student.wait_answer("Gespeicherte Antwort")
 
-    def test_reloaded_conversation_arrives_rendered_by_the_server(
+    def test_reloaded_conversation_is_rendered_by_the_client_while_loading_shows(
         self, student: Chat, mock: Mock
     ) -> None:
         mock.script(
@@ -178,24 +178,49 @@ class TestStudentChat:
         student.wait_answer("Raum B204")
         conversation_id = current_conversation(student)
 
+        # Hold the history request so the page is caught while the conversation loads.
+        history = re.compile(rf"/api/conversations/{re.escape(conversation_id)}(\?|$)")
+        held: list[Any] = []
+
+        def hold(route: Any) -> None:
+            held.append(route)
+
+        student.page.route(history, hold)
         api_calls = record_conversation_requests(student)
         student.open(f"?conversation={conversation_id}")
+
+        # The server sends the list with the conversation marked, the chat itself loads.
+        active = student.page.locator("[data-region=conversations] [aria-current=true]")
+        expect(active).to_have_attribute("data-id", conversation_id)
+        loading = student.page.locator("[data-region=loading]")
+        expect(loading).to_be_visible()
+        expect(student.page.locator("[data-region=empty]")).to_be_hidden()
+        expect(student.page.locator(".local-llmchat-msg-user")).to_have_count(0)
+        for _ in range(150):
+            if held:
+                break
+            student.page.wait_for_timeout(100)
+        assert held, "the client fetches the conversation"
+        held[0].continue_()
+        student.page.unroute(history, hold)
+
+        expect(loading).to_be_hidden()
         answer = student.last_answer()
         expect(answer).to_contain_text("Raum B204")
         expect(answer.locator("a.local-llmchat-cite")).to_have_count(1)
         tool = student.page.locator("[data-region=tool]").first
         expect(tool.locator("[data-region=done]")).to_be_visible()
         expect(tool.locator("[data-region=spinner]")).to_be_hidden()
-        # The server renders the result's display blocks too, with the hit linked to its source.
         tool.locator("[data-action=toggle]").first.click()
         hit = tool.locator(".local-llmchat-hits li").first
         expect(hit).to_contain_text("B204")
         expect(hit.locator("a")).to_have_attribute("href", re.compile(r"/mod/page/view\.php\?id="))
-        active = student.page.locator("[data-region=conversations] [aria-current=true]")
         expect(active).to_have_attribute("data-id", conversation_id)
-        assert api_calls == [], "list and history came with the page"
+        assert [history.search(url) is not None for url in api_calls] == [True], (
+            "only the history is fetched; the list came with the page"
+        )
 
-        # The adopted conversation keeps working: a follow-up streams below the history.
+        # The conversation keeps working: a follow-up streams below the history.
         mock.script({"text": "Und dienstags in B205."})
         student.ask("Und dienstags?")
         student.wait_answer("B205")

@@ -51,20 +51,17 @@ final class api_client_test extends \advanced_testcase {
         $this->assertSame('[{"doc_id":"1:2:intro"}]', $req['body']);
     }
 
-    public function test_conversation_routes_authenticate_as_the_user(): void {
+    public function test_conversation_list_authenticates_as_the_user(): void {
         $t = new fake_transport();
         $t->routes['GET /api/conversations'] = fake_transport::json([['id' => 'c1', 'title' => 'Frage']]);
-        $t->routes['GET /api/conversations/a-b_c'] = fake_transport::json(['events' => [], 'last_seq' => 0]);
         $client = new api_client('https://api.example', 'sekret', $t);
 
         $this->assertSame([['id' => 'c1', 'title' => 'Frage']], $client->conversations('chat.jwt'));
-        $this->assertSame(['events' => [], 'last_seq' => 0], $client->conversation('chat.jwt', 'a-b_c'));
-        foreach ($t->requests as $req) {
-            $this->assertSame('GET', $req['method']);
-            $this->assertContains('Authorization: Bearer chat.jwt', $req['headers']);
-            $this->assertStringNotContainsString('sekret', implode("\n", $req['headers']));
-        }
-        $this->assertSame('https://api.example/api/conversations/a-b_c', $t->requests[1]['url']);
+        $req = $t->requests[0];
+        $this->assertSame('GET', $req['method']);
+        $this->assertSame('https://api.example/api/conversations', $req['url']);
+        $this->assertContains('Authorization: Bearer chat.jwt', $req['headers']);
+        $this->assertStringNotContainsString('sekret', implode("\n", $req['headers']));
     }
 
     public function test_chat_token_is_redacted_from_errors(): void {
