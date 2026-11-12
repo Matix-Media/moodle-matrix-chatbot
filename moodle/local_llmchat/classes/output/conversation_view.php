@@ -129,8 +129,8 @@ final class conversation_view {
     /**
      * Fold events into user messages and assistant turns, as chat.js's handlers build the DOM:
      * the body in stream order, a new thinking block whenever the model starts thinking again,
-     * consecutive tool cards in one group, and a new text segment once anything was placed after
-     * the current one.
+     * consecutive thinking blocks and tool cards in one activity group, and a new text segment
+     * once anything was placed after the current one.
      *
      * @param array $events
      * @return array [{role: user, text} | {role: assistant, parts, tools, ...}]
@@ -182,11 +182,12 @@ final class conversation_view {
             switch ($type) {
                 case 'thinking':
                     if (!$wasthinking) {
-                        $m['parts'][] = ['kind' => 'thinking', 'text' => ''];
+                        $last = $this->activity($m['parts']);
+                        $m['parts'][$last]['items'][] = ['kind' => 'thinking', 'text' => ''];
                     }
-                    // The latest thinking block gets the delta.
-                    $blocks = array_keys(array_column($m['parts'], 'kind'), 'thinking', true);
-                    $m['parts'][end($blocks)]['text'] .= (string)($event['delta'] ?? '');
+                    // A run of thinking is the latest item of the latest group.
+                    $item = count($m['parts'][$last]['items']) - 1;
+                    $m['parts'][$last]['items'][$item]['text'] .= (string)($event['delta'] ?? '');
                     break;
                 case 'token':
                     $i = $segment();
@@ -199,11 +200,7 @@ final class conversation_view {
                 case 'tool_call':
                     $id = (string)($event['id'] ?? '');
                     $m['tools'][$id] = ['call' => $event, 'result' => null];
-                    if ($m['parts'][$last]['kind'] === 'tools') {
-                        $m['parts'][$last]['ids'][] = $id;
-                    } else {
-                        $m['parts'][] = ['kind' => 'tools', 'ids' => [$id]];
-                    }
+                    $m['parts'][$this->activity($m['parts'])]['items'][] = ['kind' => 'tool', 'id' => $id];
                     break;
                 case 'tool_result':
                     $id = (string)($event['id'] ?? '');
@@ -259,6 +256,22 @@ final class conversation_view {
     }
 
     /**
+     * The activity group (thinking blocks and tool cards) to add to: the last part if it is one,
+     * else a new one.
+     *
+     * @param array $parts the turn's parts, extended in place
+     * @return int index of the group
+     */
+    private function activity(array &$parts): int {
+        $last = count($parts) - 1;
+        if ($parts[$last]['kind'] !== 'tools') {
+            $parts[] = ['kind' => 'tools', 'items' => []];
+            $last++;
+        }
+        return $last;
+    }
+
+    /**
      * Resolve the paths of all tool cards at once.
      *
      * @param array $messages
@@ -308,20 +321,22 @@ final class conversation_view {
                     $parts[] = ['istext' => true, 'istools' => false, 'ishtml' => false,
                         'html' => markdown::render($part['raw'], $part['citations'])];
                     break;
-                case 'thinking':
-                    // The client hides a thinking block that streamed no text.
-                    if (trim($part['text']) !== '') {
-                        $parts[] = $html($this->output->render_from_template('local_llmchat/thinking', [
-                            'uniqid' => \html_writer::random_id('llmchat-thinking'), 'done' => true, 'text' => $part['text'],
-                        ]));
-                    }
-                    break;
                 case 'tools':
-                    $cards = '';
-                    foreach ($part['ids'] as $id) {
-                        $cards .= $this->render_tool($turn['tools'][$id]['call'], $turn['tools'][$id]['result'], $meta, $links);
+                    $items = '';
+                    foreach ($part['items'] as $item) {
+                        if ($item['kind'] === 'tool') {
+                            $tool = $turn['tools'][$item['id']];
+                            $items .= $this->render_tool($tool['call'], $tool['result'], $meta, $links);
+                        } else if (trim($item['text']) !== '') {
+                            // The client drops a thinking block that streamed no text.
+                            $items .= $this->output->render_from_template('local_llmchat/thinking', [
+                                'uniqid' => \html_writer::random_id('llmchat-thinking'), 'done' => true, 'text' => $item['text'],
+                            ]);
+                        }
                     }
-                    $parts[] = ['istext' => false, 'istools' => true, 'ishtml' => false, 'html' => $cards];
+                    if ($items !== '') {
+                        $parts[] = ['istext' => false, 'istools' => true, 'ishtml' => false, 'html' => $items];
+                    }
                     break;
                 case 'question':
                     // An unanswered question of a finished turn can no longer be answered.

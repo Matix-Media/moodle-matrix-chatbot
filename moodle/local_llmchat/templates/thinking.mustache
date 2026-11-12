@@ -17,8 +17,9 @@
 {{!
     @template local_llmchat/thinking
 
-    Collapsible reasoning block, always collapsed until the reader opens it; while the model thinks
-    it shows a spinner. "done" renders a finished block with its "text" (a stored conversation).
+    Collapsible reasoning block, an item of the activity group it shares with the tool cards;
+    always collapsed until the reader opens it, while the model thinks it shows a spinner. "done"
+    renders a finished block with its "text" (a stored conversation).
 
     Example context (json):
     {
@@ -27,7 +28,7 @@
         "text": "Die Frage betrifft den Stundenplan; ich suche nach dem Raum."
     }
 }}
-<div class="local-llmchat-thinking" data-region="thinking-block">
+<div class="list-group-item local-llmchat-thinking" data-region="thinking-block">
     <button type="button" class="btn btn-link btn-sm p-0 text-muted local-llmchat-toggle" data-action="toggle"
         aria-expanded="false" aria-controls="{{uniqid}}">
         <span class="local-llmchat-chevron">{{#pix}} t/expandedchevron, core {{/pix}}</span>{{#pix}} thinking, local_llmchat {{/pix}}<span class="{{#done}}d-none{{/done}}" data-region="label-active">{{#str}} thinking, local_llmchat {{/str}}</span><span class="{{^done}}d-none{{/done}}" data-region="label-done">{{#str}} thoughts, local_llmchat {{/str}}</span>
