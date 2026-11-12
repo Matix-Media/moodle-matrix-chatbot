@@ -1,9 +1,14 @@
 """Chat turns: background tasks, a persisted event log, live subscribers.
 
-A turn is owned by an ``asyncio.Task`` here, not by any websocket. Every event is
-appended (sealed, with a per-conversation ``seq``) to the store *before* it is
-published, so a client that drops and reconnects gets exactly the events it missed
-via :meth:`ChatService.replay`, then live ones via :meth:`ChatService.subscribe`.
+A turn is owned by an ``asyncio.Task`` here, not by any websocket. Every event gets a
+per-conversation ``seq`` and is stored (sealed) before it is published, except streamed
+``token``/``thinking`` deltas: those are published one by one but buffered, and each
+contiguous run is stored as *one* event when it ends (at the next event of another kind,
+or when the turn ends however it ends). A client that drops and reconnects gets exactly
+what it missed via :meth:`ChatService.replay` (stored events plus the buffered run,
+a partly seen stored run trimmed to its unseen part), then live events via
+:meth:`ChatService.subscribe`. A hard crash loses only the run being streamed; the turn
+is then marked interrupted and can be continued from its checkpoint.
 
 * One turn per conversation at a time; a resend with the same ``client_msg_id`` is
   deduplicated.
@@ -14,6 +19,7 @@ via :meth:`ChatService.replay`, then live ones via :meth:`ChatService.subscribe`
 * On startup, :meth:`ChatService.recover` marks turns that were running as
   ``interrupted``; :meth:`ChatService.continue_turn` resumes them from the last
   checkpoint (completed tool calls are not repeated).
+* When a turn ends, the conversation's superseded LangGraph checkpoints are pruned.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from moodle_llm_chat.agent.checkpoint import thread_id_for
 from moodle_llm_chat.agent.citations import CitationRef, CitationRegistry
 from moodle_llm_chat.agent.context import AccessChecker, RunContext
 from moodle_llm_chat.agent.events import (
+    STREAMED,
     CancelledEvent,
     ErrorEvent,
     QuestionEvent,
@@ -84,6 +91,8 @@ class ChatService:
         self.clock = clock
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._subs: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+        #: The streamed run being published per conversation, not stored yet.
+        self._runs: dict[str, list[dict[str, Any]]] = {}
         self._shutting_down = False
 
     # ------------------------------------------------------------------ #
@@ -106,30 +115,63 @@ class ChatService:
         self, v: VerifiedToken, conversation_id: str, *, after_seq: int
     ) -> list[dict[str, Any]]:
         try:
-            return [
-                event
-                for _, event in self.store.events(
-                    v.site.site_id, v.scope.user_id, conversation_id, after_seq=after_seq
-                )
-            ]
+            stored = self.store.events(
+                v.site.site_id, v.scope.user_id, conversation_id, after_seq=after_seq
+            )
         except StoreError as exc:
             raise ChatError("not_found", "Unterhaltung nicht gefunden.") from exc
+        buffered = [e for e in self._runs.get(conversation_id, ()) if e["seq"] > after_seq]
+        return [event for _, event in stored] + buffered
 
     def is_running(self, conversation_id: str) -> bool:
         task = self._tasks.get(conversation_id)
         return task is not None and not task.done()
 
     def _publish(self, v: VerifiedToken, conversation_id: str, event: dict[str, Any]) -> None:
-        seq = self.store.append_event(
-            v.site.site_id, v.scope.user_id, conversation_id, event.get("turn_id", ""), event
-        )
-        event = dict(event, seq=seq)
+        event = dict(event, seq=self.store.next_seq(conversation_id))
+        run = self._runs.get(conversation_id)
+        if run and (
+            event["type"] != run[-1]["type"] or event.get("turn_id") != run[-1].get("turn_id")
+        ):
+            self._flush(v, conversation_id)
+        if event["type"] in STREAMED:
+            self._runs.setdefault(conversation_id, []).append(event)
+        else:
+            self._store(v, conversation_id, event)
         for queue in list(self._subs.get(conversation_id, ())):
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
                 # A stuck client: drop it; it will resume from its last seq on reconnect.
                 self.unsubscribe(conversation_id, queue)
+
+    def _flush(self, v: VerifiedToken, conversation_id: str) -> None:
+        """Store the buffered streamed run as one event carrying the last delta's seq.
+
+        Its deltas went out with consecutive seqs (nothing else is published in between);
+        ``parts`` records their lengths so a client that saw part of the run live can be
+        sent just the rest (see :meth:`Store.events`).
+        """
+        run = self._runs.pop(conversation_id, None)
+        if not run:
+            return
+        deltas = [e.get("delta") for e in run]
+        merged = dict(
+            run[-1],
+            delta=None if all(d is None for d in deltas) else "".join(d or "" for d in deltas),
+            parts=[len(d or "") for d in deltas],
+        )
+        self._store(v, conversation_id, merged)
+
+    def _store(self, v: VerifiedToken, conversation_id: str, event: dict[str, Any]) -> None:
+        self.store.append_event(
+            v.site.site_id,
+            v.scope.user_id,
+            conversation_id,
+            event.get("turn_id", ""),
+            event,
+            seq=event["seq"],
+        )
 
     # ------------------------------------------------------------------ #
     # Commands
@@ -323,6 +365,21 @@ class ChatService:
         )
 
     async def _run(
+        self, v: VerifiedToken, conversation_id: str, turn_id: str, **kwargs: Any
+    ) -> None:
+        try:
+            await self._turn(v, conversation_id, turn_id, **kwargs)
+        finally:
+            # However the turn ended: store the run in flight, then drop the
+            # checkpoints the next turn will not need.
+            self._flush(v, conversation_id)
+            thread = thread_id_for(v.site.site_id, v.scope.user_id, conversation_id)
+            try:
+                self.runner.prune_thread(thread)
+            except Exception:
+                log.exception("chat.prune_failed", conversation=conversation_id)
+
+    async def _turn(
         self,
         v: VerifiedToken,
         conversation_id: str,

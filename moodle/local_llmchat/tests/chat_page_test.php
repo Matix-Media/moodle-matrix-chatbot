@@ -321,12 +321,12 @@ final class chat_page_test extends \advanced_testcase {
         $this->assertStringContainsString('d-none', $x->query('//*[@data-region="empty"]')->item(0)->getAttribute('class'));
         $this->assertSame(['list' => true, 'conversationid' => 'c1', 'lastseq' => 4], $config['preloaded']);
 
-        // The user's chat token, never the site secret, and the compact history.
+        // The user's chat token, never the site secret, and the stored history.
         foreach ($t->requests as $req) {
             $this->assertStringNotContainsString('site-secret-value', implode("\n", $req['headers']));
             $this->assertMatchesRegularExpression('/^Authorization: Bearer [\w-]+\.[\w-]+\.[\w-]+$/', $req['headers'][0]);
         }
-        $this->assertStringEndsWith('/api/conversations/c1?compact=true', $t->requests[1]['url']);
+        $this->assertStringEndsWith('/api/conversations/c1', $t->requests[1]['url']);
     }
 
     public function test_without_a_conversation_only_the_list_is_fetched(): void {

@@ -8,7 +8,10 @@ a write-through cache:
 * every ``put`` / ``put_writes`` persists exactly the entries it added, one sealed
   row each (no whole-thread rewrites as conversations grow);
 * everything is sealed with the conversation owner's chat key, bound by AAD to its
-  row, so one user's agent state is unreadable with another user's key.
+  row, so one user's agent state is unreadable with another user's key;
+* :meth:`EncryptedCheckpointer.prune` keeps only the latest checkpoint of a thread.
+  Every checkpoint version of the ``messages`` channel holds the whole message list,
+  so an unpruned conversation grows quadratically.
 
 Thread ids are ``"<site_id>:<user_id>:<conversation_id>"`` (see :func:`thread_id_for`),
 which is how the owner — and so the key — is known.
@@ -21,6 +24,7 @@ import json
 from collections.abc import Iterator, Sequence
 from typing import Any
 
+import structlog
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
     ChannelVersions,
@@ -32,6 +36,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from moodle_llm_chat.crypto.envelope import aad, open_box, seal
 from moodle_llm_chat.index.store import Store
+
+log = structlog.get_logger(__name__)
 
 
 def thread_id_for(site_id: str, user_id: int, conversation_id: str) -> str:
@@ -221,6 +227,54 @@ class EncryptedCheckpointer(InMemorySaver):
                 )
             )
         self._store.ckpt_put(writes=rows)
+
+    def prune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
+        """Drop all but the latest checkpoint per namespace (``"delete"``: drop everything).
+
+        The latest checkpoint keeps its pending writes (an open ``interrupt``, tool calls
+        that already finished) and the blobs it references, which is all that resuming
+        or continuing a turn reads. A thread with ``DeltaChannel`` state is left alone:
+        its values are rebuilt from older checkpoints.
+        """
+        if strategy not in ("keep_latest", "delete"):
+            raise ValueError(f"unknown prune strategy {strategy!r}")
+        for thread in thread_ids:
+            if strategy == "delete":
+                self.delete_thread(thread)
+            else:
+                self._keep_latest(thread)
+
+    def _keep_latest(self, thread: str) -> None:
+        self._ensure(thread)
+        drop: list[tuple[str, str]] = []
+        keep_blobs: set[tuple[str, str, str]] = set()
+        for ns, checkpoints in self.storage.get(thread, {}).items():
+            if not checkpoints:
+                continue
+            latest = max(checkpoints)
+            checkpoint = self.serde.loads_typed(checkpoints[latest][0])
+            if checkpoint.get("counters_since_delta_snapshot"):
+                log.warning("checkpoint.prune_skipped_delta_channel", thread=thread)
+                return
+            keep_blobs |= {(ns, ch, str(v)) for ch, v in checkpoint["channel_versions"].items()}
+            drop += [(ns, cid) for cid in checkpoints if cid != latest]
+        drop_blobs = [
+            key
+            for key in self.blobs
+            if key[0] == thread and (key[1], key[2], str(key[3])) not in keep_blobs
+        ]
+        if not drop and not drop_blobs:
+            return
+        for ns, cid in drop:
+            del self.storage[thread][ns][cid]
+            self.writes.pop((thread, ns, cid), None)
+        for key in drop_blobs:
+            del self.blobs[key]
+        self._store.ckpt_prune(
+            thread,
+            checkpoints=drop,
+            blobs=[(ns, channel, str(version)) for _, ns, channel, version in drop_blobs],
+        )
 
     def delete_thread(self, thread_id: str) -> None:
         super().delete_thread(thread_id)

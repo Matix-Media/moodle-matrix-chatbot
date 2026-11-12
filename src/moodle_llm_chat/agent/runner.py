@@ -16,6 +16,7 @@ calling on providers that verify them.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -118,6 +119,14 @@ class AgentRunner:
         self.max_steps = max_steps
         self.show_thinking = show_thinking
         self._estimate = estimate_tokens
+
+    def prune_thread(self, thread_id: str) -> None:
+        """Drop the thread's superseded checkpoints, if the checkpointer can."""
+        prune = getattr(self.checkpointer, "prune", None)
+        if prune is None:
+            return
+        with contextlib.suppress(NotImplementedError):  # e.g. InMemorySaver in tests
+            prune([thread_id])
 
     def _graph(self, ctx: RunContext, wrap_up: _WrapUp) -> Any:
         return create_agent(

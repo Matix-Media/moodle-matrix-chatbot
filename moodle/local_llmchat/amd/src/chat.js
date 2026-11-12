@@ -1334,8 +1334,8 @@ class ChatController {
         this.enqueue(async() => {
             let data;
             try {
-                // Compact: streamed deltas arrive folded, one render per text run instead of per token.
-                data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}?compact=true`);
+                // Stored history holds one event per streamed run, so one render per text run.
+                data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
             } catch (e) {
                 if (restore && this.conversationId === id) {
                     Log.debug(e);

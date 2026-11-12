@@ -64,7 +64,7 @@ final class api_client_test extends \advanced_testcase {
             $this->assertContains('Authorization: Bearer chat.jwt', $req['headers']);
             $this->assertStringNotContainsString('sekret', implode("\n", $req['headers']));
         }
-        $this->assertSame('https://api.example/api/conversations/a-b_c?compact=true', $t->requests[1]['url']);
+        $this->assertSame('https://api.example/api/conversations/a-b_c', $t->requests[1]['url']);
     }
 
     public function test_chat_token_is_redacted_from_errors(): void {

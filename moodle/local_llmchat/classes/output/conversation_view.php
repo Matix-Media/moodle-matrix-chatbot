@@ -89,7 +89,7 @@ final class conversation_view {
     /**
      * Render the completed turns.
      *
-     * @param array $events stored events in seq order (ideally compacted by the service)
+     * @param array $events stored events in seq order (one event per streamed run)
      * @param array $tools tool metadata from the API's manifest [{name, label, icon, ...}]
      * @return array{html: string, lastseq: int} lastseq: the seq of the last rendered event (0: none)
      */
