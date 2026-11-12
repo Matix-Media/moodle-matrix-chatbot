@@ -8,7 +8,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from moodle_llm_chat.agent.context import RunContext
-from moodle_llm_chat.agent.paths import Node, NodeKind
+from moodle_llm_chat.agent.paths import CourseTree, Node, NodeKind
 from moodle_llm_chat.agent.timeparse import format_date
 from moodle_llm_chat.agent.tools.base import Tool, ToolResult, ToolUI
 from moodle_llm_chat.agent.tools.common import TimeFilter, scope_doc_ids, time_bounds
@@ -62,25 +62,33 @@ def _size(document: Document) -> str:
 NO_ACCESS = "Auf diese Datei hast du gerade keinen Zugriff."
 
 
-def _notice(text: str, code: str, level: Literal["info", "warning"] = "info") -> ToolResult:
-    return ToolResult(text=text, display=[NoticeBlock(level=level, code=code, text=text)])
+def _notice(
+    text: str, code: str, level: Literal["info", "warning"] = "info", *, shown: str | None = None
+) -> ToolResult:
+    """``text`` for the model; ``shown`` (default: the same) for the card, without paths."""
+    return ToolResult(text=text, display=[NoticeBlock(level=level, code=code, text=shown or text)])
+
+
+def _display_name(node: Node) -> str:
+    return node.segment.name if node.segment else node.name
 
 
 def _entry(node: Node) -> Entry:
+    location = CourseTree.location(node)
     if node.document is None:
         return Entry(
-            name=node.name,
+            name=_display_name(node),
             type="folder",
-            path=node.path,
+            location=location,
             detail=node.course.fullname if node.course else "",
             count=len(node.children),
             modified=node.modified or None,
         )
     d = node.document
     return Entry(
-        name=node.name,
+        name=_display_name(node),
         type=d.kind.value,
-        path=node.path,
+        location=location,
         pages=d.page_count if d.page_count > 1 else None,
         chars=d.char_count or None,
         modified=d.timemodified or None,
@@ -115,7 +123,7 @@ class ListDir(Tool[PathArgs]):
             raise ToolInputError(f"{node.path} ist eine Datei — nutze read_file oder stat_file")
         children = await _visible_children(ctx, node)
         if not children:
-            return _notice(f"{node.path}: (leer)", "empty")
+            return _notice(f"{node.path}: (leer)", "empty", shown="(leer)")
         now = ctx.now()
         lines = [f"{node.path}:"]
         for child in children:
@@ -132,7 +140,9 @@ class ListDir(Tool[PathArgs]):
                 lines.append(f"  [{kind}] {child.name} — {_size(d)}, geändert {changed}")
         return ToolResult(
             text="\n".join(lines),
-            display=[EntriesBlock(path=node.path, items=[_entry(c) for c in children])],
+            display=[
+                EntriesBlock(location=ctx.tree.location(node), items=[_entry(c) for c in children])
+            ],
         )
 
 
@@ -220,7 +230,11 @@ class ReadFile(Tool[ReadArgs]):
                 raise ToolInputError(f"Seite {args.page} gibt es in {node.path} nicht")
         if not segments:
             reason = document.skip_reason or "noch nicht verarbeitet"
-            return _notice(f"{node.path} enthält keinen lesbaren Text ({reason}).", "no_text")
+            return _notice(
+                f"{node.path} enthält keinen lesbaren Text ({reason}).",
+                "no_text",
+                shown=f"Kein lesbarer Text ({reason}).",
+            )
 
         parts: list[str] = []
         starts: list[tuple[int, int | None]] = []
@@ -247,7 +261,8 @@ class ReadFile(Tool[ReadArgs]):
             display=[
                 TextBlock(
                     text=clip(window),
-                    title=node.path,
+                    title=_display_name(node),
+                    location=ctx.tree.location(node),
                     cite=n,
                     start=args.offset,
                     end=end,
@@ -286,7 +301,7 @@ class ListDocuments(Tool[ListDocumentsArgs]):
         lines = [
             f"{format_date(d.timemodified, now=now)}  {ctx.tree.path_for(d.doc_id)}" for d in docs
         ]
-        nodes = [ctx.tree.resolve(path) for d in docs if (path := ctx.tree.path_for(d.doc_id))]
+        nodes = [node for d in docs if (node := ctx.tree.node_for(d.doc_id))]
         return ToolResult(
             text="\n".join(lines),
             display=[EntriesBlock(items=[_entry(node) for node in nodes])],

@@ -49,7 +49,7 @@ final class tool_display_test extends \advanced_testcase {
     public static function call_provider(): array {
         $out = [];
         foreach (self::vectors()['calls'] as $v) {
-            $out[$v['name']] = [$v['args'], $v['expected']];
+            $out[$v['name']] = [$v['args'], $v['locations'], $v['expected']];
         }
         return $out;
     }
@@ -75,7 +75,7 @@ final class tool_display_test extends \advanced_testcase {
     public static function link_provider(): array {
         $out = [];
         foreach (self::vectors()['links'] as $v) {
-            $out[$v['name']] = [$v['segments'], $v['resolved'], $v['expected']];
+            $out[$v['name']] = [$v['segments'], $v['links'], $v['expected']];
         }
         return $out;
     }
@@ -85,12 +85,13 @@ final class tool_display_test extends \advanced_testcase {
      *
      * @dataProvider call_provider
      * @param array $args
+     * @param array $locations
      * @param array $expected
      */
-    public function test_describe_call_matches_the_client(array $args, array $expected): void {
+    public function test_describe_call_matches_the_client(array $args, array $locations, array $expected): void {
         $this->resetAfterTest();
         $display = new tool_display(self::vectors()['strings']);
-        $this->assertEquals($expected, $display->describe_call($args));
+        $this->assertEquals($expected, $display->describe_call($args, $locations));
     }
 
     /**
@@ -110,11 +111,11 @@ final class tool_display_test extends \advanced_testcase {
      *
      * @dataProvider link_provider
      * @param array $segments
-     * @param array|null $resolved
+     * @param array|null $links
      * @param array $expected
      */
-    public function test_link_segments_matches_the_client(array $segments, ?array $resolved, array $expected): void {
-        $this->assertEquals($expected, tool_display::link_segments($segments, $resolved));
+    public function test_link_segments_matches_the_client(array $segments, ?array $links, array $expected): void {
+        $this->assertEquals($expected, tool_display::link_segments($segments, $links));
     }
 
     public function test_dates_are_shown_in_the_users_format(): void {
@@ -130,9 +131,11 @@ final class tool_display_test extends \advanced_testcase {
         $display = tool_display::from_lang();
         $time = make_timestamp(2026, 11, 9, 12);
         $result = $display->describe_result(['display' => [
-            ['kind' => 'hits', 'items' => [['cite' => 1, 'path' => '/LF7/Plan', 'modified' => $time]]],
+            ['kind' => 'hits', 'items' => [['cite' => 1, 'modified' => $time, 'location' => [
+                ['kind' => 'course', 'id' => '2', 'name' => 'LF7'], ['kind' => 'module', 'id' => '5', 'name' => 'Plan'],
+            ]]]],
             ['kind' => 'fields', 'items' => [['key' => 'modified', 'label' => 'x', 'value' => '2026-11-09', 'format' => 'date']]],
-            ['kind' => 'entries', 'items' => [['name' => 'Skript', 'type' => 'file', 'path' => '/LF7/Skript', 'chars' => 18000]]],
+            ['kind' => 'entries', 'items' => [['name' => 'Skript', 'type' => 'file', 'chars' => 18000]]],
         ]]);
         $date = userdate($time, get_string('strftimedate', 'langconfig'));
         $this->assertSame('LF7 · ' . $date, $result['blocks'][0]['items'][0]['meta']);
@@ -143,16 +146,16 @@ final class tool_display_test extends \advanced_testcase {
         $this->assertStringContainsString($chars, $result['blocks'][2]['items'][0]['meta']);
     }
 
-    public function test_entries_link_to_the_last_resolved_segment(): void {
+    public function test_entries_link_by_the_ref_of_their_last_segment(): void {
         $display = new tool_display(self::vectors()['strings']);
+        $x = ['kind' => 'course', 'id' => '2', 'name' => 'X'];
         $result = $display->describe_result(['display' => [['kind' => 'entries', 'items' => [
-            ['name' => 'A', 'type' => 'folder', 'path' => '/X/A'],
-            ['name' => 'B', 'type' => 'folder', 'path' => '/X/B'],
-            ['name' => 'C', 'type' => 'folder', 'path' => '/X/C'],
+            ['name' => 'A', 'type' => 'folder', 'location' => [$x, ['kind' => 'section', 'id' => '7', 'name' => 'A']]],
+            ['name' => 'B', 'type' => 'folder', 'location' => [$x, ['kind' => 'section', 'id' => '8', 'name' => 'B']]],
+            ['name' => 'C', 'type' => 'folder', 'location' => [$x, ['kind' => 'section', 'id' => '9', 'name' => 'C']]],
         ]]]]);
         $linked = tool_display::link_entries($result, [
-            '/X/A' => [['name' => 'X', 'url' => 'https://m/x'], ['name' => 'A', 'url' => 'https://m/a']],
-            '/X/B' => [['name' => 'X', 'url' => 'https://m/x'], ['name' => 'B', 'url' => 'javascript:alert(1)']],
+            'course:2' => 'https://m/x', 'section:7' => 'https://m/a', 'section:8' => 'javascript:alert(1)',
         ]);
         $items = $linked['blocks'][0]['items'];
         $links = array_map(fn($e) => [$e['url'], $e['hasurl']], $items);
@@ -180,6 +183,24 @@ final class tool_display_test extends \advanced_testcase {
         ));
         $this->assertSame(['a/search', 'core'], tool_display::icon('search_text', []));
         $this->assertSame(['tool', 'local_llmchat'], tool_display::icon('unknown', []));
+        $this->assertSame('Open „Woche 1“', tool_display::label(
+            'list_dir',
+            ['path' => '/lf7/w1'],
+            ['label' => 'Open'],
+            ['path' => [
+                ['kind' => 'course', 'id' => '2', 'name' => 'LF7'],
+                ['kind' => 'section', 'id' => '7', 'name' => 'Woche 1'],
+            ]],
+            'All courses'
+        ));
+        $this->assertSame('Open „All courses“', tool_display::label(
+            'list_dir',
+            ['path' => '/'],
+            ['label' => 'Open'],
+            ['path' => []],
+            'All courses'
+        ));
+        $this->assertSame('Open „/LF9“', tool_display::label('list_dir', ['path' => '/LF9'], ['label' => 'Open'], [], 'All'));
         $this->assertSame(['i/star', 'core'], tool_display::icon('search_text', ['icon' => 'core:i/star']));
     }
 }

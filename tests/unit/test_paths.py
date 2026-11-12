@@ -6,7 +6,7 @@ import pytest
 from factories import doc
 
 from moodle_llm_chat.access.scope import AccessScope, Capability
-from moodle_llm_chat.agent.paths import CourseTree, NodeKind, PathNotFound
+from moodle_llm_chat.agent.paths import CourseTree, NodeKind, PathNotFound, Segment
 from moodle_llm_chat.index.models import CourseIn
 from moodle_llm_chat.index.store import Store
 
@@ -166,6 +166,61 @@ class TestStructure:
         tree = build(tree_store, 10, 11)
         assert tree.path_for("2:11:1") == "/LF7/Woche 1/Material/Routing.pdf"
         assert tree.path_for("3:21:hidden") is None
+
+
+def seg(kind: str, id: str, name: str) -> Segment:
+    return Segment(kind=kind, id=id, name=name)  # type: ignore[arg-type]
+
+
+class TestLocation:
+    """What the plugin gets instead of a path: ids and the real Moodle names."""
+
+    def test_document_in_a_multi_document_module(self, tree_store: Store) -> None:
+        tree = build(tree_store, 10, 11)
+        assert tree.location(tree.resolve("/LF7/Woche 1/Material/Routing.pdf")) == [
+            seg("course", "2", "LF7"),
+            seg("section", "1", "Woche 1"),
+            seg("module", "11", "Material"),
+            seg("document", "2:11:1", "Routing.pdf"),
+        ]
+
+    def test_single_document_module_ends_with_the_module(self, tree_store: Store) -> None:
+        tree = build(tree_store, 10)
+        assert tree.location(tree.resolve("/LF7/Woche 1/Skript"))[-1] == seg(
+            "module", "10", "Skript"
+        )
+
+    def test_folders_and_root(self, tree_store: Store) -> None:
+        tree = build(tree_store, 10)
+        assert tree.location(tree.root) == []
+        assert tree.location(tree.resolve("/LF7")) == [seg("course", "2", "LF7")]
+
+    def test_names_are_moodles_not_the_paths(self, tree_store: Store) -> None:
+        tree = build(tree_store, 12)
+        assert tree.location(tree.resolve("/LF7/Woche 2/Quiz-Test"))[-1].name == "Quiz/Test"
+
+    def test_unnamed_section_keeps_its_fallback_name(self, tree_store: Store) -> None:
+        tree = build(tree_store, 20)
+        assert tree.location(tree.resolve("/MA/Abschnitt 0"))[-1].name == "Abschnitt 0"
+
+    def test_duplicates_differ_by_id_not_by_suffix(self, store: Store) -> None:
+        store.upsert_courses(S, [CourseIn(course_id=2, fullname="Netzwerke", shortname="LF7")])
+        store.upsert_documents(
+            S,
+            [
+                doc("2:31:b", cmid=31, section_id=135, section_order=2, section_name="LF 11"),
+                doc("2:32:c", cmid=32, section_id=107, section_order=26, section_name="LF 11"),
+            ],
+        )
+        tree = build(store, 31, 32)
+        first, second = (tree.location(tree.node_for(d)) for d in ("2:31:b", "2:32:c"))  # type: ignore[arg-type]
+        assert first[1] == seg("section", "135", "LF 11")
+        assert second[1] == seg("section", "107", "LF 11")
+
+    def test_location_for_document(self, tree_store: Store) -> None:
+        tree = build(tree_store, 10, 11)
+        assert tree.location_for("2:11:0")[-1] == seg("document", "2:11:0", "VLAN.pdf")
+        assert tree.location_for("3:21:hidden") == []
 
 
 class TestResolution:

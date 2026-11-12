@@ -38,7 +38,7 @@ import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
 import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
 import {
-    citationMeta, describeCall, describeResult, linkSegments, RESULT_STRING_KEYS, STRING_KEYS as TOOL_STRING_KEYS,
+    callTarget, citationMeta, describeCall, describeResult, linkSegments, RESULT_STRING_KEYS, STRING_KEYS as TOOL_STRING_KEYS,
 } from 'local_llmchat/tooldetails';
 
 const STRING_KEYS = [
@@ -180,7 +180,7 @@ class ChatController {
         this.offlineNotice = null;
         this.wasOffline = false;
         this.stickToBottom = true;
-        this.pathCache = new Map();
+        this.linkCache = new Map();
 
         this.socket = new ReconnectingSocket({
             credentials: async() => {
@@ -860,13 +860,13 @@ class ChatController {
     /**
      * Tool card.
      *
-     * @param {Object} frame tool_call{id, name, args}
+     * @param {Object} frame tool_call{id, name, args, locations?}
      */
     async onToolCall(frame) {
         const turn = await this.currentTurn(frame);
         const meta = this.tools.get(frame.name) || {};
         const args = frame.args || {};
-        const firstArg = Object.values(args).find((v) => typeof v === 'string') || '';
+        const firstArg = callTarget(args, frame.locations, this.str['toolval:root']);
         let label;
         if (meta.summary_template) {
             label = meta.summary_template.replace(/\{(\w+)\}/g, (m, k) => (args[k] !== undefined ? String(args[k]) : ''));
@@ -874,7 +874,7 @@ class ChatController {
             label = `${meta.label || frame.name}${firstArg ? ` „${firstArg}“` : ''}`;
         }
         const [icon, component] = toolIcon(frame.name, meta);
-        const call = describeCall(args, this.displayOptions());
+        const call = describeCall(args, Object.assign({locations: frame.locations}, this.displayOptions()));
         const node = await renderNode('tool_call', Object.assign({uniqid: uniqid('llmchat-tool'), icon, component, label}, call));
         this.advance(turn, 'tool_call');
         this.toolGroup(turn).appendChild(node);
@@ -901,22 +901,22 @@ class ChatController {
     }
 
     /**
-     * Turn the path breadcrumbs of a tool card into links to what the user can open.
+     * Turn the location breadcrumbs of a tool card into links to what the user can open.
      *
      * @param {HTMLElement} card
      * @param {Object} call result of describeCall()
      */
     async linkPaths(card, call) {
-        if (!call.paths.length) {
+        if (!call.refs.length) {
             return;
         }
         try {
-            const resolved = await this.resolvePaths(call.paths);
+            const links = await this.resolveRefs(call.refs);
             for (const param of call.params.filter((p) => p.ispath)) {
-                const answer = resolved.get(param.path);
-                const holder = [...card.querySelectorAll('[data-region="path"]')].find((h) => h.dataset.path === param.path);
-                if (holder && answer && answer.some((s) => s.url)) {
-                    await renderInto(holder, 'local_llmchat/path_breadcrumb', {segments: linkSegments(param.segments, answer)});
+                const holder = [...card.querySelectorAll('[data-region="path"]')].find((h) => h.dataset.arg === param.arg);
+                const segments = linkSegments(param.segments, links);
+                if (holder && segments.some((s) => s.hasurl)) {
+                    await renderInto(holder, 'local_llmchat/path_breadcrumb', {segments});
                 }
             }
         } catch (e) {
@@ -925,26 +925,27 @@ class ChatController {
     }
 
     /**
-     * Links for paths, resolved on the server for the current user; cached per page.
+     * Links for Moodle objects by id, resolved on the server for the current user; cached per page.
      *
-     * @param {string[]} paths
-     * @returns {Promise<Map>} path => [{name, url}]
+     * @param {Array} refs [{kind, id}]
+     * @returns {Promise<Object>} "kind:id" => url ('' when the user cannot open it)
      */
-    async resolvePaths(paths) {
-        const missing = paths.filter((p) => !this.pathCache.has(p));
+    async resolveRefs(refs) {
+        const key = (ref) => `${ref.kind}:${ref.id}`;
+        const missing = refs.filter((ref) => !this.linkCache.has(key(ref)));
         if (missing.length) {
-            const request = Ajax.call([{methodname: 'local_llmchat_resolve_paths', args: {paths: missing}}])[0];
-            missing.forEach((path) => {
-                this.pathCache.set(path, request.then((result) => (result.find((r) => r.path === path) || {}).segments)
+            const request = Ajax.call([{methodname: 'local_llmchat_resolve_refs', args: {refs: missing}}])[0];
+            missing.forEach((ref) => {
+                this.linkCache.set(key(ref), request.then((result) => (result.find((r) => key(r) === key(ref)) || {}).url || '')
                     .catch(() => {
-                        this.pathCache.delete(path);
-                        return undefined;
+                        this.linkCache.delete(key(ref));
+                        return '';
                     }));
             });
         }
-        const out = new Map();
-        for (const path of paths) {
-            out.set(path, await this.pathCache.get(path));
+        const out = {};
+        for (const ref of refs) {
+            out[key(ref)] = await this.linkCache.get(key(ref));
         }
         return out;
     }
@@ -980,28 +981,27 @@ class ChatController {
         const result = describeResult(frame, this.displayOptions());
         await renderInto(card.querySelector('[data-region="result"]'), 'local_llmchat/tool_result', result);
         // Not awaited: links arrive when ready and never hold up the stream.
-        this.linkEntries(card, result.paths);
+        this.linkEntries(card, result.refs);
     }
 
     /**
      * Link the names of listed folders and files to what the user can open in Moodle.
      *
      * @param {HTMLElement} card
-     * @param {string[]} paths
+     * @param {Array} refs [{kind, id}] of the entries
      */
-    async linkEntries(card, paths) {
-        if (!paths.length) {
+    async linkEntries(card, refs) {
+        if (!refs.length) {
             return;
         }
         try {
-            const resolved = await this.resolvePaths(paths);
+            const links = await this.resolveRefs(refs);
             card.querySelectorAll('[data-region="entry"]').forEach((holder) => {
                 if (holder.querySelector('a')) {
                     return;
                 }
-                const segments = resolved.get(holder.dataset.path);
-                const last = Array.isArray(segments) ? segments[segments.length - 1] : null;
-                const url = last && /^https?:\/\//i.test(String(last.url || '')) ? String(last.url) : '';
+                const found = String(links[holder.dataset.ref] || '');
+                const url = /^https?:\/\//i.test(found) ? found : '';
                 if (url) {
                     const link = document.createElement('a');
                     link.href = url;
@@ -1321,7 +1321,7 @@ class ChatController {
             this.setConversation(id);
             this.turn = null;
             // Access may have changed since the links were resolved.
-            this.pathCache.clear();
+            this.linkCache.clear();
             this.regions.messages.replaceChildren(this.regions.empty);
             this.regions.empty.classList.toggle('d-none', Boolean(id));
             this.clearStatusErrors();

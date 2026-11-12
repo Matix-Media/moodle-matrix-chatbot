@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from moodle_llm_chat.agent.paths import Segment
 from moodle_llm_chat.index.models import Document
 
 _MARKER_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
@@ -21,7 +22,8 @@ class CitationRef(BaseModel):
     doc_id: str
     title: str
     course_name: str
-    path: str
+    #: Where the document is; refs saved before this field load with none.
+    location: list[Segment] = Field(default_factory=list)
     url: str | None
     #: First page the tools showed; kept for conversations saved before ``pages``.
     page: int | None
@@ -40,7 +42,12 @@ class CitationRegistry:
             self._by_doc.setdefault(ref.doc_id, ref.index)
 
     def add(
-        self, document: Document, *, path: str, course_name: str, page: int | None = None
+        self,
+        document: Document,
+        *,
+        location: list[Segment],
+        course_name: str,
+        page: int | None = None,
     ) -> int:
         known = self._by_doc.get(document.doc_id)
         if known is not None:
@@ -57,7 +64,7 @@ class CitationRegistry:
                 doc_id=document.doc_id,
                 title=document.title or document.module_name,
                 course_name=course_name,
-                path=path,
+                location=location,
                 url=document.module_url,
                 page=page,
                 pages=[page] if page is not None else [],
