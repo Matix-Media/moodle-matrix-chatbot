@@ -742,6 +742,37 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     display: none;
 }
 
+/* Display blocks of a tool result (templates/tool_result.mustache). */
+.local-llmchat-block + .local-llmchat-block {
+    margin-top: .5rem;
+}
+
+.local-llmchat-hits li + li,
+.local-llmchat-entries li + li {
+    margin-top: .375rem;
+}
+
+.local-llmchat-snippet {
+    color: var(--llmchat-muted);
+    overflow-wrap: anywhere;
+}
+
+.local-llmchat-entryicon .icon {
+    margin-right: 0;
+}
+
+.local-llmchat-excerpt {
+    max-height: 16rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--bs-body-bg, #fff);
+}
+
+.local-llmchat-table {
+    background: var(--bs-body-bg, #fff);
+}
+
 @media (max-width: 575.98px) {
     .local-llmchat-params {
         grid-template-columns: 1fr;

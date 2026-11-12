@@ -46,4 +46,6 @@ def snippet(text: str, limit: int = SNIPPET_CHARS) -> str:
 def describe(ctx: RunContext, document: Document, *, page: int | None = None) -> str:
     path = ctx.tree.path_for(document.doc_id) or document.title
     where = f", S. {page}" if page else ""
-    return f"{path}{where} (Stand {format_date(document.timemodified, now=ctx.now())})"
+    # Not "(Stand …)": a parenthesised suffix read like part of the title and the model
+    # copied it into answers.
+    return f"{path}{where} · geändert {format_date(document.timemodified, now=ctx.now())}"

@@ -66,6 +66,11 @@ class TestStudentChat:
         tool = student.page.locator("[data-region=tool]").first
         expect(tool).to_be_visible()
         expect(tool.locator("[data-region=done]")).to_be_visible()
+        # The expanded card shows the hit itself (display block), linked to its source.
+        tool.locator("[data-action=toggle]").first.click()
+        hit = tool.locator(".local-llmchat-hits li").first
+        expect(hit).to_contain_text("B204")
+        expect(hit.locator("a")).to_have_attribute("href", re.compile(r"/mod/page/view\.php\?id="))
         cite = answer.locator("a.local-llmchat-cite")
         expect(cite).to_have_count(1)
         assert "/mod/page/view.php?id=" in (cite.get_attribute("href") or "")
@@ -88,7 +93,8 @@ class TestStudentChat:
         # Stream order: the tool cards sit above the answer they led to.
         assert body.evaluate(
             """b => [...b.children].findIndex(n => n.dataset.region === 'tools')
-                < [...b.children].findIndex(n => n.textContent.includes('B204'))"""
+                < [...b.children].findIndex(
+                    n => n.dataset.region !== 'tools' && n.textContent.includes('B204'))"""
         )
 
     def test_each_thinking_step_gets_an_expandable_block(self, student: Chat, mock: Mock) -> None:
@@ -175,6 +181,11 @@ class TestStudentChat:
         tool = student.page.locator("[data-region=tool]").first
         expect(tool.locator("[data-region=done]")).to_be_visible()
         expect(tool.locator("[data-region=spinner]")).to_be_hidden()
+        # The server renders the result's display blocks too, with the hit linked to its source.
+        tool.locator("[data-action=toggle]").first.click()
+        hit = tool.locator(".local-llmchat-hits li").first
+        expect(hit).to_contain_text("B204")
+        expect(hit.locator("a")).to_have_attribute("href", re.compile(r"/mod/page/view\.php\?id="))
         active = student.page.locator("[data-region=conversations] [aria-current=true]")
         expect(active).to_have_attribute("data-id", conversation_id)
         assert api_calls == [], "list and history came with the page"

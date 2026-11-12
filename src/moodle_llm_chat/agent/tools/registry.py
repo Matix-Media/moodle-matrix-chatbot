@@ -20,6 +20,7 @@ from moodle_llm_chat.access.moodle import MoodleUnavailable
 from moodle_llm_chat.agent.context import RunContext
 from moodle_llm_chat.agent.paths import PathNotFound
 from moodle_llm_chat.agent.tools.base import Tool, ToolResult
+from moodle_llm_chat.agent.tools.display import NoticeBlock, TextBlock, clip
 
 TRUNCATION_NOTE = "\n…[gekürzt — nutze offset/limit oder eine genauere Anfrage]"
 
@@ -81,23 +82,23 @@ class ToolRegistry:
                 raise
             except PathNotFound as exc:
                 hint = ", ".join(exc.suggestions) if exc.suggestions else "—"
-                result = ToolResult(
-                    text=f"Pfad nicht gefunden: {exc.missing!r}. Vorhanden/ähnlich: {hint}",
-                    meta={"error": "path_not_found"},
+                result = _error(
+                    f"Pfad nicht gefunden: {exc.missing!r}. Vorhanden/ähnlich: {hint}",
+                    "path_not_found",
+                    f"Nicht gefunden: {exc.missing}"
+                    + (f" (ähnlich: {hint})" if exc.suggestions else ""),
                 )
             except MoodleUnavailable:
-                result = ToolResult(
-                    text=(
-                        "Moodle ist gerade nicht erreichbar, daher kann ich keine Inhalte "
-                        "lesen. Sag das dem Nutzer und rate nicht."
-                    ),
-                    meta={"error": "moodle_unavailable"},
+                result = _error(
+                    "Moodle ist gerade nicht erreichbar, daher kann ich keine Inhalte "
+                    "lesen. Sag das dem Nutzer und rate nicht.",
+                    "moodle_unavailable",
+                    "Moodle ist gerade nicht erreichbar.",
                 )
             except (ToolInputError, ValidationError, ValueError) as exc:
-                result = ToolResult(
-                    text=f"Ungültige Eingabe: {str(exc).splitlines()[0]}",
-                    meta={"error": "invalid_input"},
-                )
+                detail = str(exc).splitlines()[0]
+                result = _error(f"Ungültige Eingabe: {detail}", "invalid_input", detail)
+            result = _with_display(result)
             text = result.text
             if len(text) > tool.ui.max_chars:
                 text = text[: tool.ui.max_chars] + TRUNCATION_NOTE
@@ -114,3 +115,19 @@ class ToolRegistry:
             args_schema=schema,
             response_format="content_and_artifact",
         )
+
+
+def _error(text: str, code: str, shown: str) -> ToolResult:
+    """A failed call: ``text`` tells the model, ``shown`` the person (as the notice detail)."""
+    return ToolResult(
+        text=text,
+        meta={"error": code},
+        display=[NoticeBlock(level="error", code=code, text=shown)],
+    )
+
+
+def _with_display(result: ToolResult) -> ToolResult:
+    """A tool without display blocks shows its model text."""
+    if result.display:
+        return result
+    return result.model_copy(update={"display": [TextBlock(text=clip(result.text))]})

@@ -17,7 +17,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
+import {citationMeta, describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
 
 // Vectors shared with the PHP port (tests/tool_display_test.php).
 const VECTORS = JSON.parse(readFileSync(new URL('../fixtures/tool_display_vectors.json', import.meta.url), 'utf8'));
@@ -114,32 +114,127 @@ test('no arguments means no parameter list, raw JSON is always available', () =>
     assert.equal(describeCall({query: 'x'}, opts).raw, '{\n  "query": "x"\n}');
 });
 
-test('a result lists its summary and the citations it found', () => {
+const RESULT_STRINGS = {
+    'page': 'Page',
+    'toolresult:entries': '{$a} entries',
+    'toolresult:pages': '{$a} pages',
+    'toolresult:chars': '{$a} characters',
+    'toolresult:range': 'Characters {$a->start}–{$a->end} of {$a->total}',
+    'toolentry:folder': 'Folder',
+    'toolentry:file': 'File',
+    'toolfield:modified': 'Modified',
+    'toolfield:course': 'Course',
+    'toolnotice:no_hits': 'No results.',
+    'toolnotice:path_not_found': 'Path not found.',
+};
+const resultOpts = {strings: RESULT_STRINGS, locale: 'en-GB'};
+const plan = {index: 1, title: 'Plan', 'course_name': 'LF7', url: 'https://m/mod/page/view.php?id=11', pages: [2]};
+// 09.11.2026 12:00 UTC
+const NOV9 = Date.UTC(2026, 10, 9, 12) / 1000;
+
+test('search hits show title, location, page, date and snippet, linked to the source', () => {
     const result = describeResult({
-        summary: '4 Treffer in LF7',
-        citations: [
-            {index: 1, title: 'Abgabe Subnetting-Projekt', 'course_name': 'LF7', url: 'https://m/mod/assign/view.php?id=3', page: 2},
-            {index: 2, title: 'Bewertungsraster.txt'},
-        ],
-    }, {strings: {page: 'Page'}, locale: 'de-DE'});
-    assert.equal(result.summary, '4 Treffer in LF7');
-    assert.equal(result.hascitations, true);
-    assert.deepEqual(result.citations[0], {
-        index: 1, title: 'Abgabe Subnetting-Projekt', meta: 'LF7 · Page 2', url: 'https://m/mod/assign/view.php?id=3', hasurl: true,
+        citations: [plan],
+        display: [{kind: 'hits', items: [{cite: 1, path: '/LF7/Woche 2/Plan', page: 2, modified: NOV9, snippet: 'Raum B204'}]}],
+    }, resultOpts);
+    assert.equal(result.hasresult, true);
+    const [block] = result.blocks;
+    assert.equal(block.ishits, true);
+    assert.deepEqual(block.items[0], {
+        index: 1, title: 'Plan', url: 'https://m/mod/page/view.php?id=11', hasurl: true,
+        meta: 'LF7 › Woche 2 · Page 2 · 09/11/2026', snippet: 'Raum B204',
     });
+    // Shown as a hit, so not listed a second time as a source.
+    assert.equal(result.hascitations, false);
+});
+
+test('a hit without a known citation falls back to the last path segment', () => {
+    const {blocks: [block]} = describeResult({display: [{kind: 'hits', items: [{cite: 4, path: '/A/B/Skript'}]}]}, resultOpts);
+    assert.equal(block.items[0].title, 'Skript');
+    assert.equal(block.items[0].hasurl, false);
+});
+
+test('entries show folders and files with translated sizes and their paths for linking', () => {
+    const result = describeResult({display: [{kind: 'entries', path: '/LF7', items: [
+        {name: 'Woche 1', type: 'folder', path: '/LF7/Woche 1', count: 3},
+        {name: 'Skript', type: 'file', path: '/LF7/Woche 1/Skript', pages: 12, modified: NOV9},
+        {name: 'Neu', type: 'quiz', path: '/LF7/Neu', chars: 1200},
+    ]}]}, resultOpts);
+    const [block] = result.blocks;
+    assert.equal(block.isentries, true);
+    assert.deepEqual(block.items.map((e) => [e.name, e.isfolder, e.meta]), [
+        ['Woche 1', true, 'Folder · 3 entries'],
+        ['Skript', false, 'File · 12 pages · 09/11/2026'],
+        ['Neu', false, 'Quiz · 1,200 characters'],
+    ]);
+    assert.deepEqual(result.paths, ['/LF7/Woche 1', '/LF7/Woche 1/Skript', '/LF7/Neu']);
+});
+
+test('fields translate their labels and format dates and links', () => {
+    const {blocks: [block]} = describeResult({display: [{kind: 'fields', items: [
+        {key: 'modified', label: 'Geändert', value: '2026-11-09', format: 'date'},
+        {key: 'link', label: 'Moodle-Link', value: 'https://m/x', format: 'link'},
+        {key: 'secret', label: 'Bad link', value: 'javascript:alert(1)', format: 'link'},
+        {key: 'unknown_key', label: 'Eigenes Feld', value: 'x'},
+    ]}]}, resultOpts);
+    assert.deepEqual(block.items.map((f) => [f.label, f.text, f.islink]), [
+        ['Modified', '09/11/2026', false],
+        ['Moodle-Link', 'https://m/x', true],
+        ['Bad link', 'javascript:alert(1)', false],
+        ['Eigenes Feld', 'x', false],
+    ]);
+});
+
+test('a text excerpt shows its range and source', () => {
+    const {blocks: [block], hascitations} = describeResult({citations: [plan],
+        display: [{kind: 'text', text: 'Hallo', title: '/LF7/Woche 2/Plan', cite: 1, start: 0, end: 40, total: 1200}]}, resultOpts);
+    assert.equal(block.istext, true);
+    assert.equal(block.text, 'Hallo');
+    assert.equal(block.title, 'Plan');
+    assert.equal(block.range, 'Characters 0–40 of 1,200');
+    assert.equal(block.hasurl, true);
+    assert.equal(hascitations, false);
+});
+
+test('tables translate column labels', () => {
+    const {blocks: [block]} = describeResult({display: [{kind: 'table',
+        columns: [{key: 'course', label: 'Kurs'}, {key: 'x', label: 'Rollen'}], rows: [['LF7', 'Student']]}]}, resultOpts);
+    assert.equal(block.istable, true);
+    assert.deepEqual(block.columns.map((c) => c.label), ['Course', 'Rollen']);
+    assert.deepEqual(block.rows[0].cells.map((c) => c.text), ['LF7', 'Student']);
+});
+
+test('notices are translated by code; errors keep the details', () => {
+    const {blocks} = describeResult({display: [
+        {kind: 'notice', level: 'info', code: 'no_hits', text: 'Keine Treffer'},
+        {kind: 'notice', level: 'error', code: 'path_not_found', text: 'Pfad nicht gefunden: LF8'},
+        {kind: 'notice', level: 'warning', code: 'new_code', text: 'Eigener Hinweis'},
+    ]}, resultOpts);
+    assert.deepEqual(blocks.map((b) => [b.isnotice, b.text, b.detail, b.level]), [
+        [true, 'No results.', '', 'info'],
+        [true, 'Path not found.', 'Pfad nicht gefunden: LF8', 'error'],
+        [true, 'Eigener Hinweis', '', 'warning'],
+    ]);
+});
+
+test('unknown block kinds are shown generically, never dropped', () => {
+    const {blocks} = describeResult({display: [{kind: 'chart', text: 'Diagramm'}, {kind: 'map', lat: 1}]}, resultOpts);
+    assert.deepEqual(blocks.map((b) => [b.isgeneric, b.text]), [
+        [true, 'Diagramm'],
+        [true, '{\n  "lat": 1\n}'],
+    ]);
+});
+
+test('citations not shown in a block are still listed as sources', () => {
+    const result = describeResult({citations: [{index: 1, title: 'Abgabe', 'course_name': 'LF7', url: 'https://m/a', page: 2},
+        {index: 2, title: 'Raster.txt'}]}, resultOpts);
+    assert.equal(result.hasresult, true);
+    assert.deepEqual(result.citations[0], {index: 1, title: 'Abgabe', meta: 'LF7 · Page 2', url: 'https://m/a', hasurl: true});
     assert.equal(result.citations[1].hasurl, false);
 });
 
-test('link attachments are listed like citations, other kinds are ignored', () => {
-    const result = describeResult({attachments: [{type: 'link', title: 'YouTube', url: 'https://youtube.com/x'}, {type: 'table'}]},
-        {strings: {page: 'Page'}, locale: 'de-DE'});
-    assert.equal(result.hascitations, true);
-    assert.deepEqual(result.citations.map((c) => c.title), ['YouTube']);
-    assert.equal(result.citations[0].index, '');
-});
-
 test('an empty result has nothing to show', () => {
-    const result = describeResult({}, {strings: {page: 'Page'}, locale: 'de-DE'});
+    const result = describeResult({}, resultOpts);
     assert.equal(result.hasresult, false);
 });
 
@@ -168,4 +263,13 @@ test('links are only taken from http(s) urls and never from a mismatched answer'
     const linked = linkSegments(segments, [{name: 'LF7', url: 'javascript:alert(1)'}, {name: 'B', url: 'https://m/x'}]);
     assert.deepEqual(linked.map((s) => s.hasurl), [false, false]);
     assert.deepEqual(linkSegments(segments, undefined).map((s) => s.hasurl), [false, false]);
+});
+
+test('a cited document lists every page it was found on', () => {
+    assert.equal(citationMeta({'course_name': 'LF7', pages: [2, 5], page: 2}, 'Page'), 'LF7 · Page 2, 5');
+});
+
+test('citations saved before pages existed fall back to their single page', () => {
+    assert.equal(citationMeta({'course_name': 'LF7', page: 3}, 'Page'), 'LF7 · Page 3');
+    assert.equal(citationMeta({pages: []}, 'Page'), '');
 });

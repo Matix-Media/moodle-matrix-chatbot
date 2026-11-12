@@ -77,7 +77,8 @@ const inline = (text, citations) => {
         if (!href) {
             return m;
         }
-        const title = escapeHtml([cite.title, cite.page ? `S. ${cite.page}` : ''].filter(Boolean).join(' · '));
+        const pages = Array.isArray(cite.pages) && cite.pages.length ? cite.pages : [cite.page].filter(Boolean);
+        const title = escapeHtml([cite.title, pages.length ? `S. ${pages.join(', ')}` : ''].filter(Boolean).join(' · '));
         const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
         return `&nbsp;<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
             ` title="${title}">${hidden('[')}${n}${hidden(']')}</a>`;

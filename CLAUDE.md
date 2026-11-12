@@ -111,7 +111,11 @@ instead of in a CI run.
 
 10. **The interaction wire format is a contract with the plugin** (`question` /
     `options` / `multi_select`, answers `{text, selected}`, `{confirmed}`, `{id}`),
-    pinned by `tests/unit/test_interaction_wire.py`. Change both sides together.
+    pinned by `tests/unit/test_interaction_wire.py`. Change both sides together. The same
+    goes for tool-card **display blocks** (`agent/tools/display.py` ↔
+    `amd/src/tooldetails.js::describeResult` + `templates/tool_result.mustache`), pinned by
+    `tests/unit/test_tool_display.py`. A new tool composes existing block kinds; a new kind
+    needs a branch in `describeBlock` and the template (unknown kinds render generically).
 
 ## Quick pre-push checklist
 

@@ -37,7 +37,9 @@ import * as frames from 'local_llmchat/frames';
 import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
 import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
-import {describeCall, describeResult, linkSegments, STRING_KEYS as TOOL_STRING_KEYS} from 'local_llmchat/tooldetails';
+import {
+    citationMeta, describeCall, describeResult, linkSegments, RESULT_STRING_KEYS, STRING_KEYS as TOOL_STRING_KEYS,
+} from 'local_llmchat/tooldetails';
 
 const STRING_KEYS = [
     'cancelled', 'copied', 'error', 'newconversation', 'offline', 'queuedmessage', 'quota:exemptuser', 'quota:remaining',
@@ -971,8 +973,43 @@ class ChatController {
         card.querySelector('[data-region="spinner"]').classList.add('d-none');
         card.querySelector('[data-region="done"]').classList.remove('d-none');
         card.querySelector('[data-region="summary"]').textContent = frame.summary ? String(frame.summary) : '';
-        await renderInto(card.querySelector('[data-region="result"]'), 'local_llmchat/tool_result',
-            describeResult(frame, this.displayOptions()));
+        const result = describeResult(frame, this.displayOptions());
+        await renderInto(card.querySelector('[data-region="result"]'), 'local_llmchat/tool_result', result);
+        // Not awaited: links arrive when ready and never hold up the stream.
+        this.linkEntries(card, result.paths);
+    }
+
+    /**
+     * Link the names of listed folders and files to what the user can open in Moodle.
+     *
+     * @param {HTMLElement} card
+     * @param {string[]} paths
+     */
+    async linkEntries(card, paths) {
+        if (!paths.length) {
+            return;
+        }
+        try {
+            const resolved = await this.resolvePaths(paths);
+            card.querySelectorAll('[data-region="entry"]').forEach((holder) => {
+                if (holder.querySelector('a')) {
+                    return;
+                }
+                const segments = resolved.get(holder.dataset.path);
+                const last = Array.isArray(segments) ? segments[segments.length - 1] : null;
+                const url = last && /^https?:\/\//i.test(String(last.url || '')) ? String(last.url) : '';
+                if (url) {
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.target = '_blank';
+                    link.rel = 'noopener';
+                    link.textContent = holder.textContent;
+                    holder.replaceChildren(link);
+                }
+            });
+        } catch (e) {
+            Log.debug(e);
+        }
     }
 
     /**
@@ -1061,7 +1098,7 @@ class ChatController {
             citations: turn.citations.map((c) => ({
                 index: c.index,
                 title: c.title || c.url || '',
-                meta: [c.course_name, c.page ? `${this.str.page} ${c.page}` : ''].filter(Boolean).join(' · '),
+                meta: citationMeta(c, this.str.page),
                 url: c.url || '',
                 hasurl: Boolean(c.url),
             })),
@@ -1342,7 +1379,7 @@ export const init = async(config) => {
     if (!root) {
         return;
     }
-    const requests = [...STRING_KEYS, ...TOOL_STRING_KEYS].map((key) => ({key, component: 'local_llmchat'}));
+    const requests = [...STRING_KEYS, ...TOOL_STRING_KEYS, ...RESULT_STRING_KEYS].map((key) => ({key, component: 'local_llmchat'}));
     requests.push({key: 'page', component: 'core'});
     const values = await getStrings(requests);
     const strings = {};
