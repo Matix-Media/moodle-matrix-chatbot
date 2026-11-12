@@ -41,6 +41,8 @@ from moodle_llm_chat.web.routes import chat_ws, conversations, ingest, site_admi
 log = structlog.get_logger(__name__)
 
 DocumentListener = Callable[[str, list[str], bool], None]
+#: Documents whose content is unchanged but whose header path moved (re-chunk only).
+RelocationListener = Callable[[str, list[str]], None]
 BlobListener = Callable[[str, str], None]
 
 
@@ -145,6 +147,7 @@ def create_app(
                 document_listeners.append(
                     lambda site, ids, bulk: pipeline.documents_changed(site, ids, bulk=bulk)
                 )
+                relocation_listeners.append(pipeline.documents_relocated)
                 blob_listeners.append(pipeline.blob_arrived)
 
                 checker: AccessChecker = access or MoodleAccessClient(
@@ -196,8 +199,10 @@ def create_app(
     ws_counts: dict[tuple[str, int], int] = {}
     app.state.ws_counts = ws_counts
     document_listeners: list[DocumentListener] = []
+    relocation_listeners: list[RelocationListener] = []
     blob_listeners: list[BlobListener] = []
     app.state.document_listeners = document_listeners
+    app.state.relocation_listeners = relocation_listeners
     app.state.blob_listeners = blob_listeners
 
     def allowed_origins() -> set[str]:

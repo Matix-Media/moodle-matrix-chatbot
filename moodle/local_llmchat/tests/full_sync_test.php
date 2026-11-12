@@ -124,6 +124,9 @@ final class full_sync_test extends \advanced_testcase {
         $this->assertSame([2, 2], array_column($manifests, 'of'));
         $this->assertSame([$start['sync_id'], $start['sync_id']], array_column($manifests, 'sync_id'));
         $this->assertCount(2, $manifests[0]['entries']);
+        foreach ($manifests[0]['entries'] as $entry) {
+            $this->assertSame(64, strlen($entry['placement_hash']));
+        }
         $this->assertSame(['sync_id' => $start['sync_id']], $this->transport->bodies('POST', '/ingest/sync/finish')[0]);
         $run = full_sync::latest();
         $this->assertSame('finished', $run->state);

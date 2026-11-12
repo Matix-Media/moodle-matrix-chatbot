@@ -122,6 +122,46 @@ class TestStructure:
         with pytest.raises(PathNotFound):
             tree.resolve("/MA/Geheim/Lösungen")
 
+    def test_sections_sharing_an_order_stay_apart(self, store: Store) -> None:
+        """A section inserted before others shares a stale order with the next one."""
+        store.upsert_courses(S, [CourseIn(course_id=2, fullname="Netzwerke", shortname="LF7")])
+        store.upsert_documents(
+            S,
+            [
+                doc(
+                    "2:30:a",
+                    cmid=30,
+                    section_id=83,
+                    section_order=2,
+                    section_name="LF 10",
+                    module_name="Blockplan",
+                    title="Blockplan",
+                ),
+                doc(
+                    "2:31:b",
+                    cmid=31,
+                    section_id=135,
+                    section_order=2,
+                    section_name="LF 11",
+                    module_name="Schedule",
+                    title="Schedule",
+                ),
+                doc(
+                    "2:32:c",
+                    cmid=32,
+                    section_id=107,
+                    section_order=26,
+                    section_name="LF 11",
+                    module_name="Schedule",
+                    title="Schedule",
+                ),
+            ],
+        )
+        tree = build(store, 30, 31, 32)
+        assert list(tree.resolve("/LF7").children) == ["LF 10", "LF 11", "LF 11 (2)"]
+        assert tree.path_for("2:31:b") == "/LF7/LF 11/Schedule"
+        assert tree.path_for("2:32:c") == "/LF7/LF 11 (2)/Schedule"
+
     def test_path_for_document(self, tree_store: Store) -> None:
         tree = build(tree_store, 10, 11)
         assert tree.path_for("2:11:1") == "/LF7/Woche 1/Material/Routing.pdf"

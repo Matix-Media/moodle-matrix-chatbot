@@ -38,6 +38,8 @@ class ManifestEntry(BaseModel):
     doc_id: str
     content_hash: str
     timemodified: int | None = None
+    #: Sent by plugins that hash placement; older ones omit it.
+    placement_hash: str | None = None
 
 
 class Manifest(BaseModel):
@@ -48,10 +50,10 @@ class Manifest(BaseModel):
     chunk_no: int | None = None
     of: int | None = None
 
-    def hashes(self) -> dict[str, str]:
+    def hashes(self) -> dict[str, str | tuple[str, str | None]]:
         if isinstance(self.entries, dict):
-            return self.entries
-        return {e.doc_id: e.content_hash for e in self.entries}
+            return dict(self.entries)
+        return {e.doc_id: (e.content_hash, e.placement_hash) for e in self.entries}
 
 
 class CoursesBody(BaseModel):
@@ -132,14 +134,17 @@ async def documents(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"at most {MAX_DOCUMENTS_PER_REQUEST} documents per request",
         )
-    changed = store.upsert_documents(site.site_id, items, sync_id=sync_id)
+    result = store.upsert_documents_detailed(site.site_id, items, sync_id=sync_id)
     needs_blob = store.missing_blobs(d.file.sha256 for d in items if d.file)
-    if changed:
+    if result.changed:
         # Pushes during an open full sync are bulk work; everything else is urgent.
         bulk = sync_id is not None or store.has_open_full_sync(site.site_id)
         for listener in request.app.state.document_listeners:
-            listener(site.site_id, changed, bulk)
-    return {"changed": changed, "needs_blob": needs_blob}
+            listener(site.site_id, result.changed, bulk)
+    if result.relocated:
+        for relocated in request.app.state.relocation_listeners:
+            relocated(site.site_id, result.relocated)
+    return {"changed": result.changed, "needs_blob": needs_blob}
 
 
 @router.post("/documents/delete")

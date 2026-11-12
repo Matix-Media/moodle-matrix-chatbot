@@ -32,6 +32,11 @@ namespace local_llmchat\content;
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class document {
+    /** Fields that say where a document sits; placement_hash covers exactly these. */
+    private const PLACEMENT_FIELDS = [
+        'section_id', 'section_order', 'section_name', 'module_name', 'title', 'header_path', 'module_url',
+    ];
+
     /**
      * Constructor.
      *
@@ -44,6 +49,23 @@ final class document {
         /** @var \stored_file|null file behind a kind=file document */
         public readonly ?\stored_file $file = null,
     ) {
+        // Always recomputed: callers copy one document's data into another and edit it.
+        $this->data['placement_hash'] = self::placement_hash($this->data);
+    }
+
+    /**
+     * Hash of a document's placement, so the API notices a moved or renamed section
+     * even when the content (and so content_hash) is unchanged.
+     *
+     * @param array $data DocumentIn fields
+     * @return string sha256 hex
+     */
+    public static function placement_hash(array $data): string {
+        $placement = [];
+        foreach (self::PLACEMENT_FIELDS as $field) {
+            $placement[$field] = $data[$field] ?? null;
+        }
+        return hash('sha256', json_encode($placement, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     }
 
     /**
@@ -83,6 +105,7 @@ final class document {
             'doc_id' => $this->data['doc_id'],
             'timemodified' => $this->data['timemodified'],
             'content_hash' => $this->data['content_hash'],
+            'placement_hash' => $this->data['placement_hash'],
         ];
     }
 }
