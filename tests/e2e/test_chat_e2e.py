@@ -118,6 +118,11 @@ class TestStudentChat:
         expect(blocks).to_have_count(2, timeout=30_000)
         expect(blocks.nth(1).locator("[data-region=spinner]")).to_be_visible()
         expect(blocks.nth(0).locator("[data-region=spinner]")).to_be_hidden()
+        # Even the live block starts collapsed: the reader opens a thought, it never opens itself.
+        expect(blocks.nth(1).locator("[data-action=toggle]")).to_have_attribute(
+            "aria-expanded", "false"
+        )
+        expect(blocks.nth(1).locator("[data-region=thinking-text]")).to_be_hidden()
         student.wait_answer("Raum B204")
         for n, thought in enumerate(["zuerst nach dem Raum", "der Plan nennt B204"]):
             block = blocks.nth(n)
