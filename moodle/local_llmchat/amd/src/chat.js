@@ -747,7 +747,7 @@ class ChatController {
         const after = activity.step(before, type);
         turn.activity = after;
         if (activity.endsThinking(before, after)) {
-            this.collapseThinking(turn);
+            this.finishThinking(turn);
         }
         turn.typing.classList.toggle('d-none', !activity.showsIndicator(after));
         return {before, after};
@@ -803,8 +803,7 @@ class ChatController {
             this.place(turn, node);
             const q = (sel) => node.querySelector(sel);
             turn.thinking = {
-                node, toggle: q('[data-action="toggle"]'), collapsible: q('[data-region="collapsible"]'),
-                text: q('[data-region="thinking-text"]'), spinner: q('[data-region="spinner"]'),
+                node, text: q('[data-region="thinking-text"]'), spinner: q('[data-region="spinner"]'),
                 active: q('[data-region="label-active"]'), done: q('[data-region="label-done"]'),
             };
         }
@@ -814,15 +813,14 @@ class ChatController {
     }
 
     /**
-     * Collapse the live thinking block once the step moves on (answer, tool call, question, end).
+     * Finish the live thinking block once the step moves on (answer, tool call, question, end).
+     * It stays open or closed as the reader left it (it starts collapsed).
      *
      * @param {Object} turn
      */
-    collapseThinking(turn) {
+    finishThinking(turn) {
         const t = turn.thinking;
         if (t && !t.spinner.classList.contains('d-none')) {
-            t.collapsible.classList.remove('show');
-            t.toggle.setAttribute('aria-expanded', 'false');
             t.spinner.classList.add('d-none');
             t.active.classList.add('d-none');
             t.done.classList.remove('d-none');
