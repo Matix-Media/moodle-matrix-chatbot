@@ -17,14 +17,14 @@
 {{!
     @template local_llmchat/message_assistant
 
-    One assistant turn: a body the client streams into in order — thinking blocks, groups of
-    tool cards, text segments, interactions, footer — always above the working indicator, which
-    shows whenever the model works with nothing streaming.
+    One assistant turn: a body the client streams into in order — activity groups (thinking
+    blocks and tool cards), text segments, interactions, footer — always above the working
+    indicator, which shows whenever the model works with nothing streaming.
 
     With an empty context it is the shell of a live turn. The page renders the finished turns of
     a stored conversation with "done" (no working indicator) and "parts", the body in stream
-    order: a text segment ("istext", answer HTML), a group of tool cards ("istools", their HTML)
-    or other HTML ("ishtml": a thinking block, an answered interaction, the footer, a notice).
+    order: a text segment ("istext", answer HTML), an activity group ("istools": its thinking
+    blocks and tool cards) or other HTML ("ishtml": an answered interaction, the footer, a notice).
 
     Example context (json):
     {
@@ -32,8 +32,7 @@
         "hasparts": true,
         "parts": [
             {"istext": true, "html": ""},
-            {"ishtml": true, "html": "<div class=\"local-llmchat-thinking\">…</div>"},
-            {"istools": true, "html": "<div class=\"list-group-item\">Suche „Raum“</div>"},
+            {"istools": true, "html": "<div class=\"list-group-item\">Gedanken</div><div class=\"list-group-item\">Suche „Raum“</div>"},
             {"istext": true, "html": "<p>Der Unterricht ist montags in Raum B204.</p>"}
         ]
     }

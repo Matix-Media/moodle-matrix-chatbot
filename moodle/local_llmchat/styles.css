@@ -326,7 +326,12 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
 
 /* Thinking and tool cards. */
 .local-llmchat-thinking {
-    margin-bottom: .5rem;
+    padding: .5rem .75rem;
+    font-size: .875rem;
+}
+
+.local-llmchat .local-llmchat-thinking .local-llmchat-toggle {
+    font-size: inherit;
 }
 
 .local-llmchat-thinking-text {

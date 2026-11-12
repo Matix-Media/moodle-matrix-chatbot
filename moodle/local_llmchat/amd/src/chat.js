@@ -791,7 +791,7 @@ class ChatController {
 
     /**
      * Reasoning delta (text only when the API sends it; otherwise an indicator). Every model step
-     * that thinks gets its own block, placed in stream order between the tool cards.
+     * that thinks gets its own block, placed in stream order in the activity group with the tool cards.
      *
      * @param {Object} frame
      */
@@ -800,7 +800,7 @@ class ChatController {
         const {before, after} = this.advance(turn, 'thinking');
         if (activity.startsThinking(before, after) || !turn.thinking) {
             const node = await renderNode('thinking', {uniqid: uniqid('llmchat-thinking')});
-            this.place(turn, node);
+            this.toolGroup(turn).appendChild(node);
             const q = (sel) => node.querySelector(sel);
             turn.thinking = {
                 node, text: q('[data-region="thinking-text"]'), spinner: q('[data-region="spinner"]'),
@@ -814,7 +814,8 @@ class ChatController {
 
     /**
      * Finish the live thinking block once the step moves on (answer, tool call, question, end).
-     * It stays open or closed as the reader left it (it starts collapsed).
+     * It stays open or closed as the reader left it (it starts collapsed). A block that streamed no
+     * text is dropped, and with it a group it leaves empty.
      *
      * @param {Object} turn
      */
@@ -825,7 +826,11 @@ class ChatController {
             t.active.classList.add('d-none');
             t.done.classList.remove('d-none');
             if (!t.text.textContent.trim()) {
-                t.node.classList.add('d-none');
+                const group = t.node.parentElement;
+                t.node.remove();
+                if (group && !group.children.length) {
+                    group.remove();
+                }
             }
         }
     }
@@ -879,7 +884,8 @@ class ChatController {
     }
 
     /**
-     * The list group for tool cards: the current one if nothing was placed after it, else a new one.
+     * The activity group for thinking blocks and tool cards: the current one if nothing was placed
+     * after it, else a new one.
      *
      * @param {Object} turn
      * @returns {HTMLElement}
