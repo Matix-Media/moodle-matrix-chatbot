@@ -17,15 +17,15 @@
 {{!
     @template local_llmchat/path_breadcrumb
 
-    A course path as a breadcrumb. Segments the current user can open are links (resolved by
-    local_llmchat_resolve_paths); the others stay plain text.
+    A location (course, section, activity, file) as a breadcrumb. Segments the current user can
+    open are links (resolved by id with local_llmchat_resolve_refs); the others stay plain text.
 
     Example context (json):
     {
         "segments": [
-            {"name": "LF7", "url": "https://moodle.example/course/view.php?id=2", "hasurl": true, "last": false},
-            {"name": "Subnetting-Projekt", "url": "https://moodle.example/course/section.php?id=7", "hasurl": true, "last": false},
-            {"name": "Bewertungsraster.txt", "url": "", "hasurl": false, "last": true}
+            {"name": "LF7", "ref": "course:2", "url": "https://moodle.example/course/view.php?id=2", "hasurl": true, "last": false},
+            {"name": "Subnetting/Projekt", "ref": "section:7", "url": "https://moodle.example/course/section.php?id=7", "hasurl": true, "last": false},
+            {"name": "Bewertungsraster.txt", "ref": "document:2:40:file:/Bewertungsraster.txt", "url": "", "hasurl": false, "last": true}
         ]
     }
 }}

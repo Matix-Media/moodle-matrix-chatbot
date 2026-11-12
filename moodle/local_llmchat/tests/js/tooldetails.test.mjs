@@ -17,13 +17,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {citationMeta, describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
+import {callTarget, citationMeta, describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
 
 // Vectors in tests/fixtures/tool_display_vectors.json.
 const VECTORS = JSON.parse(readFileSync(new URL('../fixtures/tool_display_vectors.json', import.meta.url), 'utf8'));
-for (const {name, args, expected} of VECTORS.calls) {
+for (const {name, args, locations, expected} of VECTORS.calls) {
     test(`shared vector, call: ${name}`, () => {
-        assert.deepEqual(describeCall(args, {strings: VECTORS.strings, locale: 'en'}), expected);
+        assert.deepEqual(describeCall(args, {strings: VECTORS.strings, locale: 'en', locations}), expected);
     });
 }
 for (const {name, frame, expected} of VECTORS.results) {
@@ -31,9 +31,9 @@ for (const {name, frame, expected} of VECTORS.results) {
         assert.deepEqual(describeResult(frame, {strings: VECTORS.strings}), expected);
     });
 }
-for (const {name, segments, resolved, expected} of VECTORS.links) {
+for (const {name, segments, links, expected} of VECTORS.links) {
     test(`shared vector, links: ${name}`, () => {
-        assert.deepEqual(linkSegments(segments, resolved), expected);
+        assert.deepEqual(linkSegments(segments, links), expected);
     });
 }
 
@@ -63,17 +63,28 @@ test('known arguments get friendly labels in a stable order', () => {
     assert.equal(call.params[1].text, '8');
 });
 
-test('a path becomes breadcrumb segments with the last one marked', () => {
-    const [param] = describeCall({path: '/LF7/Subnetting-Projekt/Material Projekt/Bewertungsraster.txt'}, opts).params;
+const LOCATION = [
+    {kind: 'course', id: '2', name: 'LF7'}, {kind: 'section', id: '7', name: 'Subnetting/Projekt'},
+    {kind: 'module', id: '40', name: 'Material'}, {kind: 'document', id: '2:40:file:/Raster.txt', name: 'Raster.txt'},
+];
+
+test('a path is shown as the location the API resolved, with the last segment marked', () => {
+    const [param] = describeCall({path: '/lf7/subnetting-projekt/material/raster.txt'},
+        Object.assign({locations: {path: LOCATION}}, opts)).params;
     assert.equal(param.ispath, true);
-    assert.deepEqual(param.segments.map(({name, last}) => ({name, last})), [
-        {name: 'LF7', last: false}, {name: 'Subnetting-Projekt', last: false},
-        {name: 'Material Projekt', last: false}, {name: 'Bewertungsraster.txt', last: true},
+    assert.deepEqual(param.segments.map(({name, ref, last}) => ({name, ref, last})), [
+        {name: 'LF7', ref: 'course:2', last: false}, {name: 'Subnetting/Projekt', ref: 'section:7', last: false},
+        {name: 'Material', ref: 'module:40', last: false}, {name: 'Raster.txt', ref: 'document:2:40:file:/Raster.txt', last: true},
     ]);
 });
 
-test('the root path is named, not shown as an empty breadcrumb', () => {
-    const [param] = describeCall({path: '/'}, opts).params;
+test('a path without a location is shown as typed, never split', () => {
+    const [param] = describeCall({path: '/LF7/Woche 1'}, opts).params;
+    assert.deepEqual([param.istext, param.ispath, param.text], [true, false, '/LF7/Woche 1']);
+});
+
+test('the root is named, not shown as an empty breadcrumb', () => {
+    const [param] = describeCall({path: '/'}, Object.assign({locations: {path: []}}, opts)).params;
     assert.equal(param.istext, true);
     assert.equal(param.text, 'All courses');
 });
@@ -132,10 +143,13 @@ const plan = {index: 1, title: 'Plan', 'course_name': 'LF7', url: 'https://m/mod
 // 09.11.2026 12:00 UTC
 const NOV9 = Date.UTC(2026, 10, 9, 12) / 1000;
 
+const PLAN = [{kind: 'course', id: '2', name: 'LF7'}, {kind: 'section', id: '8', name: 'Woche 2'},
+    {kind: 'module', id: '11', name: 'Plan'}];
+
 test('search hits show title, location, page, date and snippet, linked to the source', () => {
     const result = describeResult({
         citations: [plan],
-        display: [{kind: 'hits', items: [{cite: 1, path: '/LF7/Woche 2/Plan', page: 2, modified: NOV9, snippet: 'Raum B204'}]}],
+        display: [{kind: 'hits', items: [{cite: 1, location: PLAN, page: 2, modified: NOV9, snippet: 'Raum B204'}]}],
     }, resultOpts);
     assert.equal(result.hasresult, true);
     const [block] = result.blocks;
@@ -148,17 +162,19 @@ test('search hits show title, location, page, date and snippet, linked to the so
     assert.equal(result.hascitations, false);
 });
 
-test('a hit without a known citation falls back to the last path segment', () => {
-    const {blocks: [block]} = describeResult({display: [{kind: 'hits', items: [{cite: 4, path: '/A/B/Skript'}]}]}, resultOpts);
-    assert.equal(block.items[0].title, 'Skript');
+test('a hit without a known citation falls back to the name of its location', () => {
+    const {blocks: [block]} = describeResult({display: [{kind: 'hits', items: [{cite: 4, location: PLAN}]}]}, resultOpts);
+    assert.equal(block.items[0].title, 'Plan');
     assert.equal(block.items[0].hasurl, false);
 });
 
-test('entries show folders and files with translated sizes and their paths for linking', () => {
-    const result = describeResult({display: [{kind: 'entries', path: '/LF7', items: [
-        {name: 'Woche 1', type: 'folder', path: '/LF7/Woche 1', count: 3},
-        {name: 'Skript', type: 'file', path: '/LF7/Woche 1/Skript', pages: 12, modified: NOV9},
-        {name: 'Neu', type: 'quiz', path: '/LF7/Neu', chars: 1200},
+test('entries show folders and files with translated sizes and their refs for linking', () => {
+    const lf7 = {kind: 'course', id: '2', name: 'LF7'};
+    const week = {kind: 'section', id: '3', name: 'Woche 1'};
+    const result = describeResult({display: [{kind: 'entries', location: [lf7], items: [
+        {name: 'Woche 1', type: 'folder', location: [lf7, week], count: 3},
+        {name: 'Skript', type: 'file', location: [lf7, week, {kind: 'module', id: '10', name: 'Skript'}], pages: 12, modified: NOV9},
+        {name: 'Neu', type: 'quiz', location: [lf7, {kind: 'module', id: '14', name: 'Neu'}], chars: 1200},
     ]}]}, resultOpts);
     const [block] = result.blocks;
     assert.equal(block.isentries, true);
@@ -167,7 +183,8 @@ test('entries show folders and files with translated sizes and their paths for l
         ['Skript', false, 'File · 12 pages · 09/11/2026'],
         ['Neu', false, 'Quiz · 1,200 characters'],
     ]);
-    assert.deepEqual(result.paths, ['/LF7/Woche 1', '/LF7/Woche 1/Skript', '/LF7/Neu']);
+    assert.deepEqual(block.items.map((e) => e.ref), ['section:3', 'module:10', 'module:14']);
+    assert.deepEqual(result.refs, [{kind: 'section', id: '3'}, {kind: 'module', id: '10'}, {kind: 'module', id: '14'}]);
 });
 
 test('fields translate their labels and format dates and links', () => {
@@ -187,7 +204,7 @@ test('fields translate their labels and format dates and links', () => {
 
 test('a text excerpt shows its range and source', () => {
     const {blocks: [block], hascitations} = describeResult({citations: [plan],
-        display: [{kind: 'text', text: 'Hallo', title: '/LF7/Woche 2/Plan', cite: 1, start: 0, end: 40, total: 1200}]}, resultOpts);
+        display: [{kind: 'text', text: 'Hallo', title: 'Plan', location: PLAN, cite: 1, start: 0, end: 40, total: 1200}]}, resultOpts);
     assert.equal(block.istext, true);
     assert.equal(block.text, 'Hallo');
     assert.equal(block.title, 'Plan');
@@ -238,31 +255,40 @@ test('an empty result has nothing to show', () => {
     assert.equal(result.hasresult, false);
 });
 
-test('a call lists the paths it shows so the page can link them', () => {
-    const call = describeCall({path: '/LF7/Subnetting-Projekt/Material Projekt', query: 'x'}, opts);
-    assert.deepEqual(call.paths, ['/LF7/Subnetting-Projekt/Material Projekt']);
+test('a call lists the refs of its breadcrumbs so the page can link them', () => {
+    const call = describeCall({path: '/x', query: 'x'}, Object.assign({locations: {path: LOCATION.slice(0, 2)}}, opts));
+    assert.deepEqual(call.refs, [{kind: 'course', id: '2'}, {kind: 'section', id: '7'}]);
     const [, param] = call.params;
-    assert.equal(param.path, '/LF7/Subnetting-Projekt/Material Projekt');
+    assert.equal(param.arg, 'path');
     assert.ok(param.segments.every((s) => s.hasurl === false && s.url === ''));
-    assert.deepEqual(describeCall({path: '/'}, opts).paths, []);
-    assert.deepEqual(describeCall({query: 'x'}, opts).paths, []);
+    assert.deepEqual(describeCall({path: '/'}, Object.assign({locations: {path: []}}, opts)).refs, []);
+    assert.deepEqual(describeCall({query: 'x'}, opts).refs, []);
 });
 
-test('resolved links are attached per segment; empty urls stay plain text', () => {
-    const segments = describeCall({path: '/LF7/Geheim/Lösung'}, opts).params[0].segments;
-    const linked = linkSegments(segments, [
-        {name: 'LF7', url: 'https://m/course/view.php?id=2'}, {name: 'Geheim', url: ''}, {name: 'Lösung', url: ''},
-    ]);
+test('resolved links are attached by ref; empty urls stay plain text', () => {
+    const {segments} = describeCall({path: '/x'}, Object.assign({locations: {path: LOCATION.slice(0, 3)}}, opts)).params[0];
+    const linked = linkSegments(segments, {'course:2': 'https://m/course/view.php?id=2', 'section:7': ''});
     assert.deepEqual(linked.map((s) => [s.name, s.hasurl, s.url, s.last]), [
-        ['LF7', true, 'https://m/course/view.php?id=2', false], ['Geheim', false, '', false], ['Lösung', false, '', true],
+        ['LF7', true, 'https://m/course/view.php?id=2', false], ['Subnetting/Projekt', false, '', false],
+        ['Material', false, '', true],
     ]);
 });
 
-test('links are only taken from http(s) urls and never from a mismatched answer', () => {
-    const segments = describeCall({path: '/LF7/A'}, opts).params[0].segments;
-    const linked = linkSegments(segments, [{name: 'LF7', url: 'javascript:alert(1)'}, {name: 'B', url: 'https://m/x'}]);
-    assert.deepEqual(linked.map((s) => s.hasurl), [false, false]);
-    assert.deepEqual(linkSegments(segments, undefined).map((s) => s.hasurl), [false, false]);
+test('two places with the same name are told apart by id', () => {
+    const twin = [{kind: 'course', id: '2', name: 'LF7'}, {kind: 'section', id: '135', name: 'LF 11'}];
+    const other = [{kind: 'course', id: '2', name: 'LF7'}, {kind: 'section', id: '107', name: 'LF 11'}];
+    const links = {'section:107': 'https://m/course/section.php?id=107'};
+    const [a, b] = [twin, other].map((location) =>
+        linkSegments(describeCall({path: '/x'}, Object.assign({locations: {path: location}}, opts)).params[0].segments, links));
+    assert.deepEqual([a[1].hasurl, b[1].hasurl], [false, true]);
+});
+
+test('the card title names the place a path resolved to', () => {
+    assert.equal(callTarget({path: '/lf7/woche-1'}, {path: LOCATION.slice(0, 2)}, 'All courses'), 'Subnetting/Projekt');
+    assert.equal(callTarget({path: '/'}, {path: []}, 'All courses'), 'All courses');
+    assert.equal(callTarget({path: '/LF9'}, {}, 'All courses'), '/LF9');
+    assert.equal(callTarget({query: 'Raum', k: 3}, undefined, 'All courses'), 'Raum');
+    assert.equal(callTarget({k: 3}, {}, 'All courses'), '');
 });
 
 test('a cited document lists every page it was found on', () => {

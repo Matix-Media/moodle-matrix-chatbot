@@ -114,7 +114,8 @@ class TestAnswer:
         final = next(f for f in frames if f["type"] == "final")
         assert final["text"].endswith("[1].")
         (citation,) = final["citations"]
-        assert citation["path"] == "/LF7/Woche 2/Skript"
+        assert [s["name"] for s in citation["location"]] == ["LF7", "Woche 2", "Skript"]
+        assert citation["location"][-1] == {"kind": "module", "id": "12", "name": "Skript"}
         assert citation["url"] == "https://moodle.schule.test/mod/page/view.php?id=12"
         assert citation["course_name"] == "Netzwerke LF7"
         # Every document body shown to the model was confirmed live with Moodle first.

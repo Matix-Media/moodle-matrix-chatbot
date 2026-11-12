@@ -118,6 +118,11 @@ class TestStudentChat:
         expect(blocks).to_have_count(2, timeout=30_000)
         expect(blocks.nth(1).locator("[data-region=spinner]")).to_be_visible()
         expect(blocks.nth(0).locator("[data-region=spinner]")).to_be_hidden()
+        # Even the live block starts collapsed: the reader opens a thought, it never opens itself.
+        expect(blocks.nth(1).locator("[data-action=toggle]")).to_have_attribute(
+            "aria-expanded", "false"
+        )
+        expect(blocks.nth(1).locator("[data-region=thinking-text]")).to_be_hidden()
         student.wait_answer("Raum B204")
         for n, thought in enumerate(["zuerst nach dem Raum", "der Plan nennt B204"]):
             block = blocks.nth(n)
@@ -126,13 +131,13 @@ class TestStudentChat:
             expect(block.locator("[data-region=label-done]")).to_be_visible()
             toggle.click()
             expect(block.locator("[data-region=thinking-text]")).to_contain_text(thought)
-        # Stream order: thought, tool cards, thought, answer.
+        # Stream order: one activity group (thought, tool card, thought), then the answer.
         order = body.evaluate(
-            """b => [...b.children].map(n => n.dataset.region === 'thinking-block' ? 'thinking'
-                : n.dataset.region === 'tools' ? 'tools'
+            """b => [...b.children].map(n => n.dataset.region === 'tools'
+                    ? 'tools[' + [...n.children].map(c => c.dataset.region).join(' ') + ']'
                 : n.textContent.includes('B204') ? 'answer' : null).filter(Boolean)"""
         )
-        assert order == ["thinking", "tools", "thinking", "answer"], order
+        assert order == ["tools[thinking-block tool thinking-block]", "answer"], order
 
     def test_clarifying_question_round_trip(self, student: Chat, mock: Mock) -> None:
         mock.script(

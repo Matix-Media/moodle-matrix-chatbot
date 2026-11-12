@@ -8,7 +8,7 @@ model text; an unknown kind is shown generically by the plugin.
 
 Kinds:
 
-* ``hits`` — search results: citation number, path, page, date, snippet.
+* ``hits`` — search results: citation number, location, page, date, snippet.
 * ``entries`` — a listing of folders/files (``type`` = ``folder`` or a document kind).
 * ``fields`` — label/value rows; ``format`` says how to show the value.
 * ``text`` — an excerpt of a document or plain output.
@@ -20,6 +20,11 @@ Kinds:
 ``label``/``text`` is the fallback. Dates are epoch seconds or ISO strings so the
 browser formats them in the user's locale.
 
+Where a block points at Moodle objects it sends a ``location`` — a list of
+:class:`~moodle_llm_chat.agent.paths.Segment` (``kind``, ``id``, ``name``) from the course
+down — never the model's path: the plugin renders breadcrumbs from the names and links
+them by id.
+
 **Field names are a contract with the Moodle plugin** (``amd/src/tooldetails.js``,
 ``templates/tool_result.mustache``); ``tests/unit/test_tool_display.py`` pins them.
 """
@@ -30,13 +35,15 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from moodle_llm_chat.agent.paths import Segment
+
 #: Upper bound for a text block's text (the card is a preview, not a reader).
 DISPLAY_TEXT_CHARS = 4000
 
 
 class HitItem(BaseModel):
     cite: int
-    path: str
+    location: list[Segment] = Field(default_factory=list)
     page: int | None = None
     #: Epoch seconds the document last changed.
     modified: int | None = None
@@ -52,7 +59,8 @@ class Entry(BaseModel):
     name: str
     #: ``folder`` or a document kind (``inline``, ``html``, ``file``, ``external``).
     type: str
-    path: str | None = None
+    #: The entry itself is the last segment.
+    location: list[Segment] = Field(default_factory=list)
     #: Extra text, e.g. a course's full name.
     detail: str = ""
     #: Entries inside a folder.
@@ -65,8 +73,8 @@ class Entry(BaseModel):
 
 class EntriesBlock(BaseModel):
     kind: Literal["entries"] = "entries"
-    #: The folder listed, if the entries are its children.
-    path: str | None = None
+    #: The folder listed, if the entries are its children (empty for all courses).
+    location: list[Segment] = Field(default_factory=list)
     items: list[Entry] = Field(default_factory=list)
 
 
@@ -87,6 +95,8 @@ class TextBlock(BaseModel):
     kind: Literal["text"] = "text"
     text: str
     title: str = ""
+    #: The document the text is from, if any.
+    location: list[Segment] = Field(default_factory=list)
     cite: int | None = None
     #: Character range shown, when the text is part of a longer document.
     start: int | None = None

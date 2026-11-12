@@ -175,7 +175,7 @@ def assert_tool_loop(frames: list[dict[str, Any]], used_tokens: int) -> None:
     tokens = "".join(f["delta"] for f in frames if f["type"] == "token")
     final = next(f for f in frames if f["type"] == "final")
     assert final["text"] == "Raum B204 [1]." == tokens
-    assert final["citations"][0]["path"] == "/LF7/Woche 1/Plan"
+    assert [s["name"] for s in final["citations"][0]["location"]] == ["LF7", "Woche 1", "Plan"]
     assert frames[-1]["used_today"] == used_tokens
 
 

@@ -47,6 +47,7 @@ from moodle_llm_chat.agent.events import (
     ToolResultEvent,
     UsageEvent,
 )
+from moodle_llm_chat.agent.paths import PathNotFound, Segment
 from moodle_llm_chat.agent.prompts import FORCE_ANSWER, system_prompt
 from moodle_llm_chat.agent.tools.registry import ToolRegistry
 from moodle_llm_chat.config import ShowThinking
@@ -77,6 +78,23 @@ def _usage(message: AIMessage) -> UsageEvent | None:
         output_tokens=int(meta.get("output_tokens", 0)),
         reasoning_tokens=int(details.get("reasoning", 0) or 0),
     )
+
+
+#: Tool arguments that name a place in the course tree.
+PATH_ARGS = ("path",)
+
+
+def _locations(ctx: RunContext, args: dict[str, Any]) -> dict[str, list[Segment]]:
+    """The tree's reading of a call's path arguments, for the card (the plugin never parses
+    paths). A path that does not resolve is left out; the tool reports it."""
+    out: dict[str, list[Segment]] = {}
+    for key in PATH_ARGS:
+        value = args.get(key)
+        if not isinstance(value, str):
+            continue
+        with contextlib.suppress(PathNotFound):
+            out[key] = ctx.tree.location(ctx.tree.resolve(value))
+    return out
 
 
 class _WrapUp(AgentMiddleware):
@@ -282,6 +300,7 @@ class AgentRunner:
                                 name=call["name"],
                                 args=call.get("args", {}),
                                 summary=tool.summarize(call.get("args", {})) if tool else "",
+                                locations=_locations(ctx, call.get("args", {})),
                             )
                         )
                 elif isinstance(message, ToolMessage):

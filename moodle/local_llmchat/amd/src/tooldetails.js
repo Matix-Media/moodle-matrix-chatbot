@@ -15,8 +15,11 @@
 
 /**
  * Turns tool-call arguments and results into display data for the tool card templates:
- * friendly labels, paths as breadcrumbs, dates and relative ranges in words, lists as chips,
+ * friendly labels, locations as breadcrumbs, dates and relative ranges in words, lists as chips,
  * patterns as code. Pure functions (no DOM, no imports), unit-tested with node --test.
+ *
+ * Places in Moodle arrive as locations - [{kind, id, name}] from the course down, resolved by the
+ * API - never as paths to parse: breadcrumbs show the names and are linked by "kind:id" refs.
  *
  * @module     local_llmchat/tooldetails
  * @copyright  2026 Matix-Media
@@ -52,6 +55,50 @@ export const STRING_KEYS = [
  * @returns {string}
  */
 const fill = (template, a) => String(template).replace(/\{\$a\}/g, String(a));
+
+/** Kinds of location segments. */
+const SEGMENT_KINDS = ['course', 'section', 'module', 'document'];
+
+/**
+ * The well-formed segments of a location ([] for anything else).
+ *
+ * @param {*} location
+ * @returns {Array} [{kind, id, name}]
+ */
+const segmentsOf = (location) => (Array.isArray(location) ? location : [])
+    .filter((s) => s && typeof s === 'object' && SEGMENT_KINDS.includes(s.kind)
+        && ['string', 'number'].includes(typeof s.id) && String(s.id) !== '')
+    .map((s) => ({kind: s.kind, id: String(s.id), name: typeof s.name === 'string' ? s.name : ''}));
+
+/**
+ * The link key of a segment.
+ *
+ * @param {Object} segment {kind, id}
+ * @returns {string}
+ */
+const refOf = (segment) => `${segment.kind}:${segment.id}`;
+
+/**
+ * Breadcrumb data for a location, unlinked.
+ *
+ * @param {Array} segments from segmentsOf()
+ * @returns {Array} [{name, kind, id, ref, last, url, hasurl}]
+ */
+const breadcrumb = (segments) => segments.map((s, i) => ({
+    name: s.name, kind: s.kind, id: s.id, ref: refOf(s), last: i === segments.length - 1, url: '', hasurl: false,
+}));
+
+/**
+ * Unique {kind, id} pairs, in order.
+ *
+ * @param {Array} segments
+ * @returns {Array} [{kind, id}]
+ */
+const uniqueRefs = (segments) => {
+    const seen = new Map();
+    segments.forEach((s) => seen.set(refOf(s), {kind: s.kind, id: s.id}));
+    return [...seen.values()];
+};
 
 /**
  * "max_depth" → "Max depth".
@@ -91,9 +138,10 @@ const formatDate = (value, strings, locale) => {
  * @param {*} value
  * @param {Object} strings
  * @param {string} locale
+ * @param {Object} locations argument name => location, as the API resolved it
  * @returns {Object|null} null when there is nothing to show
  */
-const describeParam = (key, value, strings, locale) => {
+const describeParam = (key, value, strings, locale, locations) => {
     if (value === null || value === undefined || value === '') {
         return null;
     }
@@ -118,12 +166,14 @@ const describeParam = (key, value, strings, locale) => {
     }
     const text = String(value);
     if (kind === 'path') {
-        const names = text.split('/').map((s) => s.trim()).filter(Boolean);
-        if (!names.length) {
+        // Shown as the API resolved it; a path it could not resolve (or a call saved before
+        // locations) is shown as typed, never parsed.
+        const location = Object.prototype.hasOwnProperty.call(locations, key) ? locations[key] : null;
+        if (Array.isArray(location) && !location.length) {
             return row('text', {text: strings['toolval:root']});
         }
-        return row('path', {path: text,
-            segments: names.map((name, i) => ({name, last: i === names.length - 1, url: '', hasurl: false}))});
+        const segments = segmentsOf(location);
+        return segments.length ? row('path', {arg: key, segments: breadcrumb(segments)}) : row('text', {text});
     }
     if (kind === 'code') {
         return row('code', {text});
@@ -144,17 +194,19 @@ const describeParam = (key, value, strings, locale) => {
  * @param {Object} options
  * @param {Object} options.strings loaded language strings
  * @param {string} options.locale BCP 47 locale for numbers and dates
- * @returns {Object} {hasparams, params, raw, paths} - paths: the full paths shown, for linking
+ * @param {Object} [options.locations] the call's locations (tool_call.locations)
+ * @returns {Object} {hasparams, params, raw, refs} - refs: [{kind, id}] of the breadcrumbs, for linking
  */
-export const describeCall = (args, {strings, locale}) => {
+export const describeCall = (args, {strings, locale, locations}) => {
     const input = args && typeof args === 'object' ? args : {};
     const keys = [
         ...KNOWN_ARGS.filter((key) => key in input),
         ...Object.keys(input).filter((key) => !KNOWN_ARGS.includes(key)),
     ];
-    const params = keys.map((key) => describeParam(key, input[key], strings, locale)).filter(Boolean);
-    const paths = [...new Set(params.filter((p) => p.ispath).map((p) => p.path))];
-    return {hasparams: params.length > 0, params, raw: JSON.stringify(input, null, 2), paths};
+    const known = locations && typeof locations === 'object' && !Array.isArray(locations) ? locations : {};
+    const params = keys.map((key) => describeParam(key, input[key], strings, locale, known)).filter(Boolean);
+    const refs = uniqueRefs(params.filter((p) => p.ispath).flatMap((p) => p.segments));
+    return {hasparams: params.length > 0, params, raw: JSON.stringify(input, null, 2), refs};
 };
 
 /**
@@ -218,12 +270,12 @@ const fillAll = (template, a) => String(template || '')
 const httpUrl = (url) => (/^https?:\/\//i.test(String(url || '')) ? String(url) : '');
 
 /**
- * Path segments of a course path.
+ * A scalar as text ('' for anything else).
  *
- * @param {string} path
- * @returns {string[]}
+ * @param {*} value
+ * @returns {string}
  */
-const segmentsOf = (path) => String(path || '').split('/').map((s) => s.trim()).filter(Boolean);
+const textOf = (value) => (['string', 'number'].includes(typeof value) ? String(value) : '');
 
 /**
  * Epoch seconds or ISO date/date-time in the user's locale ('' when unknown).
@@ -258,11 +310,12 @@ const num = (n, locale) => Number(n).toLocaleString(locale);
 const BLOCKS = {
     hits: (block, items, cites, strings, locale) => ({ishits: true, items: items.map((hit) => {
         const cite = cites.get(Number(hit.cite));
-        const names = segmentsOf(hit.path);
+        // Hits saved before locations only have a path: shown as it is, not parsed.
+        const names = segmentsOf(hit.location).map((s) => s.name);
         const url = httpUrl(cite && cite.url);
         return {
             index: hit.cite ?? '',
-            title: (cite && cite.title) || names[names.length - 1] || String(hit.path || ''),
+            title: (cite && cite.title) || names[names.length - 1] || textOf(hit.path),
             url, hasurl: url !== '',
             meta: [names.slice(0, -1).join(' › '), hit.page ? `${strings.page} ${hit.page}` : '',
                 formatWhen(hit.modified, strings, locale)].filter(Boolean).join(' · '),
@@ -277,9 +330,11 @@ const BLOCKS = {
             entry.pages ? fillAll(strings['toolresult:pages'], num(entry.pages, locale)) : '',
             !entry.pages && entry.chars ? fillAll(strings['toolresult:chars'], num(entry.chars, locale)) : '',
         ];
+        const location = segmentsOf(entry.location);
         return {
-            name: String(entry.name || ''), path: String(entry.path || ''), isfolder: type === 'folder',
-            // Filled where links are resolved: the page (linkEntries) or the server-side renderer.
+            name: String(entry.name || ''), ref: location.length ? refOf(location[location.length - 1]) : '',
+            isfolder: type === 'folder',
+            // Filled once the links are resolved (ChatController.linkEntries).
             url: '', hasurl: false,
             detail: String(entry.detail || ''),
             meta: [strings[`toolentry:${type}`] || humanise(type), ...size, formatWhen(entry.modified, strings, locale)]
@@ -297,13 +352,13 @@ const BLOCKS = {
     })}),
     text: (block, items, cites, strings, locale) => {
         const cite = cites.get(Number(block.cite));
-        const names = segmentsOf(block.title);
+        const names = segmentsOf(block.location).map((s) => s.name);
         const url = httpUrl(cite && cite.url);
         const ranged = [block.start, block.end, block.total].every((n) => typeof n === 'number')
             && block.total > block.end - block.start;
         return {
             istext: true, text: String(block.text || ''), index: block.cite ?? '',
-            title: (cite && cite.title) || names[names.length - 1] || '',
+            title: (cite && cite.title) || names[names.length - 1] || textOf(block.title),
             url, hasurl: url !== '',
             range: ranged ? fillAll(strings['toolresult:range'],
                 {start: num(block.start, locale), end: num(block.end, locale), total: num(block.total, locale)}) : '',
@@ -352,7 +407,7 @@ const describeBlock = (block, cites, strings, locale) => {
  * @param {Object} options
  * @param {Object} options.strings loaded language strings
  * @param {string} options.locale BCP 47 locale for numbers and dates
- * @returns {Object} {hasresult, blocks, hascitations, citations, paths} - paths: entry paths, for linking
+ * @returns {Object} {hasresult, blocks, hascitations, citations, refs} - refs: [{kind, id}] of the entries, for linking
  */
 export const describeResult = (frame, {strings, locale}) => {
     const all = frame.citations || [];
@@ -368,22 +423,43 @@ export const describeResult = (frame, {strings, locale}) => {
         url: c.url || '',
         hasurl: Boolean(c.url),
     }));
-    const paths = [...new Set(blocks.filter((b) => b.isentries).flatMap((b) => b.items.map((e) => e.path)).filter(Boolean))];
-    return {hasresult: blocks.length > 0 || citations.length > 0, blocks, hascitations: citations.length > 0, citations, paths};
+    const refs = uniqueRefs(display.filter((b) => b.kind === 'entries' && Array.isArray(b.items))
+        .flatMap((b) => b.items.map((e) => segmentsOf(e && e.location)).filter((l) => l.length).map((l) => l[l.length - 1])));
+    return {hasresult: blocks.length > 0 || citations.length > 0, blocks, hascitations: citations.length > 0, citations, refs};
 };
 
 /**
- * Attach the links the page resolved for a path (local_llmchat_resolve_paths) to its breadcrumb
- * segments. A segment is linked only when the answer has an http(s) url for a segment of the
- * same name at the same position; anything else stays plain text.
+ * Attach the links the page resolved (local_llmchat_resolve_refs) to breadcrumb segments, by ref.
+ * Only http(s) urls link; a segment the user cannot open stays plain text.
  *
- * @param {Array} segments [{name, last}]
- * @param {Array|undefined} resolved [{name, url}] from the server, url '' when not accessible
- * @returns {Array} [{name, last, url, hasurl}]
+ * @param {Array} segments [{name, kind, id, ref, last}]
+ * @param {Object|undefined} links ref ("kind:id") => url, '' when not accessible
+ * @returns {Array} [{name, kind, id, ref, last, url, hasurl}]
  */
-export const linkSegments = (segments, resolved) => segments.map((segment, i) => {
-    const answer = Array.isArray(resolved) ? resolved[i] : null;
-    const same = answer && String(answer.name).toLowerCase() === String(segment.name).toLowerCase();
-    const url = same && /^https?:\/\//i.test(String(answer.url || '')) ? String(answer.url) : '';
+export const linkSegments = (segments, links) => segments.map((segment) => {
+    const url = links && typeof links === 'object' ? httpUrl(links[segment.ref]) : '';
     return Object.assign({}, segment, {url, hasurl: url !== ''});
 });
+
+/**
+ * The tool card's title: the first string argument, or for a path argument the name of the place
+ * it resolved to.
+ *
+ * @param {Object} args
+ * @param {Object} locations
+ * @param {string} root the name for all courses
+ * @returns {string}
+ */
+export const callTarget = (args, locations, root) => {
+    const input = args && typeof args === 'object' ? args : {};
+    const key = Object.keys(input).find((k) => typeof input[k] === 'string');
+    if (key === undefined) {
+        return '';
+    }
+    const location = locations && typeof locations === 'object' ? locations[key] : undefined;
+    if (Array.isArray(location) && !location.length) {
+        return root;
+    }
+    const segments = segmentsOf(location);
+    return segments.length ? segments[segments.length - 1].name : input[key];
+};

@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 
 from test_tools import NOW, ctx, world  # noqa: F401  (fixture re-export)
 
+from moodle_llm_chat.agent.paths import Segment
 from moodle_llm_chat.agent.tools import default_registry
 from moodle_llm_chat.agent.tools.base import Tool, ToolResult, ToolUI
 from moodle_llm_chat.agent.tools.display import (
@@ -36,27 +37,58 @@ def kinds(result: ToolResult) -> list[str]:
     return [b.kind for b in result.display]
 
 
+COURSE = Segment(kind="course", id="2", name="A")
+MODULE = Segment(kind="module", id="11", name="B")
+COURSE_JSON = {"kind": "course", "id": "2", "name": "A"}
+MODULE_JSON = {"kind": "module", "id": "11", "name": "B"}
+
+
+def ids(location: list[Segment]) -> list[str]:
+    return [f"{s.kind}:{s.id}" for s in location]
+
+
+def assert_no_paths(value: Any) -> None:
+    """The plugin gets ids and names, never a path string to parse."""
+    if isinstance(value, dict):
+        assert "path" not in value, value
+        for v in value.values():
+            assert_no_paths(v)
+    elif isinstance(value, list):
+        for v in value:
+            assert_no_paths(v)
+
+
 class TestWire:
     def test_hits(self) -> None:
-        block = HitsBlock(items=[HitItem(cite=1, path="/A/B", page=2, modified=5, snippet="x")])
+        block = HitsBlock(
+            items=[HitItem(cite=1, location=[COURSE, MODULE], page=2, modified=5, snippet="x")]
+        )
         assert block.model_dump(mode="json") == {
             "kind": "hits",
-            "items": [{"cite": 1, "path": "/A/B", "page": 2, "modified": 5, "snippet": "x"}],
+            "items": [
+                {
+                    "cite": 1,
+                    "location": [COURSE_JSON, MODULE_JSON],
+                    "page": 2,
+                    "modified": 5,
+                    "snippet": "x",
+                }
+            ],
         }
 
     def test_entries(self) -> None:
         block = EntriesBlock(
-            path="/A",
-            items=[Entry(name="B", type="folder", path="/A/B", count=3, modified=5)],
+            location=[COURSE],
+            items=[Entry(name="B", type="folder", location=[COURSE, MODULE], count=3, modified=5)],
         )
         assert block.model_dump(mode="json") == {
             "kind": "entries",
-            "path": "/A",
+            "location": [COURSE_JSON],
             "items": [
                 {
                     "name": "B",
                     "type": "folder",
-                    "path": "/A/B",
+                    "location": [COURSE_JSON, MODULE_JSON],
                     "detail": "",
                     "count": 3,
                     "pages": None,
@@ -81,6 +113,7 @@ class TestWire:
             "kind": "text",
             "text": "abc",
             "title": "",
+            "location": [],
             "cite": None,
             "start": None,
             "end": None,
@@ -110,7 +143,8 @@ class TestTools:
         (block,) = result.display
         assert isinstance(block, HitsBlock)
         (hit,) = block.items
-        assert hit.cite == 1 and hit.path == "/LF7/Woche 2/Plan"
+        assert hit.cite == 1 and ids(hit.location) == ["course:2", "section:1", "module:11"]
+        assert [s.name for s in hit.location] == ["LF7", "Woche 2", "Plan"]
         assert "B204" in hit.snippet and hit.modified
 
     async def test_search_without_hits_is_a_notice(self, world: Store) -> None:  # noqa: F811
@@ -129,12 +163,15 @@ class TestTools:
     async def test_list_dir_shows_entries(self, world: Store) -> None:  # noqa: F811
         root = await ListDir().run(ListDir.Args(path="/"), ctx(world))
         (block,) = root.display
-        assert isinstance(block, EntriesBlock) and block.path == "/"
+        assert isinstance(block, EntriesBlock) and block.location == []
         lf7 = next(e for e in block.items if e.name == "LF7")
-        assert lf7.type == "folder" and lf7.path == "/LF7" and lf7.detail == "Netzwerke LF7"
+        assert lf7.type == "folder" and ids(lf7.location) == ["course:2"]
+        assert lf7.detail == "Netzwerke LF7"
         week = await ListDir().run(ListDir.Args(path="/LF7/Woche 1"), ctx(world))
+        assert ids(week.display[0].location) == ["course:2", "section:1"]  # type: ignore[union-attr]
         (skript,) = week.display[0].items  # type: ignore[union-attr]
-        assert skript.type == "inline" and skript.pages == 2 and skript.path.endswith("/Skript")
+        assert skript.type == "inline" and skript.pages == 2
+        assert ids(skript.location)[-1] == "module:10"
 
     async def test_stat_shows_fields(self, world: Store) -> None:  # noqa: F811
         result = await StatFile().run(StatFile.Args(path="/LF7/Woche 1/Skript"), ctx(world))
@@ -149,7 +186,8 @@ class TestTools:
         result = await ReadFile().run(ReadFile.Args(path="/LF7/Woche 1/Skript"), c)
         (block,) = result.display
         assert isinstance(block, TextBlock)
-        assert block.cite == 1 and block.title == "/LF7/Woche 1/Skript"
+        assert block.cite == 1 and block.title == "Skript"
+        assert ids(block.location) == ["course:2", "section:1", "module:10"]
         assert block.start == 0 and block.end == 40 and (block.total or 0) > 40
         assert "[Seite 1]" in block.text
 
@@ -157,7 +195,7 @@ class TestTools:
         result = await ListDocuments().run(ListDocuments.Args(), ctx(world))
         (block,) = result.display
         assert isinstance(block, EntriesBlock)
-        assert block.items[0].path == "/LF7/Woche 2/Plan" and block.items[0].modified
+        assert ids(block.items[0].location)[-1] == "module:11" and block.items[0].modified
 
     async def test_datetime_shows_fields(self, world: Store) -> None:  # noqa: F811
         result = await CurrentDatetime().run(CurrentDatetime.Args(), ctx(world))
@@ -173,6 +211,23 @@ class TestTools:
         assert isinstance(table, TableBlock)
         assert [c.key for c in table.columns] == ["course", "roles", "groups"]
         assert any(row[0].startswith("LF7") for row in table.rows)
+
+
+class TestNoPathsOnTheWire:
+    async def test_no_tool_result_carries_a_path(self, world: Store) -> None:  # noqa: F811
+        c = ctx(world)
+        results = [
+            await SearchText().run(SearchText.Args(query="Raum"), c),
+            await ListDir().run(ListDir.Args(path="/"), c),
+            await ListDir().run(ListDir.Args(path="/LF7/Woche 1"), c),
+            await StatFile().run(StatFile.Args(path="/LF7/Woche 1/Skript"), c),
+            await ReadFile().run(ReadFile.Args(path="/LF7/Woche 1/Skript"), c),
+            await ListDocuments().run(ListDocuments.Args(), c),
+        ]
+        for result in results:
+            assert_no_paths([b.model_dump(mode="json") for b in result.display])
+            assert not any("/LF7" in str(b.model_dump(mode="json")) for b in result.display)
+        assert_no_paths([r.model_dump(mode="json") for r in c.citations.refs])
 
 
 class _Plain(Tool[Any]):

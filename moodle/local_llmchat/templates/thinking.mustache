@@ -17,8 +17,9 @@
 {{!
     @template local_llmchat/thinking
 
-    Collapsible reasoning block; expanded while the model thinks, collapsed once the answer starts.
-    "done" renders it collapsed with its "text" (a stored conversation rendered by the page).
+    Collapsible reasoning block, an item of the activity group it shares with the tool cards;
+    always collapsed until the reader opens it, while the model thinks it shows a spinner. "done"
+    renders a finished block with its "text" (a stored conversation).
 
     Example context (json):
     {
@@ -27,13 +28,13 @@
         "text": "Die Frage betrifft den Stundenplan; ich suche nach dem Raum."
     }
 }}
-<div class="local-llmchat-thinking" data-region="thinking-block">
+<div class="list-group-item local-llmchat-thinking" data-region="thinking-block">
     <button type="button" class="btn btn-link btn-sm p-0 text-muted local-llmchat-toggle" data-action="toggle"
-        aria-expanded="{{#done}}false{{/done}}{{^done}}true{{/done}}" aria-controls="{{uniqid}}">
+        aria-expanded="false" aria-controls="{{uniqid}}">
         <span class="local-llmchat-chevron">{{#pix}} t/expandedchevron, core {{/pix}}</span>{{#pix}} thinking, local_llmchat {{/pix}}<span class="{{#done}}d-none{{/done}}" data-region="label-active">{{#str}} thinking, local_llmchat {{/str}}</span><span class="{{^done}}d-none{{/done}}" data-region="label-done">{{#str}} thoughts, local_llmchat {{/str}}</span>
         <span class="spinner-border spinner-border-sm ms-1{{#done}} d-none{{/done}}" data-region="spinner" aria-hidden="true"></span>
     </button>
-    <div class="collapse{{^done}} show{{/done}}" id="{{uniqid}}" data-region="collapsible">
+    <div class="collapse" id="{{uniqid}}" data-region="collapsible">
         <div class="small text-muted border-start border-left ps-3 pl-3 mt-1 local-llmchat-thinking-text" data-region="thinking-text">{{text}}</div>
     </div>
 </div>

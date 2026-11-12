@@ -59,7 +59,11 @@ class RunContext:
         return [d for d in docs if d.cmid in allowed]
 
     def cite(self, document: Document, *, page: int | None = None) -> int:
-        node_path = self.tree.path_for(document.doc_id) or document.title
-        course = self.tree.root.children.get(node_path.strip("/").split("/")[0])
-        course_name = course.course.fullname if course and course.course else ""
-        return self.citations.add(document, path=node_path, course_name=course_name, page=page)
+        node = self.tree.node_for(document.doc_id)
+        course = self.tree.course_of(node) if node else None
+        return self.citations.add(
+            document,
+            location=self.tree.location(node) if node else [],
+            course_name=course.fullname if course else "",
+            page=page,
+        )
