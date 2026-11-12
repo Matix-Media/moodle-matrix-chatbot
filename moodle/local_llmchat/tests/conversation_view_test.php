@@ -138,6 +138,58 @@ final class conversation_view_test extends \advanced_testcase {
         $this->assertSame('https://moodle.example/course/view.php?id=2', $crumb->item(0)->getAttribute('href'));
     }
 
+    public function test_tool_results_render_their_display_blocks(): void {
+        $plan = ['index' => 1, 'title' => 'Plan', 'course_name' => 'LF7', 'url' => 'https://moodle.example/mod/page/view.php?id=5',
+            'page' => 2, 'pages' => [2, 5]];
+        [$x] = $this->render([
+            $this->ev('user_message', ['text' => 'Suche']),
+            $this->ev('tool_call', ['id' => 'c1', 'name' => 'search_text', 'args' => ['query' => 'Raum']]),
+            $this->ev('tool_result', ['id' => 'c1', 'name' => 'search_text', 'citations' => [$plan], 'display' => [
+                ['kind' => 'hits', 'items' => [
+                    ['cite' => 1, 'path' => '/LF7/Woche 2/Plan', 'page' => 2, 'snippet' => 'Raum B204'],
+                ]],
+            ]]),
+            $this->ev('tool_call', ['id' => 'c2', 'name' => 'list_dir', 'args' => ['path' => '/LF7']]),
+            $this->ev('tool_result', ['id' => 'c2', 'name' => 'list_dir', 'display' => [
+                ['kind' => 'entries', 'path' => '/LF7', 'items' => [
+                    ['name' => 'Woche 1', 'type' => 'folder', 'path' => '/LF7/Woche 1', 'count' => 3],
+                    ['name' => 'Geheim', 'type' => 'file', 'path' => '/LF7/Geheim'],
+                ]],
+            ]]),
+            $this->ev('tool_call', ['id' => 'c3', 'name' => 'list_dir', 'args' => ['path' => '/LF8']]),
+            $this->ev('tool_result', ['id' => 'c3', 'name' => 'list_dir', 'display' => [
+                ['kind' => 'notice', 'level' => 'error', 'code' => 'path_not_found', 'text' => 'Nicht gefunden: LF8'],
+            ]]),
+            $this->ev('final', ['text' => 'Raum B204 [1].', 'citations' => [$plan]]),
+        ], ['/LF7/Woche 1' => [
+            ['name' => 'LF7', 'url' => 'https://moodle.example/course/view.php?id=2'],
+            ['name' => 'Woche 1', 'url' => 'https://moodle.example/course/section.php?id=7'],
+        ], '/LF7/Geheim' => [
+            ['name' => 'LF7', 'url' => 'https://moodle.example/course/view.php?id=2'],
+            ['name' => 'Geheim', 'url' => ''],
+        ]]);
+        [$search, $listing, $failed] = iterator_to_array($x->query('//*[@data-region="tool"]'));
+        $hit = $x->query('.//*[contains(@class, "local-llmchat-hits")]/li', $search)->item(0);
+        $this->assertNotNull($hit, 'hits block');
+        $this->assertStringContainsString('Raum B204', $hit->textContent);
+        $this->assertSame('https://moodle.example/mod/page/view.php?id=5', self::attr($x, './/a', $hit, 'href'));
+        $sourcelists = './/*[@data-region="result"]//ul[not(contains(@class, "local-llmchat-hits"))]';
+        $this->assertSame(0, $x->query($sourcelists, $search)->length, 'a source shown as a hit is not listed again');
+
+        $entries = $x->query('.//*[@data-region="entry"]', $listing);
+        $this->assertSame(2, $entries->length);
+        $this->assertSame('https://moodle.example/course/section.php?id=7', self::attr($x, './/a', $entries->item(0), 'href'));
+        $this->assertSame(0, $x->query('.//a', $entries->item(1))->length, 'what the user cannot open is not a link');
+        $this->assertStringContainsString(get_string('toolresult:entries', 'local_llmchat', 3), $listing->textContent);
+
+        $notice = $x->query('.//p[contains(@class, "text-danger")]', $failed)->item(0);
+        $this->assertSame(get_string('toolnotice:path_not_found', 'local_llmchat'), $notice->textContent);
+        $this->assertStringContainsString('Nicht gefunden: LF8', $failed->textContent);
+
+        $sources = $x->query('//*[contains(@class, "local-llmchat-sources")]')->item(0);
+        $this->assertStringContainsString(get_string('page') . ' 2, 5', $sources->textContent);
+    }
+
     public function test_thinking_is_collapsed_and_empty_thinking_is_left_out(): void {
         [$x] = $this->render([
             $this->ev('user_message', ['text' => 'a']),

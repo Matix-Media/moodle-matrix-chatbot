@@ -62,7 +62,11 @@ fails, it logs `dataset seed FAILED` (see `… logs moodle`) and Moodle starts a
 
 Seeding is idempotent and only adds. Each course and module is keyed by its
 `idnumber`. A restart creates only what's missing and re-applies visibility and
-restrictions. Datasets with different prefixes can share one Moodle. To replace a
+restrictions. Sections have no idnumber, so on a restart each one is found through
+the seeded modules it holds, not by its number. Sections you insert or move in the UI
+keep their names. A dataset section you rename gets its manifest name back, and one
+whose modules were all deleted is left alone. Datasets with different prefixes can
+share one Moodle. To replace a
 dataset that has the same prefix, run `down -v` first.
 
 ## Bundles: one file to carry a dataset between checkouts

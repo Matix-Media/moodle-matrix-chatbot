@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+import email.utils
 from typing import Any
 
 import httpx
@@ -100,6 +102,31 @@ class TestFailures:
         respx.get("https://hackmd.io/abcDEF123.md").respond(503)
         with pytest.raises(TransientFetchError):
             await _fetch("https://hackmd.io/abcDEF123")
+
+    @respx.mock
+    async def test_rate_limit_carries_retry_after_seconds(self) -> None:
+        respx.get("https://hackmd.io/abcDEF123.md").respond(429, headers={"Retry-After": "120"})
+        with pytest.raises(TransientFetchError) as err:
+            await _fetch("https://hackmd.io/abcDEF123")
+        assert err.value.retry_after == 120
+        assert err.value.rate_limited
+
+    @respx.mock
+    async def test_retry_after_http_date(self) -> None:
+        later = email.utils.format_datetime(
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=10), usegmt=True
+        )
+        respx.get("https://hackmd.io/abcDEF123.md").respond(503, headers={"Retry-After": later})
+        with pytest.raises(TransientFetchError) as err:
+            await _fetch("https://hackmd.io/abcDEF123")
+        assert err.value.retry_after is not None and 500 < err.value.retry_after <= 600
+
+    @respx.mock
+    async def test_rate_limit_without_header_has_no_retry_after(self) -> None:
+        respx.get("https://hackmd.io/abcDEF123.md").respond(429)
+        with pytest.raises(TransientFetchError) as err:
+            await _fetch("https://hackmd.io/abcDEF123")
+        assert err.value.retry_after is None and err.value.rate_limited
 
     @respx.mock
     async def test_not_found_is_permanent(self) -> None:

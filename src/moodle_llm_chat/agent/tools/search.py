@@ -17,7 +17,9 @@ from moodle_llm_chat.agent.tools.common import (
     snippet,
     time_bounds,
 )
+from moodle_llm_chat.agent.tools.display import HitItem, HitsBlock, NoticeBlock
 from moodle_llm_chat.agent.tools.registry import ToolInputError
+from moodle_llm_chat.index.models import Document
 from moodle_llm_chat.index.search import Hit
 
 NO_HITS = "Keine Treffer in den Kursen, auf die du Zugriff hast."
@@ -25,6 +27,10 @@ MAX_PATTERN = 200
 REGEX_TIMEOUT_S = 3.0
 #: Nested quantifiers like (a+)+ or (.*)* are the classic catastrophic-backtracking shape.
 _NESTED_QUANTIFIER = re.compile(r"\((?:[^()\\]|\\.)*[+*}]\)\s*[+*{]")
+
+
+def no_hits() -> ToolResult:
+    return ToolResult(text=NO_HITS, display=[NoticeBlock(code="no_hits", text=NO_HITS)])
 
 
 class SearchArgs(TimeFilter):
@@ -54,17 +60,33 @@ async def _render_hits(ctx: RunContext, hits: list[Hit]) -> ToolResult:
     readable = {d.doc_id for d in await ctx.readable(h.document for h in hits)}
     lines: list[str] = []
     cites: list[int] = []
+    items: list[HitItem] = []
     for hit in hits:
         if hit.document.doc_id not in readable:
             continue
         n = ctx.cite(hit.document, page=hit.chunk.page)
         cites.append(n)
-        lines.append(
-            f"[{n}] {describe(ctx, hit.document, page=hit.chunk.page)}\n{snippet(hit.chunk.text)}"
-        )
+        text = snippet(hit.chunk.text)
+        lines.append(f"[{n}] {describe(ctx, hit.document, page=hit.chunk.page)}\n{text}")
+        items.append(_hit(ctx, n, hit.document, hit.chunk.page, text))
     if not lines:
-        return ToolResult(text=NO_HITS)
-    return ToolResult(text="\n\n".join(lines), citations=cites, meta={"hits": len(lines)})
+        return no_hits()
+    return ToolResult(
+        text="\n\n".join(lines),
+        citations=sorted(set(cites)),
+        display=[HitsBlock(items=items)],
+        meta={"hits": len(lines)},
+    )
+
+
+def _hit(ctx: RunContext, n: int, document: Document, page: int | None, text: str) -> HitItem:
+    return HitItem(
+        cite=n,
+        path=ctx.tree.path_for(document.doc_id) or document.title,
+        page=page,
+        modified=document.timemodified or None,
+        snippet=text,
+    )
 
 
 class SearchContent(Tool[SearchArgs]):
@@ -164,17 +186,18 @@ class SearchRegex(Tool[RegexArgs]):
         except TimeoutError as exc:
             raise ToolInputError("Suche dauerte zu lange; Muster vereinfachen") from exc
         if not found:
-            return ToolResult(text=NO_HITS)
-        lines, cites = [], []
+            return no_hits()
+        lines, cites, items = [], [], []
         for index, page, context in found:
             document = corpus[index][0]
             n = ctx.cite(document, page=page)
             cites.append(n)
-            lines.append(
-                f"[{n}] {describe(ctx, document, page=page)}\n…{' '.join(context.split())}…"
-            )
+            text = f"…{' '.join(context.split())}…"
+            lines.append(f"[{n}] {describe(ctx, document, page=page)}\n{text}")
+            items.append(_hit(ctx, n, document, page, text))
         return ToolResult(
             text="\n\n".join(lines),
             citations=sorted(set(cites)),
+            display=[HitsBlock(items=items)],
             meta={"matches": len(found), "limit_reached": len(found) >= args.max_matches},
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
@@ -9,8 +10,17 @@ from pydantic import BaseModel, Field
 from moodle_llm_chat.agent.context import RunContext
 from moodle_llm_chat.agent.paths import Node, NodeKind
 from moodle_llm_chat.agent.timeparse import format_date
-from moodle_llm_chat.agent.tools.base import Attachment, Tool, ToolResult, ToolUI
+from moodle_llm_chat.agent.tools.base import Tool, ToolResult, ToolUI
 from moodle_llm_chat.agent.tools.common import TimeFilter, scope_doc_ids, time_bounds
+from moodle_llm_chat.agent.tools.display import (
+    EntriesBlock,
+    Entry,
+    FieldItem,
+    FieldsBlock,
+    NoticeBlock,
+    TextBlock,
+    clip,
+)
 from moodle_llm_chat.agent.tools.registry import ToolInputError
 from moodle_llm_chat.index.models import Document
 
@@ -49,6 +59,38 @@ def _size(document: Document) -> str:
     return "kein Text" if document.extract_version is not None else "wird verarbeitet"
 
 
+NO_ACCESS = "Auf diese Datei hast du gerade keinen Zugriff."
+
+
+def _notice(text: str, code: str, level: Literal["info", "warning"] = "info") -> ToolResult:
+    return ToolResult(text=text, display=[NoticeBlock(level=level, code=code, text=text)])
+
+
+def _entry(node: Node) -> Entry:
+    if node.document is None:
+        return Entry(
+            name=node.name,
+            type="folder",
+            path=node.path,
+            detail=node.course.fullname if node.course else "",
+            count=len(node.children),
+            modified=node.modified or None,
+        )
+    d = node.document
+    return Entry(
+        name=node.name,
+        type=d.kind.value,
+        path=node.path,
+        pages=d.page_count if d.page_count > 1 else None,
+        chars=d.char_count or None,
+        modified=d.timemodified or None,
+    )
+
+
+def _iso(epoch: int, now: datetime) -> str:
+    return datetime.fromtimestamp(epoch, now.tzinfo).isoformat(timespec="minutes")
+
+
 async def _visible_children(ctx: RunContext, node: Node) -> list[Node]:
     files = [c.document for c in node.children.values() if c.document is not None]
     readable = {d.doc_id for d in await ctx.readable(files)}
@@ -73,7 +115,7 @@ class ListDir(Tool[PathArgs]):
             raise ToolInputError(f"{node.path} ist eine Datei — nutze read_file oder stat_file")
         children = await _visible_children(ctx, node)
         if not children:
-            return ToolResult(text=f"{node.path}: (leer)")
+            return _notice(f"{node.path}: (leer)", "empty")
         now = ctx.now()
         lines = [f"{node.path}:"]
         for child in children:
@@ -90,12 +132,7 @@ class ListDir(Tool[PathArgs]):
                 lines.append(f"  [{kind}] {child.name} — {_size(d)}, geändert {changed}")
         return ToolResult(
             text="\n".join(lines),
-            attachments=[
-                Attachment(
-                    kind="listing",
-                    data={"path": node.path, "entries": [c.name for c in children]},
-                )
-            ],
+            display=[EntriesBlock(path=node.path, items=[_entry(c) for c in children])],
         )
 
 
@@ -114,9 +151,34 @@ class StatFile(Tool[PathArgs]):
             raise ToolInputError(f"{node.path} ist ein Ordner — nutze list_dir")
         readable = await ctx.readable([node.document])
         if not readable:
-            return ToolResult(text="Auf diese Datei hast du gerade keinen Zugriff.")
+            return _notice(NO_ACCESS, "no_access", "warning")
         document = readable[0]
         n = ctx.cite(document)
+        kind = _KIND_LABEL.get(document.kind.value, document.kind.value)
+        fields = [
+            FieldItem(key="title", label="Titel", value=document.title),
+            FieldItem(
+                key="kind",
+                label="Art",
+                value=kind + (f" ({document.mimetype})" if document.mimetype else ""),
+            ),
+            FieldItem(key="size", label="Umfang", value=_size(document)),
+        ]
+        if document.timemodified:
+            fields.append(
+                FieldItem(
+                    key="modified",
+                    label="Geändert",
+                    value=_iso(document.timemodified, ctx.now()),
+                    format="date",
+                )
+            )
+        if document.module_url:
+            fields.append(
+                FieldItem(key="link", label="Moodle-Link", value=document.module_url, format="link")
+            )
+        if document.skip_reason:
+            fields.append(FieldItem(key="note", label="Hinweis", value=document.skip_reason))
         lines = [
             f"[{n}] {node.path}",
             f"Titel: {document.title}",
@@ -129,7 +191,7 @@ class StatFile(Tool[PathArgs]):
             lines.append(f"Moodle-Link: {document.module_url}")
         if document.skip_reason:
             lines.append(f"Hinweis: Inhalt nicht (vollständig) lesbar ({document.skip_reason})")
-        return ToolResult(text="\n".join(lines), citations=[n])
+        return ToolResult(text="\n".join(lines), citations=[n], display=[FieldsBlock(items=fields)])
 
 
 class ReadFile(Tool[ReadArgs]):
@@ -149,7 +211,7 @@ class ReadFile(Tool[ReadArgs]):
             raise ToolInputError(f"{node.path} ist ein Ordner — nutze list_dir")
         readable = await ctx.readable([node.document])
         if not readable:
-            return ToolResult(text="Auf diese Datei hast du gerade keinen Zugriff.")
+            return _notice(NO_ACCESS, "no_access", "warning")
         document = readable[0]
         segments = ctx.store.segments(ctx.site.site_id, document.doc_id)
         if args.page is not None:
@@ -158,7 +220,7 @@ class ReadFile(Tool[ReadArgs]):
                 raise ToolInputError(f"Seite {args.page} gibt es in {node.path} nicht")
         if not segments:
             reason = document.skip_reason or "noch nicht verarbeitet"
-            return ToolResult(text=f"{node.path} enthält keinen lesbaren Text ({reason}).")
+            return _notice(f"{node.path} enthält keinen lesbaren Text ({reason}).", "no_text")
 
         parts: list[str] = []
         starts: list[tuple[int, int | None]] = []
@@ -182,6 +244,16 @@ class ReadFile(Tool[ReadArgs]):
             citations=[n],
             truncated=more,
             next_cursor=str(end) if more else None,
+            display=[
+                TextBlock(
+                    text=clip(window),
+                    title=node.path,
+                    cite=n,
+                    start=args.offset,
+                    end=end,
+                    total=len(full),
+                )
+            ],
             meta={"total_chars": len(full)},
         )
 
@@ -209,9 +281,14 @@ class ListDocuments(Tool[ListDocumentsArgs]):
         docs.sort(key=lambda d: (d.timemodified, d.doc_id), reverse=args.order == "newest")
         docs = (await ctx.readable(docs))[: args.limit]
         if not docs:
-            return ToolResult(text="Keine passenden Dokumente.")
+            return _notice("Keine passenden Dokumente.", "no_documents")
         now = ctx.now()
         lines = [
             f"{format_date(d.timemodified, now=now)}  {ctx.tree.path_for(d.doc_id)}" for d in docs
         ]
-        return ToolResult(text="\n".join(lines), meta={"count": len(docs)})
+        nodes = [ctx.tree.resolve(path) for d in docs if (path := ctx.tree.path_for(d.doc_id))]
+        return ToolResult(
+            text="\n".join(lines),
+            display=[EntriesBlock(items=[_entry(node) for node in nodes])],
+            meta={"count": len(docs)},
+        )

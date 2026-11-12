@@ -47,7 +47,8 @@ class ToolResultEvent(_Event):
     name: str
     summary: str = ""
     citations: list[CitationRef] = Field(default_factory=list)
-    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    #: Display blocks for the tool card (``agent.tools.display``), as JSON.
+    display: list[dict[str, Any]] = Field(default_factory=list)
     truncated: bool = False
     error: str | None = None
 

@@ -272,6 +272,11 @@ final class conversation_view {
                 foreach ($this->display->describe_call($args)['paths'] as $path) {
                     $paths[$path] = true;
                 }
+                if (is_array($tool['result'] ?? null)) {
+                    foreach ($this->display->describe_result($tool['result'])['paths'] as $path) {
+                        $paths[$path] = true;
+                    }
+                }
             }
         }
         if (!$paths) {
@@ -367,7 +372,7 @@ final class conversation_view {
         ], $described, [
             'done' => $result !== null,
             'summary' => $result !== null && !empty($result['summary']) ? (string)$result['summary'] : '',
-            'result' => $result !== null ? $this->display->describe_result($result) : null,
+            'result' => $result !== null ? tool_display::link_entries($this->display->describe_result($result), $links) : null,
         ]);
         return $this->output->render_from_template('local_llmchat/tool_call', $context);
     }
@@ -383,14 +388,10 @@ final class conversation_view {
     private function render_footer(array $final, string $raw, array $citations): string {
         $items = [];
         foreach ($citations as $c) {
-            $meta = array_filter([
-                (string)($c['course_name'] ?? ''),
-                !empty($c['page']) ? get_string('page') . ' ' . $c['page'] : '',
-            ], fn($p) => $p !== '');
             $items[] = [
                 'index' => $c['index'] ?? '',
                 'title' => (string)(($c['title'] ?? '') ?: ($c['url'] ?? '')),
-                'meta' => implode(' · ', $meta),
+                'meta' => tool_display::citation_meta($c, get_string('page')),
                 'url' => (string)($c['url'] ?? ''),
                 'hasurl' => !empty($c['url']),
             ];

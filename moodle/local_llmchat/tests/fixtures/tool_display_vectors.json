@@ -16,7 +16,20 @@
     "toolval:yes": "Yes",
     "toolval:no": "No",
     "toolval:root": "All courses",
-    "page": "Page"
+    "page": "Page",
+    "toolresult:entries": "{$a} entries",
+    "toolresult:pages": "{$a} pages",
+    "toolresult:chars": "{$a} characters",
+    "toolresult:range": "Characters {$a->start}–{$a->end} of {$a->total}",
+    "toolentry:folder": "Folder",
+    "toolentry:file": "File",
+    "toolentry:inline": "Text",
+    "toolfield:title": "Title",
+    "toolfield:link": "Moodle link",
+    "toolfield:course": "Course",
+    "toolfield:roles": "Roles",
+    "toolnotice:no_hits": "No results.",
+    "toolnotice:path_not_found": "This location does not exist."
   },
   "calls": [
     {
@@ -374,31 +387,38 @@
   ],
   "results": [
     {
-      "name": "summary only",
-      "frame": {
-        "summary": "4 Treffer"
-      },
-      "expected": {
-        "hasresult": true,
-        "summary": "4 Treffer",
-        "hascitations": false,
-        "citations": []
-      }
-    },
-    {
       "name": "nothing",
       "frame": {},
       "expected": {
         "hasresult": false,
-        "summary": "",
+        "blocks": [],
         "hascitations": false,
-        "citations": []
+        "citations": [],
+        "paths": []
       }
     },
     {
-      "name": "citations and links",
+      "name": "old frame: summary only",
       "frame": {
-        "summary": "x",
+        "summary": "4 Treffer",
+        "attachments": [
+          {
+            "type": "link",
+            "url": "https://ex.example/b"
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": false,
+        "blocks": [],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "old frame: citations with a single page",
+      "frame": {
         "citations": [
           {
             "index": 1,
@@ -412,26 +432,11 @@
             "title": "",
             "url": ""
           }
-        ],
-        "attachments": [
-          {
-            "type": "link",
-            "url": "https://ex.example/b",
-            "title": "B"
-          },
-          {
-            "type": "file",
-            "url": "https://ex.example/c"
-          },
-          {
-            "type": "link",
-            "url": ""
-          }
         ]
       },
       "expected": {
         "hasresult": true,
-        "summary": "x",
+        "blocks": [],
         "hascitations": true,
         "citations": [
           {
@@ -447,15 +452,686 @@
             "meta": "",
             "url": "",
             "hasurl": false
-          },
+          }
+        ],
+        "paths": []
+      }
+    },
+    {
+      "name": "citations list every page",
+      "frame": {
+        "citations": [
           {
-            "index": "",
-            "title": "B",
-            "meta": "",
-            "url": "https://ex.example/b",
-            "hasurl": true
+            "index": 1,
+            "title": "Plan",
+            "course_name": "LF7",
+            "url": "https://moodle.example/mod/page/view.php?id=11",
+            "page": 2,
+            "pages": [
+              2,
+              5
+            ]
           }
         ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [],
+        "hascitations": true,
+        "citations": [
+          {
+            "index": 1,
+            "title": "Plan",
+            "meta": "LF7 · Page 2, 5",
+            "url": "https://moodle.example/mod/page/view.php?id=11",
+            "hasurl": true
+          }
+        ],
+        "paths": []
+      }
+    },
+    {
+      "name": "hits use their citation and are not listed twice",
+      "frame": {
+        "citations": [
+          {
+            "index": 1,
+            "title": "Plan",
+            "course_name": "LF7",
+            "url": "https://moodle.example/mod/page/view.php?id=11",
+            "page": 2,
+            "pages": [
+              2,
+              5
+            ]
+          },
+          {
+            "index": 2,
+            "title": "Other",
+            "url": ""
+          }
+        ],
+        "display": [
+          {
+            "kind": "hits",
+            "items": [
+              {
+                "cite": 1,
+                "path": "/LF7/Woche 2/Plan",
+                "page": 2,
+                "modified": null,
+                "snippet": "Raum B204"
+              },
+              {
+                "cite": 7,
+                "path": "/LF7/Skript",
+                "page": null,
+                "snippet": ""
+              },
+              {
+                "cite": 3,
+                "path": "javascript:x"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "ishits": true,
+            "items": [
+              {
+                "index": 1,
+                "title": "Plan",
+                "url": "https://moodle.example/mod/page/view.php?id=11",
+                "hasurl": true,
+                "meta": "LF7 › Woche 2 · Page 2",
+                "snippet": "Raum B204"
+              },
+              {
+                "index": 7,
+                "title": "Skript",
+                "url": "",
+                "hasurl": false,
+                "meta": "LF7",
+                "snippet": ""
+              },
+              {
+                "index": 3,
+                "title": "javascript:x",
+                "url": "",
+                "hasurl": false,
+                "meta": "",
+                "snippet": ""
+              }
+            ]
+          }
+        ],
+        "hascitations": true,
+        "citations": [
+          {
+            "index": 2,
+            "title": "Other",
+            "meta": "",
+            "url": "",
+            "hasurl": false
+          }
+        ],
+        "paths": []
+      }
+    },
+    {
+      "name": "hit links only to http(s)",
+      "frame": {
+        "citations": [
+          {
+            "index": 1,
+            "title": "X",
+            "url": "javascript:alert(1)"
+          }
+        ],
+        "display": [
+          {
+            "kind": "hits",
+            "items": [
+              {
+                "cite": 1,
+                "path": "/A/X"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "ishits": true,
+            "items": [
+              {
+                "index": 1,
+                "title": "X",
+                "url": "",
+                "hasurl": false,
+                "meta": "A",
+                "snippet": ""
+              }
+            ]
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "entries",
+      "frame": {
+        "display": [
+          {
+            "kind": "entries",
+            "path": "/LF7",
+            "items": [
+              {
+                "name": "Woche 1",
+                "type": "folder",
+                "path": "/LF7/Woche 1",
+                "count": 3,
+                "detail": "Netzwerke LF7"
+              },
+              {
+                "name": "Leer",
+                "type": "folder",
+                "path": "/LF7/Leer",
+                "count": 0
+              },
+              {
+                "name": "Skript",
+                "type": "file",
+                "path": "/LF7/Woche 1/Skript",
+                "pages": 12,
+                "chars": 900
+              },
+              {
+                "name": "Notiz",
+                "type": "inline",
+                "path": "/LF7/Notiz",
+                "chars": 120
+              },
+              {
+                "name": "Neu",
+                "type": "quiz_attempt",
+                "path": "/LF7/Neu"
+              },
+              {
+                "name": "Ohne Pfad",
+                "type": "external"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "isentries": true,
+            "items": [
+              {
+                "name": "Woche 1",
+                "path": "/LF7/Woche 1",
+                "isfolder": true,
+                "url": "",
+                "hasurl": false,
+                "detail": "Netzwerke LF7",
+                "meta": "Folder · 3 entries"
+              },
+              {
+                "name": "Leer",
+                "path": "/LF7/Leer",
+                "isfolder": true,
+                "url": "",
+                "hasurl": false,
+                "detail": "",
+                "meta": "Folder · 0 entries"
+              },
+              {
+                "name": "Skript",
+                "path": "/LF7/Woche 1/Skript",
+                "isfolder": false,
+                "url": "",
+                "hasurl": false,
+                "detail": "",
+                "meta": "File · 12 pages"
+              },
+              {
+                "name": "Notiz",
+                "path": "/LF7/Notiz",
+                "isfolder": false,
+                "url": "",
+                "hasurl": false,
+                "detail": "",
+                "meta": "Text · 120 characters"
+              },
+              {
+                "name": "Neu",
+                "path": "/LF7/Neu",
+                "isfolder": false,
+                "url": "",
+                "hasurl": false,
+                "detail": "",
+                "meta": "Quiz attempt"
+              },
+              {
+                "name": "Ohne Pfad",
+                "path": "",
+                "isfolder": false,
+                "url": "",
+                "hasurl": false,
+                "detail": "",
+                "meta": "External"
+              }
+            ]
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": [
+          "/LF7/Woche 1",
+          "/LF7/Leer",
+          "/LF7/Woche 1/Skript",
+          "/LF7/Notiz",
+          "/LF7/Neu"
+        ]
+      }
+    },
+    {
+      "name": "fields",
+      "frame": {
+        "display": [
+          {
+            "kind": "fields",
+            "items": [
+              {
+                "key": "title",
+                "label": "Titel",
+                "value": "Skript"
+              },
+              {
+                "key": "link",
+                "label": "Moodle-Link",
+                "value": "https://moodle.example/x",
+                "format": "link"
+              },
+              {
+                "key": "bad",
+                "label": "Bad link",
+                "value": "javascript:alert(1)",
+                "format": "link"
+              },
+              {
+                "key": "own_key",
+                "label": "",
+                "value": "x",
+                "format": "code"
+              },
+              {
+                "key": "n",
+                "label": "Zahl",
+                "value": 7
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "isfields": true,
+            "items": [
+              {
+                "label": "Title",
+                "text": "Skript",
+                "islink": false,
+                "url": "",
+                "iscode": false
+              },
+              {
+                "label": "Moodle link",
+                "text": "https://moodle.example/x",
+                "islink": true,
+                "url": "https://moodle.example/x",
+                "iscode": false
+              },
+              {
+                "label": "Bad link",
+                "text": "javascript:alert(1)",
+                "islink": false,
+                "url": "",
+                "iscode": false
+              },
+              {
+                "label": "Own key",
+                "text": "x",
+                "islink": false,
+                "url": "",
+                "iscode": true
+              },
+              {
+                "label": "Zahl",
+                "text": "7",
+                "islink": false,
+                "url": "",
+                "iscode": false
+              }
+            ]
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "text excerpt of a cited document",
+      "frame": {
+        "citations": [
+          {
+            "index": 1,
+            "title": "Plan",
+            "course_name": "LF7",
+            "url": "https://moodle.example/mod/page/view.php?id=11",
+            "page": 2,
+            "pages": [
+              2,
+              5
+            ]
+          }
+        ],
+        "display": [
+          {
+            "kind": "text",
+            "text": "Hallo\nWelt",
+            "title": "/LF7/Woche 2/Plan",
+            "cite": 1,
+            "start": 0,
+            "end": 40,
+            "total": 120
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "istext": true,
+            "text": "Hallo\nWelt",
+            "index": 1,
+            "title": "Plan",
+            "url": "https://moodle.example/mod/page/view.php?id=11",
+            "hasurl": true,
+            "range": "Characters 0–40 of 120"
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "whole text needs no range",
+      "frame": {
+        "display": [
+          {
+            "kind": "text",
+            "text": "Alles",
+            "title": "",
+            "cite": null,
+            "start": 0,
+            "end": 5,
+            "total": 5
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "istext": true,
+            "text": "Alles",
+            "index": "",
+            "title": "",
+            "url": "",
+            "hasurl": false,
+            "range": ""
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "plain text block",
+      "frame": {
+        "display": [
+          {
+            "kind": "text",
+            "text": "Zeile eins\nZeile zwei"
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "istext": true,
+            "text": "Zeile eins\nZeile zwei",
+            "index": "",
+            "title": "",
+            "url": "",
+            "hasurl": false,
+            "range": ""
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "table",
+      "frame": {
+        "display": [
+          {
+            "kind": "table",
+            "columns": [
+              {
+                "key": "course",
+                "label": "Kurs"
+              },
+              {
+                "key": "x",
+                "label": "Rollen"
+              },
+              {
+                "key": "y",
+                "label": ""
+              }
+            ],
+            "rows": [
+              [
+                "LF7",
+                "Student",
+                null
+              ],
+              []
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "istable": true,
+            "columns": [
+              {
+                "label": "Course"
+              },
+              {
+                "label": "Rollen"
+              },
+              {
+                "label": "y"
+              }
+            ],
+            "rows": [
+              {
+                "cells": [
+                  {
+                    "text": "LF7"
+                  },
+                  {
+                    "text": "Student"
+                  },
+                  {
+                    "text": ""
+                  }
+                ]
+              },
+              {
+                "cells": []
+              }
+            ]
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "notices",
+      "frame": {
+        "display": [
+          {
+            "kind": "notice",
+            "level": "info",
+            "code": "no_hits",
+            "text": "Keine Treffer"
+          },
+          {
+            "kind": "notice",
+            "level": "error",
+            "code": "path_not_found",
+            "text": "Nicht gefunden: LF8"
+          },
+          {
+            "kind": "notice",
+            "level": "error",
+            "code": "path_not_found",
+            "text": "This location does not exist."
+          },
+          {
+            "kind": "notice",
+            "level": "warning",
+            "code": "new_code",
+            "text": "Eigener Hinweis"
+          },
+          {
+            "kind": "notice",
+            "level": "shout",
+            "text": "x"
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "isnotice": true,
+            "level": "info",
+            "iserror": false,
+            "iswarning": false,
+            "text": "No results.",
+            "detail": ""
+          },
+          {
+            "isnotice": true,
+            "level": "error",
+            "iserror": true,
+            "iswarning": false,
+            "text": "This location does not exist.",
+            "detail": "Nicht gefunden: LF8"
+          },
+          {
+            "isnotice": true,
+            "level": "error",
+            "iserror": true,
+            "iswarning": false,
+            "text": "This location does not exist.",
+            "detail": ""
+          },
+          {
+            "isnotice": true,
+            "level": "warning",
+            "iserror": false,
+            "iswarning": true,
+            "text": "Eigener Hinweis",
+            "detail": ""
+          },
+          {
+            "isnotice": true,
+            "level": "info",
+            "iserror": false,
+            "iswarning": false,
+            "text": "x",
+            "detail": ""
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
+      }
+    },
+    {
+      "name": "unknown kinds are generic",
+      "frame": {
+        "display": [
+          {
+            "kind": "chart",
+            "text": "Diagramm"
+          },
+          {
+            "kind": "map",
+            "lat": 1,
+            "tags": [
+              "a"
+            ]
+          },
+          "junk",
+          null
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "isgeneric": true,
+            "text": "Diagramm"
+          },
+          {
+            "isgeneric": true,
+            "text": "{\n  \"lat\": 1,\n  \"tags\": [\n    \"a\"\n  ]\n}"
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "paths": []
       }
     }
   ],

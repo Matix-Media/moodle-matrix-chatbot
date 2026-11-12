@@ -160,6 +160,21 @@ class TestDocuments:
         app_client.post("/ingest/documents", json=_docs(doc()), headers=_auth(secrets["a"]))
         assert seen == [("site-a", ["2:10:intro"], False)]
 
+    def test_renamed_section_is_announced_as_relocation_not_change(
+        self, app_client: TestClient, secrets: dict[str, str]
+    ) -> None:
+        h = _auth(secrets["a"])
+        app_client.post("/ingest/documents", json=_docs(doc()), headers=h)
+        changed: list[list[str]] = []
+        relocated: list[tuple[str, list[str]]] = []
+        state = app_client.app.state  # type: ignore[attr-defined]
+        state.document_listeners.append(lambda site, ids, bulk: changed.append(ids))
+        state.relocation_listeners.append(lambda site, ids: relocated.append((site, ids)))
+        renamed = doc(section_name="Neu", header_path=["Netzwerke", "Neu", "Einführung"])
+        r = app_client.post("/ingest/documents", json=_docs(renamed), headers=h)
+        assert r.json()["changed"] == []
+        assert changed == [] and relocated == [("site-a", ["2:10:intro"])]
+
     def test_documents_are_queued_for_processing(
         self, app_client: TestClient, secrets: dict[str, str]
     ) -> None:
@@ -302,6 +317,20 @@ class TestPluginWireShapes:
         assert result["tombstoned"] == ["2:9:old"]
         status = app_client.get("/ingest/status", headers=h).json()
         assert status["documents"] == 1 and status["courses"] == 1
+
+    def test_list_manifest_with_placement_hash(
+        self, app_client: TestClient, secrets: dict[str, str]
+    ) -> None:
+        h = _auth(secrets["a"])
+        placed = doc("2:10:a", placement_hash="p1").model_dump(mode="json")
+        app_client.post("/ingest/documents", json=[placed], headers=h)
+        app_client.post("/ingest/sync/start", json={"sync_id": "s1", "mode": "full"}, headers=h)
+        entry = {"doc_id": "2:10:a", "timemodified": 1, "content_hash": "h-2:10:a"}
+        manifest = {"sync_id": "s1", "entries": [{**entry, "placement_hash": "p1"}]}
+        assert app_client.post("/ingest/manifest", json=manifest, headers=h).json()["need"] == []
+        manifest = {"sync_id": "s1", "entries": [{**entry, "placement_hash": "p2"}]}
+        r = app_client.post("/ingest/manifest", json=manifest, headers=h)
+        assert r.json()["need"] == ["2:10:a"]
 
     def test_bare_array_delete(self, app_client: TestClient, secrets: dict[str, str]) -> None:
         h = _auth(secrets["a"])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -16,8 +17,12 @@ from langchain_core.embeddings import Embeddings
 from moodle_llm_chat.config import PipelineSection
 from moodle_llm_chat.index.models import DocumentKind
 from moodle_llm_chat.index.store import Store
-from moodle_llm_chat.ingest.pipeline import CONTENT_VERSION, Pipeline
-from moodle_llm_chat.ingest.sources import FetchedText, TransientFetchError
+from moodle_llm_chat.ingest.pipeline import (
+    CONTENT_VERSION,
+    FAILED_FETCH_RETRY_AFTER_S,
+    Pipeline,
+)
+from moodle_llm_chat.ingest.sources import FetchedText, PermanentFetchError, TransientFetchError
 from moodle_llm_chat.llm.embed import CachingEmbedder
 
 S = "site-a"
@@ -237,6 +242,31 @@ class TestExternal:
         await p.stop()
         assert "VLANs" in store.segments(S, "2:10:intro")[0].text
 
+    async def test_renamed_section_rechunks_without_fetching_again(
+        self, store: Store, http: httpx.AsyncClient
+    ) -> None:
+        fetches = 0
+
+        async def fetcher(url: str, **kw: Any) -> FetchedText:
+            nonlocal fetches
+            fetches += 1
+            return FetchedText(text="Montag: Einführung in LF11, Raum 119.")
+
+        external = {"kind": DocumentKind.EXTERNAL, "text": None, "external_url": "https://x.test/s"}
+        store.upsert_documents(S, [doc(**external)])
+        p = await running(make(store, http, fetcher=fetcher))
+        p.documents_changed(S, ["2:10:intro"], bulk=False)
+        await p.idle(timeout=5)
+        renamed = doc(**external, section_name="LF 11", header_path=["Netzwerke", "LF 11", "Plan"])
+        result = store.upsert_documents_detailed(S, [renamed])
+        p.documents_relocated(S, result.relocated)
+        await p.idle(timeout=5)
+        await p.stop()
+        assert fetches == 1
+        chunks = store.chunks_for_document(S, "2:10:intro")
+        assert chunks and all("LF 11" in c.text for c in chunks)
+        assert store.pending_vector_count() == 0
+
     async def test_transient_failure_is_retried(
         self, store: Store, http: httpx.AsyncClient
     ) -> None:
@@ -259,6 +289,61 @@ class TestExternal:
         assert attempts == 3
         assert store.segments(S, "2:10:intro")[0].text == "Endlich da."
 
+    async def test_retry_waits_at_least_as_long_as_retry_after(
+        self, store: Store, http: httpx.AsyncClient
+    ) -> None:
+        async def limited(url: str, **kw: Any) -> FetchedText:
+            raise TransientFetchError("HTTP 429", retry_after=600, rate_limited=True)
+
+        store.upsert_documents(
+            S, [doc(kind=DocumentKind.EXTERNAL, text=None, external_url="https://cloud.x.test/s")]
+        )
+        p = await running(make(store, http, fetcher=limited, rate_limit_cooldown_s=0))
+        started = int(time.time())
+        p.documents_changed(S, ["2:10:intro"], bulk=False)
+        await p.idle(timeout=5)
+        await p.stop()
+        due = store.next_job_due_at()
+        assert due is not None and due >= started + 600
+
+    async def test_rate_limit_pauses_the_whole_host(
+        self, store: Store, http: httpx.AsyncClient
+    ) -> None:
+        calls: list[tuple[str, float]] = []
+
+        async def fetcher(url: str, **kw: Any) -> FetchedText:
+            calls.append((url, time.monotonic()))
+            if url.endswith("/a"):
+                raise TransientFetchError("HTTP 429", rate_limited=True)
+            return FetchedText(text="Inhalt")
+
+        external = {"kind": DocumentKind.EXTERNAL, "text": None}
+        store.upsert_documents(
+            S,
+            [
+                doc("2:10:a", external_url="https://cloud.x.test/a", **external),
+                doc("2:11:b", external_url="https://cloud.x.test/b", **external),
+            ],
+        )
+        settings = PipelineSection(fetch_concurrency=1)
+        p = Pipeline(
+            store,
+            embedder=make_embedder(Vectors()),
+            ocr=None,
+            http=http,
+            settings=settings,
+            retry_base_s=3600,
+            external_fetch=fetcher,
+            rate_limit_cooldown_s=0.5,
+        )
+        await p.start()
+        p.documents_changed(S, ["2:10:a", "2:11:b"], bulk=False)
+        await p.idle(timeout=5)
+        await p.stop()
+        (first_url, first_at), (second_url, second_at) = calls[0], calls[1]
+        assert first_url.endswith("/a") and second_url.endswith("/b")
+        assert second_at - first_at >= 0.45
+
     async def test_exhausted_retries_mark_document_skipped(
         self, store: Store, http: httpx.AsyncClient
     ) -> None:
@@ -276,6 +361,57 @@ class TestExternal:
         d = store.document(S, "2:10:intro")
         assert d.skip_reason and "fetch" in d.skip_reason
         assert not d.needs_extraction
+
+    async def test_exhausted_temporary_failure_is_retried_hours_later(
+        self, store: Store, http: httpx.AsyncClient
+    ) -> None:
+        """A host that rate-limited a whole bulk sync must not lose those documents."""
+        now = [1_800_000_000.0]
+        up = False
+
+        async def fetcher(url: str, **kw: Any) -> FetchedText:
+            if not up:
+                raise TransientFetchError("HTTP 429", rate_limited=True)
+            return FetchedText(text="Montag: Einführung in LF11.")
+
+        store.upsert_documents(
+            S, [doc(kind=DocumentKind.EXTERNAL, text=None, external_url="https://cloud.x.test/s")]
+        )
+        p = await running(
+            make(store, http, fetcher=fetcher, clock=lambda: now[0], rate_limit_cooldown_s=0)
+        )
+        p.documents_changed(S, ["2:10:intro"], bulk=False)
+        await p.idle(timeout=5)
+        assert store.job_counts(now=int(now[0]))["fetch"]["failed"] == 1
+
+        now[0] += 3600  # too soon: nothing re-armed
+        assert p.requeue_failed_fetches() == 0
+        up = True
+        now[0] += FAILED_FETCH_RETRY_AFTER_S
+        assert p.requeue_failed_fetches() == 1
+        await p.idle(timeout=5)
+        await p.stop()
+        d = store.document(S, "2:10:intro")
+        assert d.skip_reason is None
+        assert "LF11" in store.segments(S, "2:10:intro")[0].text
+
+    async def test_permanent_failure_is_never_retried(
+        self, store: Store, http: httpx.AsyncClient
+    ) -> None:
+        now = [1_800_000_000.0]
+
+        async def gone(url: str, **kw: Any) -> FetchedText:
+            raise PermanentFetchError("HTTP 404")
+
+        store.upsert_documents(
+            S, [doc(kind=DocumentKind.EXTERNAL, text=None, external_url="https://cloud.x.test/s")]
+        )
+        p = await running(make(store, http, fetcher=gone, clock=lambda: now[0]))
+        p.documents_changed(S, ["2:10:intro"], bulk=False)
+        await p.idle(timeout=5)
+        now[0] += FAILED_FETCH_RETRY_AFTER_S * 2
+        assert p.requeue_failed_fetches() == 0
+        await p.stop()
 
 
 class TestIsolationAndRecovery:

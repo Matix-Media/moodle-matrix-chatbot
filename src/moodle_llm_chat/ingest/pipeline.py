@@ -64,6 +64,12 @@ CONTENT_VERSION = EXTRACT_VERSION * 100 + PIPELINE_VERSION
 #: How long an idle stage loop sleeps before re-checking for due retries.
 MAX_IDLE_WAIT_S = 30.0
 MAX_RETRY_DELAY_S = 3600.0
+#: How long a host that answered 429/503 without ``Retry-After`` gets no requests.
+RATE_LIMIT_COOLDOWN_S = 60.0
+#: A fetch that exhausted its retries on temporary errors is tried again after this…
+FAILED_FETCH_RETRY_AFTER_S = 6 * 3600
+#: …checked at most this often (and once at startup).
+FAILED_FETCH_SWEEP_EVERY_S = 3600.0
 
 ExternalFetch = Callable[..., Awaitable[FetchedText | FetchedBytes | None]]
 
@@ -94,13 +100,18 @@ class _HostLimiter:
         self._next: dict[str, float] = {}
 
     async def wait(self, host: str) -> None:
-        if self._interval <= 0:
-            return
         now = time.monotonic()
         due = max(self._next.get(host, now), now)
         self._next[host] = due + self._interval
         if due > now:
             await asyncio.sleep(due - now)
+
+    def cooldown(self, host: str, seconds: float) -> None:
+        """Hold every request to ``host`` for ``seconds`` (it asked us to back off)."""
+        if seconds <= 0:
+            return
+        until = time.monotonic() + seconds
+        self._next[host] = max(self._next.get(host, until), until)
 
 
 class Pipeline:
@@ -118,8 +129,11 @@ class Pipeline:
         clock: Callable[[], float] = time.time,
         ingest_gate: Callable[[str], bool] | None = None,
         ingest_meter: Callable[[str, int], None] | None = None,
+        rate_limit_cooldown_s: float = RATE_LIMIT_COOLDOWN_S,
     ) -> None:
         self.store = store
+        self._rate_limit_cooldown = rate_limit_cooldown_s
+        self._last_failed_sweep: float | None = None
         self.embedder = embedder
         self.ocr = ocr
         self.http = http
@@ -165,6 +179,23 @@ class Pipeline:
             touched.add(stage)
         for stage in touched:
             self._wake[stage].set()
+
+    def documents_relocated(self, site_id: str, doc_ids: Sequence[str]) -> None:
+        """Re-chunk documents whose header path changed, from their stored segments.
+
+        Chunk text carries the course › section › module header, so a renamed section
+        needs new chunks, but nothing has to be fetched or extracted again. A document
+        not extracted yet picks the new header up when it is.
+        """
+        for doc_id in doc_ids:
+            document = self._live_document(site_id, doc_id)
+            if document is None:
+                continue
+            stored = self.store.segments(site_id, doc_id)
+            if not stored:
+                continue
+            segments = [Segment(text=s.text, page=s.page, label=s.label) for s in stored]
+            self._index(document, segments, allow_ocr=False)
 
     def blob_arrived(self, site_id: str, sha256: str) -> None:
         for doc_id in self.store.documents_with_blob(site_id, sha256):
@@ -238,11 +269,33 @@ class Pipeline:
     def _now(self) -> int:
         return int(self._clock())
 
+    def requeue_failed_fetches(self) -> int:
+        """Give fetches that ran out of temporary-error retries another round.
+
+        A host that rate-limits a bulk sync, or is down for an afternoon, must not
+        lose those documents for good. Permanent failures (404 …) stay skipped.
+        """
+        self._last_failed_sweep = self._clock()
+        n = self.store.requeue_failed_jobs(
+            "fetch", older_than_s=FAILED_FETCH_RETRY_AFTER_S, now=self._now()
+        )
+        if n:
+            log.info("pipeline.failed_fetches_requeued", count=n)
+            self._wake["fetch"].set()
+        return n
+
+    def _sweep_failed_fetches_if_due(self) -> None:
+        last = self._last_failed_sweep
+        if last is None or self._clock() - last >= FAILED_FETCH_SWEEP_EVERY_S:
+            self.requeue_failed_fetches()
+
     async def _stage_loop(self, name: str) -> None:
         spec = self._stages[name]
         inflight = self._inflight[name]
         wake = self._wake[name]
         while True:
+            if name == "fetch":
+                self._sweep_failed_fetches_if_due()
             free = spec.concurrency() - len(inflight)
             jobs = self.store.claim_jobs(name, limit=free, now=self._now()) if free > 0 else []
             for job in jobs:
@@ -274,7 +327,9 @@ class Pipeline:
     async def _run_job(self, spec: StageSpec, job: Job) -> None:
         try:
             outcome = await spec.run(job)
-        except (TransientFetchError, httpx.TransportError) as exc:
+        except TransientFetchError as exc:
+            self._retry(spec, job, f"{spec.name}: {exc}", at_least_s=exc.retry_after or 0.0)
+        except httpx.TransportError as exc:
             self._retry(spec, job, f"{spec.name}: {exc}")
         except (PermanentFetchError, ExtractionError) as exc:
             self._give_up(spec, job, f"{spec.name}: {exc}", state="skipped")
@@ -286,8 +341,9 @@ class Pipeline:
         else:
             self.store.finish_job(job.id, state=outcome.value, now=self._now())
 
-    def _retry(self, spec: StageSpec, job: Job, error: str) -> None:
-        delay = min(self._retry_base * (2**job.attempts), MAX_RETRY_DELAY_S)
+    def _retry(self, spec: StageSpec, job: Job, error: str, *, at_least_s: float = 0.0) -> None:
+        backoff = self._retry_base * (2**job.attempts)
+        delay = min(max(backoff, at_least_s), MAX_RETRY_DELAY_S)
         if not self.store.retry_job(
             job.id, delay_s=delay, error=error, max_attempts=spec.max_attempts, now=self._now()
         ):
@@ -311,8 +367,11 @@ class Pipeline:
     # ------------------------------------------------------------------ #
 
     def _live(self, job: Job) -> Document | None:
+        return self._live_document(job.site_id, job.doc_id)
+
+    def _live_document(self, site_id: str, doc_id: str) -> Document | None:
         try:
-            document = self.store.document(job.site_id, job.doc_id)
+            document = self.store.document(site_id, doc_id)
         except StoreError:
             return None
         return None if document.tombstoned_at is not None else document
@@ -347,13 +406,21 @@ class Pipeline:
         document = self._live(job)
         if document is None or not document.external_url:
             return Outcome.SKIPPED
-        await self._hosts.wait(host_of(document.external_url))
-        result = await self._fetch(
-            document.external_url,
-            title=document.title,
-            http=self.http,
-            max_bytes=self.settings.max_file_bytes,
-        )
+        host = host_of(document.external_url)
+        await self._hosts.wait(host)
+        try:
+            result = await self._fetch(
+                document.external_url,
+                title=document.title,
+                http=self.http,
+                max_bytes=self.settings.max_file_bytes,
+            )
+        except TransientFetchError as exc:
+            if exc.rate_limited:
+                # Back the whole host off, not just this document: every queued fetch to
+                # it would get the same answer.
+                self._hosts.cooldown(host, exc.retry_after or self._rate_limit_cooldown)
+            raise
         if result is None:
             self._index(document, [], allow_ocr=False, empty_reason="no-content")
             return Outcome.DONE
