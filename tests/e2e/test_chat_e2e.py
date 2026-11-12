@@ -249,6 +249,35 @@ class TestStudentChat:
         student.wait_answer("B205")
         expect(student.page.locator(".local-llmchat-msg-user")).to_have_count(2)
 
+    def test_reloaded_history_resolves_all_card_links_in_one_request(
+        self, student: Chat, mock: Mock
+    ) -> None:
+        mock.script(
+            {"tool": "list_dir", "args": {"path": "/"}},
+            {"tool": "list_dir", "args": {"path": "/LF7"}},
+            {"text": "Das liegt im Kurs LF7."},
+        )
+        student.open().ask("Was gibt es in meinen Kursen?")
+        student.wait_answer("Kurs LF7")
+        conversation_id = current_conversation(student)
+
+        resolves: list[str] = []
+
+        def on_request(request: Any) -> None:
+            if "local_llmchat_resolve_refs" in (request.post_data or ""):
+                resolves.append(request.post_data or "")
+
+        student.page.on("request", on_request)
+        student.open(f"?conversation={conversation_id}")
+        cards = student.page.locator("[data-region=tool]")
+        expect(cards).to_have_count(2)
+        # Both cards get their links …
+        for i in range(2):
+            expect(cards.nth(i).locator("[data-region=entry] a").first).to_be_attached()
+        expect(cards.nth(1).locator("[data-region=path] a").first).to_be_attached()
+        # … from one round trip for the whole history, not one per card.
+        assert len(resolves) == 1, resolves
+
     def test_pending_question_survives_a_reload(self, student: Chat, mock: Mock) -> None:
         mock.script(
             {
