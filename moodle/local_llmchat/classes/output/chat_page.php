@@ -41,9 +41,6 @@ class chat_page implements \renderable, \templatable {
     /** @var array|null the user's conversations, when {@see preload()} got them */
     private ?array $conversations = null;
 
-    /** @var array|null {html, lastseq} of the open conversation, when {@see preload()} rendered it */
-    private ?array $history = null;
-
     /**
      * Constructor.
      *
@@ -85,15 +82,13 @@ class chat_page implements \renderable, \templatable {
     }
 
     /**
-     * Fetch the conversation list and the conversation to open from the API, so the page arrives
-     * with them instead of the client loading them after it rendered. Waits at most
-     * {@see api_client::PAGE_TIMEOUT} seconds per request; whatever fails is left to the client.
-     * Not for the compact block view, which must not hold up the course page.
-     *
-     * @param \renderer_base $output
-     * @param conversation_view|null $view renderer for the history (tests inject one)
+     * Fetch the conversation list from the API, so the page arrives with it instead of the client
+     * loading it after it rendered. The chat itself is always the client's: it loads the open
+     * conversation and shows it loading meanwhile. Waits at most {@see api_client::PAGE_TIMEOUT}
+     * seconds; if that fails the client loads the list too. Not for the compact block view,
+     * which has no list and must not hold up the course page.
      */
-    public function preload(\renderer_base $output, ?conversation_view $view = null): void {
+    public function preload(): void {
         global $USER;
         if ($this->compact) {
             return;
@@ -104,27 +99,12 @@ class chat_page implements \renderable, \templatable {
             $this->conversations = $client->conversations($token);
         } catch (\Throwable $e) {
             debugging('local_llmchat: loading the conversation list failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
-            return;
-        }
-        if ($this->conversationid === '') {
-            return;
-        }
-        try {
-            $data = $client->conversation($token, $this->conversationid);
-            $view = $view ?? new conversation_view($output, tool_display::from_lang());
-            $this->history = $view->render(
-                is_array($data['events'] ?? null) ? $data['events'] : [],
-                is_array($data['tools'] ?? null) ? $data['tools'] : []
-            );
-        } catch (\Throwable $e) {
-            // Gone, someone else's, or the API is slow: the client opens it (or reports it) itself.
-            debugging('local_llmchat: loading the conversation failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
         }
     }
 
     /**
-     * Config for local_llmchat/chat init(). Contains no profile data. "preloaded" says what the
-     * page already shows: the list, and the conversation up to which seq.
+     * Config for local_llmchat/chat init(). Contains no profile data. "preloaded.list" says
+     * whether the page already shows the conversation list.
      *
      * @return array
      */
@@ -133,11 +113,7 @@ class chat_page implements \renderable, \templatable {
             'courseid' => $this->courseid,
             'rootid' => $this->rootid,
             'conversationid' => $this->conversationid,
-            'preloaded' => [
-                'list' => $this->conversations !== null,
-                'conversationid' => $this->history !== null ? $this->conversationid : '',
-                'lastseq' => $this->history['lastseq'] ?? 0,
-            ],
+            'preloaded' => ['list' => $this->conversations !== null],
         ];
     }
 
@@ -188,7 +164,8 @@ class chat_page implements \renderable, \templatable {
                 : get_string('emptyintro', 'local_llmchat'),
             'suggestions' => $suggestions,
             'conversationlist' => $this->conversation_list(),
-            'historyhtml' => $this->history['html'] ?? '',
+            // The client opens this conversation; until it has, the chat shows it loading.
+            'loading' => $this->conversationid !== '',
         ];
     }
 }

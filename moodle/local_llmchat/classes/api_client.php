@@ -232,17 +232,6 @@ class api_client {
     }
 
     /**
-     * GET /api/conversations/{id}: the stored history, one event per streamed run.
-     *
-     * @param string $chattoken
-     * @param string $id
-     * @return array {conversation, events, last_seq, tools}
-     */
-    public function conversation(string $chattoken, string $id): array {
-        return $this->user_get($chattoken, '/api/conversations/' . rawurlencode($id));
-    }
-
-    /**
      * GET /ingest/status.
      *
      * @return array

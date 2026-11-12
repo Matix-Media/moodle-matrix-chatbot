@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {citationMeta, describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
 
-// Vectors shared with the PHP port (tests/tool_display_test.php).
+// Vectors in tests/fixtures/tool_display_vectors.json.
 const VECTORS = JSON.parse(readFileSync(new URL('../fixtures/tool_display_vectors.json', import.meta.url), 'utf8'));
 for (const {name, args, expected} of VECTORS.calls) {
     test(`shared vector, call: ${name}`, () => {

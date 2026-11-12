@@ -151,7 +151,7 @@ class ChatController {
      * Constructor.
      *
      * @param {HTMLElement} root
-     * @param {Object} config {courseid, conversationid, preloaded}
+     * @param {Object} config {courseid, conversationid, preloaded: {list}}
      * @param {Object} strings
      */
     constructor(root, config, strings) {
@@ -160,12 +160,12 @@ class ChatController {
         // Compact: the chat block, one conversation, no list (the full page has the list).
         this.compact = root.dataset.mode === 'compact';
         this.initialConversation = config.conversationid ? String(config.conversationid) : '';
-        // What the page already shows: the list, and a conversation up to a seq.
+        // Whether the page arrived with the conversation list (the chat is always ours to load).
         this.preloaded = config.preloaded || {};
         this.str = strings;
         this.regions = {};
-        ['messages', 'empty', 'conversations', 'status', 'quota', 'quota-button', 'quota-ring', 'quota-percent', 'quota-panel',
-            'input', 'composer', 'panel', 'sidebar', 'title', 'expand'].forEach((name) => {
+        ['messages', 'empty', 'loading', 'conversations', 'status', 'quota', 'quota-button', 'quota-ring', 'quota-percent',
+            'quota-panel', 'input', 'composer', 'panel', 'sidebar', 'title', 'expand'].forEach((name) => {
             this.regions[name] = root.querySelector(`[data-region="${name}"]`);
         });
         this.sendButton = root.querySelector('[data-action="send"]');
@@ -349,30 +349,23 @@ class ChatController {
     run() {
         this.socket.connect();
         const id = this.initialConversation || (this.compact ? this.loadCurrent() : '');
-        if (id && this.preloaded.conversationid === id) {
-            this.adoptConversation(id, Number(this.preloaded.lastseq) || 0);
-        } else if (id) {
-            this.openConversation(id, {focus: false, restore: !this.initialConversation});
+        // A list the page arrived with already marks the conversation asked for in the URL.
+        const listed = this.preloaded.list && id === this.initialConversation;
+        if (id) {
+            this.openConversation(id, {focus: false, restore: !this.initialConversation, refreshList: !listed});
         } else if (!this.preloaded.list) {
             this.refreshConversations();
         }
     }
 
     /**
-     * Take over a conversation the page rendered up to lastSeq: nothing to fetch, the socket's
-     * resume brings whatever came after (a running turn, a pending question).
+     * Show the loading indicator (while a conversation's history loads) or the empty state.
      *
-     * @param {string} id
-     * @param {number} lastSeq
+     * @param {boolean} loading
      */
-    adoptConversation(id, lastSeq) {
-        this.enqueue(() => {
-            this.setConversation(id);
-            // Exactly the page's state, even if this tab saw more before a reload.
-            this.lastSeq[id] = lastSeq;
-            this.saveSeqs();
-            this.scroll(true);
-        });
+    showLoading(loading) {
+        this.regions.loading.classList.toggle('d-none', !loading);
+        this.regions.empty.classList.toggle('d-none', loading);
     }
 
     /**
@@ -1083,8 +1076,9 @@ class ChatController {
      * Final answer with sources and actions.
      *
      * @param {Object} frame final{text, citations}
+     * @param {boolean} replay part of a stored history being rendered
      */
-    async onFinal(frame) {
+    async onFinal(frame, replay) {
         const turn = await this.currentTurn(frame);
         this.advance(turn, 'final');
         turn.citations = frame.citations || turn.citations || [];
@@ -1106,7 +1100,10 @@ class ChatController {
         this.place(turn, footer);
         this.setRunning(false);
         this.turn = null;
-        this.refreshConversations();
+        if (!replay) {
+            // A finished turn may have titled the conversation; stored history changes nothing.
+            this.refreshConversations();
+        }
     }
 
     /**
@@ -1311,22 +1308,25 @@ class ChatController {
      * @param {boolean} [options.focus=true] move the focus to the composer
      * @param {boolean} [options.restore=false] reopening the remembered conversation: if it is
      *     gone, quietly start a new one instead of showing an error
+     * @param {boolean} [options.refreshList=true] reload the list (false: it already marks this one)
      */
-    openConversation(id, {focus = true, restore = false} = {}) {
+    openConversation(id, {focus = true, restore = false, refreshList = true} = {}) {
         this.enqueue(async() => {
             this.setConversation(id);
             this.turn = null;
             // Access may have changed since the links were resolved.
             this.pathCache.clear();
-            this.regions.messages.replaceChildren(this.regions.empty);
-            this.regions.empty.classList.toggle('d-none', Boolean(id));
+            this.regions.messages.replaceChildren(this.regions.empty, this.regions.loading);
+            this.showLoading(Boolean(id));
             this.clearStatusErrors();
             this.setRunning(false);
             if (focus) {
                 this.regions.input.focus();
             }
-            // After the switch, so the list (or the block's title) marks this conversation.
-            this.refreshConversations();
+            if (refreshList) {
+                // After the switch, so the list (or the block's title) marks this conversation.
+                this.refreshConversations();
+            }
         });
         if (!id) {
             return;
@@ -1337,19 +1337,25 @@ class ChatController {
                 // Stored history holds one event per streamed run, so one render per text run.
                 data = await this.apiGet(`/api/conversations/${encodeURIComponent(id)}`);
             } catch (e) {
-                if (restore && this.conversationId === id) {
+                if (this.conversationId !== id) {
+                    return;
+                }
+                this.showLoading(false);
+                if (restore) {
                     Log.debug(e);
                     this.setConversation(null);
-                    this.regions.empty.classList.remove('d-none');
                     this.refreshConversations();
                     return;
                 }
+                // Not the empty state's suggestions for a conversation that failed to open.
+                this.regions.empty.classList.add('d-none');
                 await this.showStatus('error', fill(this.str.error, e && e.message ? e.message : String(e)));
                 return;
             }
             if (this.conversationId !== id) {
                 return;
             }
+            this.regions.loading.classList.add('d-none');
             const events = data.events || [];
             events.forEach((frame) => this.handleFrame(Object.assign({'conversation_id': id}, frame), true));
             if (!events.length) {
@@ -1372,7 +1378,7 @@ class ChatController {
 /**
  * Initialise the chat page.
  *
- * @param {Object} config {courseid, rootid, conversationid, preloaded}
+ * @param {Object} config {courseid, rootid, conversationid, preloaded: {list}}
  */
 export const init = async(config) => {
     const root = document.getElementById(config.rootid);

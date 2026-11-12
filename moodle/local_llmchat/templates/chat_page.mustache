@@ -20,10 +20,11 @@
     Chat shell; local_llmchat/chat fills it. Everything inside the card is replaced or appended
     by the client through the other local_llmchat templates.
 
-    The full page arrives with its content when the API answered while the page was rendered:
-    "conversationlist" (a local_llmchat/conversation_list context) fills the list, and
-    "historyhtml" (the stored conversation's finished turns) fills the messages instead of the
-    empty state. Without them the client loads both.
+    Only the conversation list is rendered on the server: "conversationlist" (a
+    local_llmchat/conversation_list context) fills it when the API answered while the page was
+    rendered; without it the client loads the list. The chat is always rendered by the client.
+    "loading" (a conversation is about to be opened) shows the loading indicator instead of the
+    empty state; the client shows it too while it loads a conversation picked later.
 
     The full page shows the conversation list next to the chat. The compact variant (the chat
     block) shows only the current conversation, with a "new conversation" button and a link that
@@ -37,7 +38,8 @@
         "fullurl": "https://moodle.example/local/llmchat/chat.php?courseid=2",
         "hascourse": true,
         "intro": "Ask about LF7 Vernetzte Systeme: material, deadlines and activities.",
-        "suggestions": [{"text": "What is due this week?"}, {"text": "Summarise the latest material"}]
+        "suggestions": [{"text": "What is due this week?"}, {"text": "Summarise the latest material"}],
+        "loading": false
     }
 }}
 <div id="{{rootid}}" class="local-llmchat{{#compact}} local-llmchat-compact{{/compact}}" data-region="llmchat"
@@ -100,7 +102,7 @@
                 <div class="local-llmchat-status" data-region="status" aria-live="polite"></div>
                 <div class="card-body local-llmchat-messages" data-region="messages" tabindex="0"
                     aria-label="{{#str}} messages, local_llmchat {{/str}}" aria-live="polite">
-                    <div class="local-llmchat-empty text-center{{#historyhtml}} d-none{{/historyhtml}}" data-region="empty">
+                    <div class="local-llmchat-empty text-center{{#loading}} d-none{{/loading}}" data-region="empty">
                         <span class="local-llmchat-avatar local-llmchat-avatar-assistant local-llmchat-avatar-lg" aria-hidden="true">{{#pix}} assistant, local_llmchat {{/pix}}</span>
                         <h3 class="h4 local-llmchat-emptytitle">{{#str}} emptytitle, local_llmchat {{/str}}</h3>
                         <p class="text-muted local-llmchat-intro">{{intro}}</p>
@@ -110,7 +112,10 @@
                             {{/suggestions}}
                         </div>
                     </div>
-                    {{{historyhtml}}}
+                    <div class="local-llmchat-loading text-center text-muted{{^loading}} d-none{{/loading}}" data-region="loading" role="status">
+                        <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                        <span class="ms-2">{{#str}} loadingconversation, local_llmchat {{/str}}</span>
+                    </div>
                 </div>
                 <div class="card-footer bg-transparent">
                     <form class="local-llmchat-composer" data-region="composer">

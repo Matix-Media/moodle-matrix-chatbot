@@ -487,6 +487,11 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     margin: 1rem 0 .5rem;
 }
 
+.local-llmchat-loading {
+    margin: auto;
+    padding: 2rem 1rem;
+}
+
 .local-llmchat-intro {
     margin-bottom: 1rem;
 }

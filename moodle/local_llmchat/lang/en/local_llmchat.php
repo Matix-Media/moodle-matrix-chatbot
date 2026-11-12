@@ -56,6 +56,7 @@ $string['error:userunavailable'] = 'The user does not exist or is suspended.';
 $string['llmchat:manage'] = 'Manage the course chat (sync status, quotas)';
 $string['llmchat:unlimited'] = 'Use the course chat without per-user token limits';
 $string['llmchat:use'] = 'Use the course chat';
+$string['loadingconversation'] = 'Loading conversation…';
 $string['message'] = 'Message';
 $string['messages'] = 'Messages';
 $string['newconversation'] = 'New conversation';
