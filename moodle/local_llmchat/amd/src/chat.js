@@ -369,6 +369,15 @@ class ChatController {
     }
 
     /**
+     * Hide the message list (all but the loading indicator) while a stored history renders.
+     *
+     * @param {boolean} replaying
+     */
+    setReplaying(replaying) {
+        this.regions.messages.classList.toggle('local-llmchat-replaying', replaying);
+    }
+
+    /**
      * The conversation last open in this scope (sessionStorage), or ''.
      *
      * @returns {string}
@@ -1321,6 +1330,9 @@ class ChatController {
             // Access may have changed since the links were resolved.
             this.linkCache.clear();
             this.regions.messages.replaceChildren(this.regions.empty, this.regions.loading);
+            // Stored history renders frame by frame and template rendering yields to the browser
+            // between frames: keep it hidden behind the loader until all of it is in place.
+            this.setReplaying(Boolean(id));
             this.showLoading(Boolean(id));
             this.clearStatusErrors();
             this.setRunning(false);
@@ -1344,6 +1356,7 @@ class ChatController {
                 if (this.conversationId !== id) {
                     return;
                 }
+                this.setReplaying(false);
                 this.showLoading(false);
                 if (restore) {
                     Log.debug(e);
@@ -1359,7 +1372,6 @@ class ChatController {
             if (this.conversationId !== id) {
                 return;
             }
-            this.regions.loading.classList.add('d-none');
             const events = data.events || [];
             events.forEach((frame) => this.handleFrame(Object.assign({'conversation_id': id}, frame), true));
             if (!events.length) {
@@ -1370,6 +1382,10 @@ class ChatController {
                 });
             }
             this.enqueue(() => {
+                if (this.conversationId === id) {
+                    this.regions.loading.classList.add('d-none');
+                    this.setReplaying(false);
+                }
                 this.setRunning(false);
                 // Anything newer than history (a running turn, a pending question) arrives via resume.
                 this.socket.send(frames.resume({conversationId: id, lastSeq: this.lastSeq[id]}));

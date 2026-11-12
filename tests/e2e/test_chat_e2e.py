@@ -201,6 +201,23 @@ class TestStudentChat:
                 break
             student.page.wait_for_timeout(100)
         assert held, "the client fetches the conversation"
+        # What is visible after every change to the message list while the history renders.
+        student.page.evaluate(
+            """() => {
+                const list = document.querySelector('[data-region=messages]');
+                const count = (sel) => [...list.querySelectorAll(sel)]
+                    .filter((n) => n.checkVisibility()).length;
+                window.llmchatSeen = [];
+                window.llmchatObserver = new MutationObserver(() => window.llmchatSeen.push([
+                    count('.local-llmchat-msg-user'), count('.local-llmchat-msg-assistant'),
+                    count('[data-region=tool]'), count('a.local-llmchat-cite'),
+                    count('[data-region=loading]'),
+                ]));
+                window.llmchatObserver.observe(list, {
+                    childList: true, subtree: true, attributes: true, characterData: true,
+                });
+            }"""
+        )
         held[0].continue_()
         student.page.unroute(history, hold)
 
@@ -211,6 +228,12 @@ class TestStudentChat:
         tool = student.page.locator("[data-region=tool]").first
         expect(tool.locator("[data-region=done]")).to_be_visible()
         expect(tool.locator("[data-region=spinner]")).to_be_hidden()
+        seen = student.page.evaluate(
+            "() => { window.llmchatObserver.disconnect(); return window.llmchatSeen; }"
+        )
+        shown = {tuple(s[:4]) for s in seen if any(s[:4])}
+        assert shown == {(1, 1, 1, 1)}, f"the history appears at once, not part by part: {seen}"
+        assert not [s for s in seen if any(s[:4]) and s[4]], "the loader hides as history shows"
         tool.locator("[data-action=toggle]").first.click()
         hit = tool.locator(".local-llmchat-hits li").first
         expect(hit).to_contain_text("B204")
