@@ -134,3 +134,6 @@ AgentEvent = Annotated[
     Field(discriminator="type"),
 ]
 EVENT_ADAPTER: TypeAdapter[AgentEvent] = TypeAdapter(AgentEvent)
+
+#: Event types streamed as many small deltas; each contiguous run is stored as one event.
+STREAMED = frozenset({"token", "thinking"})

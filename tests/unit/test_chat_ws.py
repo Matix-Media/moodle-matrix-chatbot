@@ -303,20 +303,21 @@ class TestConversationsApi:
         assert "search_text" in names
         assert all({"name", "label", "icon"} <= set(t) for t in detail["tools"])
 
-    def test_compact_merges_streamed_tokens(self, env: Env) -> None:
+    def test_history_resumes_inside_a_streamed_run(self, env: Env) -> None:
         conv = self._make(env)
         url = f"/api/conversations/{conv}"
-        full = env.client.get(url, headers=self._bearer(env)).json()
-        compact = env.client.get(f"{url}?compact=true", headers=self._bearer(env)).json()
-        tokens = [e for e in compact["events"] if e["type"] == "token"]
-        assert len(tokens) <= 1
-        assert "".join(e["delta"] for e in tokens) == "".join(
-            e.get("delta", "") for e in full["events"] if e["type"] == "token"
-        )
-        assert compact["last_seq"] == full["last_seq"]
-        assert [e["type"] for e in compact["events"] if e["type"] != "token"] == [
-            e["type"] for e in full["events"] if e["type"] != "token"
-        ]
+        last = env.client.get(url, headers=self._bearer(env)).json()["last_seq"]
+        # A run of three deltas that went out live as last+1 .. last+3.
+        for _ in range(3):
+            env.on_loop(env.store.next_seq, conv)
+        run = {"type": "token", "turn_id": "t", "delta": "Noch was.", "parts": [4, 4, 1]}
+        env.on_loop(lambda: env.store.append_event(S, 7, conv, "t", run, seq=last + 3))
+        full = env.client.get(f"{url}?after_seq={last}", headers=self._bearer(env)).json()
+        assert [e["delta"] for e in full["events"]] == ["Noch was."]
+        assert "parts" not in full["events"][0]
+        rest = env.client.get(f"{url}?after_seq={last + 1}", headers=self._bearer(env)).json()
+        assert [e["delta"] for e in rest["events"]] == [" was."]
+        assert rest["last_seq"] == full["last_seq"] == last + 3
 
     def test_empty_conversation_has_last_seq_zero(self, env: Env) -> None:
         conv = self._make(env)

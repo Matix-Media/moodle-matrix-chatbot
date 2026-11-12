@@ -62,6 +62,8 @@ from moodle_llm_chat.index.models import (
 log = structlog.get_logger(__name__)
 
 SCHEMA_VERSION = 1
+#: Event seqs are reserved in blocks of this size, so allocating one is rarely a write.
+SEQ_BLOCK = 256
 #: A sync run with no activity for this long can no longer tombstone anything.
 SYNC_STALE_AFTER_S = 24 * 3600
 
@@ -193,6 +195,11 @@ CREATE TABLE IF NOT EXISTS turn_events (
     created_at INTEGER NOT NULL,
     PRIMARY KEY (conversation_id, seq)
 );
+-- The first event seq not yet reserved per conversation (see Store.next_seq).
+CREATE TABLE IF NOT EXISTS conversation_seq (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    hi INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS ckpt_storage (
     thread_id TEXT NOT NULL, ns TEXT NOT NULL, checkpoint_id TEXT NOT NULL,
@@ -235,6 +242,24 @@ class StoreError(RuntimeError):
 
 class SyncStateError(StoreError):
     """A sync run is unknown, stale, or in the wrong state."""
+
+
+def _unseen_part(event: dict[str, Any], after_seq: int) -> dict[str, Any] | None:
+    """What a client that has seen up to ``after_seq`` has not seen of a stored event.
+
+    Only merged streamed runs (they carry ``parts``) can be partly seen: their deltas went
+    out live as the consecutive seqs ending at the run's own ``seq``. ``parts`` itself is
+    storage bookkeeping and is never returned.
+    """
+    parts = event.pop("parts", None)
+    if parts is None:
+        return event
+    seen = after_seq - (int(event["seq"]) - len(parts))
+    if seen <= 0:
+        return event
+    delta = event.get("delta")
+    rest = delta[sum(parts[:seen]) :] if isinstance(delta, str) else ""
+    return dict(event, delta=rest) if rest else None
 
 
 def _now(now: int | None) -> int:
@@ -344,6 +369,8 @@ class Store:
         self._con: Any = None
         self._lookup_key = ring.derive("lookup")
         self._last_seq = 0
+        #: conversation id -> (next event seq, first seq not reserved yet)
+        self._event_seqs: dict[str, tuple[int, int]] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -1719,6 +1746,38 @@ class Store:
         )
         return refs
 
+    def next_seq(self, conv_id: str) -> int:
+        """Allocate the next event seq of a conversation.
+
+        Seqs go out to live clients before (or without) the event being stored, so they
+        must never be reused, not even after a crash. They are reserved
+        :data:`SEQ_BLOCK` at a time; after a restart allocation resumes past the whole
+        last reservation. Gaps in the stored log are expected.
+        """
+        cached = self._event_seqs.get(conv_id)
+        if cached is None:
+            con = self.connection
+            row = con.execute(
+                "SELECT hi FROM conversation_seq WHERE conversation_id=?", (conv_id,)
+            ).fetchone()
+            stored = con.execute(
+                "SELECT coalesce(max(seq), 0) + 1 FROM turn_events WHERE conversation_id=?",
+                (conv_id,),
+            ).fetchone()[0]
+            start = max(int(stored), int(row["hi"]) if row is not None else 1)
+            cached = (start, start)
+        seq, hi = cached
+        if seq >= hi:
+            hi = seq + SEQ_BLOCK
+            with self.connection as con:
+                con.execute(
+                    "INSERT INTO conversation_seq (conversation_id, hi) VALUES (?, ?) "
+                    "ON CONFLICT(conversation_id) DO UPDATE SET hi=excluded.hi",
+                    (conv_id, hi),
+                )
+        self._event_seqs[conv_id] = (seq + 1, hi)
+        return seq
+
     def append_event(
         self,
         site_id: str,
@@ -1727,19 +1786,22 @@ class Store:
         turn_id: str,
         event: dict[str, Any],
         *,
+        seq: int | None = None,
         now: int | None = None,
     ) -> int:
-        """Persist an event; returns its per-conversation sequence number."""
+        """Persist an event; returns its per-conversation sequence number.
+
+        ``seq`` is one :meth:`next_seq` already handed out (a live event being stored);
+        without it, the next one is allocated. A merged streamed run carries ``parts``,
+        the lengths of its deltas, which went out live as the seqs ending at ``seq``
+        (see :meth:`events`).
+        """
         stamp = _now(now)
         self._conversation_row(site_id, user_id, conv_id)
+        if seq is None:
+            seq = self.next_seq(conv_id)
         con = self.connection
         with con:
-            seq = int(
-                con.execute(
-                    "SELECT coalesce(max(seq), 0) + 1 FROM turn_events WHERE conversation_id=?",
-                    (conv_id,),
-                ).fetchone()[0]
-            )
             payload = dict(event, seq=seq)
             con.execute(
                 "INSERT INTO turn_events (conversation_id, seq, turn_id, sealed, created_at) "
@@ -1762,19 +1824,26 @@ class Store:
     def events(
         self, site_id: str, user_id: int, conv_id: str, *, after_seq: int = 0
     ) -> list[tuple[int, dict[str, Any]]]:
+        """Stored events after ``after_seq``, in order.
+
+        A merged streamed run that a client saw only part of live (``after_seq`` falls
+        inside it) comes back with just the deltas it has not seen yet.
+        """
         self._conversation_row(site_id, user_id, conv_id)
         dek = self.chat_dek(site_id, user_id)
         rows = self.connection.execute(
             "SELECT seq, sealed FROM turn_events WHERE conversation_id=? AND seq>? ORDER BY seq",
             (conv_id, after_seq),
         ).fetchall()
-        return [
-            (
-                r["seq"],
-                self._open_json(dek, r["sealed"], bound_to=aad("turn_events", conv_id, r["seq"])),
+        out: list[tuple[int, dict[str, Any]]] = []
+        for r in rows:
+            event = self._open_json(
+                dek, r["sealed"], bound_to=aad("turn_events", conv_id, r["seq"])
             )
-            for r in rows
-        ]
+            unseen = _unseen_part(event, after_seq)
+            if unseen is not None:
+                out.append((r["seq"], unseen))
+        return out
 
     def start_turn(
         self,
@@ -1951,6 +2020,26 @@ class Store:
             con.executemany("INSERT OR REPLACE INTO ckpt_storage VALUES (?,?,?,?)", storage)
             con.executemany("INSERT OR REPLACE INTO ckpt_writes VALUES (?,?,?,?,?,?)", writes)
             con.executemany("INSERT OR REPLACE INTO ckpt_blobs VALUES (?,?,?,?,?)", blobs)
+
+    def ckpt_prune(
+        self,
+        thread_id: str,
+        *,
+        checkpoints: Sequence[tuple[str, str]],
+        blobs: Sequence[tuple[str, str, str]],
+    ) -> None:
+        """Drop the given ``(ns, checkpoint_id)`` checkpoints, their writes, and blobs."""
+        with self.connection as con:
+            for ns, cid in checkpoints:
+                for table in ("ckpt_storage", "ckpt_writes"):
+                    con.execute(
+                        f"DELETE FROM {table} WHERE thread_id=? AND ns=? AND checkpoint_id=?",
+                        (thread_id, ns, cid),
+                    )
+            con.executemany(
+                "DELETE FROM ckpt_blobs WHERE thread_id=? AND ns=? AND channel=? AND version=?",
+                [(thread_id, *blob) for blob in blobs],
+            )
 
     def ckpt_delete(self, thread_id: str) -> None:
         with self.connection as con:

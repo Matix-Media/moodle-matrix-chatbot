@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from factories import read_disk
@@ -36,6 +37,47 @@ class TestConversations:
         seqs = [store.append_event(S, 1, conv, "t1", {"type": "token", "delta": d}) for d in "abc"]
         assert seqs == [1, 2, 3]
         assert [e["delta"] for _, e in store.events(S, 1, conv, after_seq=1)] == ["b", "c"]
+
+    def test_event_seqs_are_never_reused_after_a_restart(
+        self, tmp_path: Path, ring: KeyRing
+    ) -> None:
+        with Store(tmp_path / "db", ring, embed_dim=3) as store:
+            conv = store.create_conversation(S, 1)
+            # Handed out to live subscribers, never stored (a crash lost them).
+            assert [store.next_seq(conv) for _ in range(3)] == [1, 2, 3]
+        with Store(tmp_path / "db", ring, embed_dim=3) as store:
+            seq = store.append_event(S, 1, conv, "t1", {"type": "turn_interrupted"})
+            assert seq > 3
+            assert store.next_seq(conv) == seq + 1
+
+    def test_append_event_keeps_a_given_seq(self, store: Store) -> None:
+        conv = store.create_conversation(S, 1)
+        seqs = [store.next_seq(conv) for _ in range(3)]
+        store.append_event(S, 1, conv, "t1", {"type": "token", "delta": "abc"}, seq=seqs[-1])
+        assert [(seq, e["seq"]) for seq, e in store.events(S, 1, conv)] == [(3, 3)]
+
+    def test_a_partly_seen_streamed_run_resumes_where_it_was_left(self, store: Store) -> None:
+        conv = store.create_conversation(S, 1)
+        store.append_event(S, 1, conv, "t1", {"type": "user_message", "text": "?"})  # seq 1
+        # One stored run of three deltas that went out live as seqs 2, 3 and 4.
+        run = {"type": "token", "delta": "Hallo Welt!", "parts": [5, 5, 1]}
+        store.append_event(S, 1, conv, "t1", run, seq=4)
+
+        def tail(after: int) -> list[Any]:
+            return [e.get("delta") for _, e in store.events(S, 1, conv, after_seq=after)]
+
+        assert tail(1) == ["Hallo Welt!"]
+        assert tail(2) == [" Welt!"]
+        assert tail(3) == ["!"]
+        assert tail(4) == []
+        assert all("parts" not in e for _, e in store.events(S, 1, conv))
+
+    def test_a_partly_seen_thinking_indicator_is_not_repeated(self, store: Store) -> None:
+        conv = store.create_conversation(S, 1)
+        run = {"type": "thinking", "delta": None, "parts": [0, 0]}
+        store.append_event(S, 1, conv, "t1", run, seq=2)
+        assert [e["delta"] for _, e in store.events(S, 1, conv)] == [None]
+        assert store.events(S, 1, conv, after_seq=1) == []
 
     def test_events_are_encrypted_and_owner_only(self, store: Store, tmp_path: Path) -> None:
         conv = store.create_conversation(S, 1)
@@ -130,6 +172,39 @@ class TestCheckpointer:
         saver.delete_thread(thread_id_for(S, 1, "c"))
         fresh = EncryptedCheckpointer(store)
         assert fresh.get_tuple(config) is None  # type: ignore[arg-type]
+
+    async def test_prune_keeps_only_the_latest_checkpoint(
+        self, tmp_path: Path, ring: KeyRing
+    ) -> None:
+        thread = thread_id_for(S, 1, "conv-1")
+        config = {"configurable": {"thread_id": thread}}
+        with Store(tmp_path / "db", ring, embed_dim=3) as store:
+            saver = EncryptedCheckpointer(store)
+            graph = _graph(saver)
+            for text in ("eins", "zwei"):
+                await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config)  # type: ignore[attr-defined]
+            before = store.ckpt_rows(thread)
+            assert len(before[0]) > 1
+            saver.prune([thread])
+            storage, _, blobs = store.ckpt_rows(thread)
+            assert len(storage) == 1
+            assert len(blobs) < len(before[2])
+            assert len(list(saver.list(config))) == 1  # type: ignore[arg-type]
+        with Store(tmp_path / "db", ring, embed_dim=3) as store:
+            graph = _graph(EncryptedCheckpointer(store))
+            await graph.ainvoke({"messages": [HumanMessage(content="drei")]}, config)  # type: ignore[attr-defined]
+            state = await graph.aget_state(config)  # type: ignore[attr-defined]
+            assert [m.content for m in state.values["messages"]] == [
+                "eins",
+                "Echo: eins",
+                "zwei",
+                "Echo: zwei",
+                "drei",
+                "Echo: drei",
+            ]
+
+    def test_prune_of_an_unknown_thread_is_a_no_op(self, store: Store) -> None:
+        EncryptedCheckpointer(store).prune([thread_id_for(S, 1, "nothing")])
 
     def test_malformed_thread_id_is_rejected(self, store: Store) -> None:
         saver = EncryptedCheckpointer(store)

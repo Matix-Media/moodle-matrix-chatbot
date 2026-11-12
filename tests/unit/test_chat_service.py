@@ -12,7 +12,8 @@ from test_tools import NOW, FakeMoodle, world  # noqa: F401  (fixture re-export)
 
 from moodle_llm_chat.access.scope import AccessScope, Capability, QuotaClaim, UserProfile
 from moodle_llm_chat.access.tokens import VerifiedToken
-from moodle_llm_chat.agent.checkpoint import EncryptedCheckpointer
+from moodle_llm_chat.agent.checkpoint import EncryptedCheckpointer, thread_id_for
+from moodle_llm_chat.agent.events import FinalEvent, ThinkingEvent, TokenEvent, ToolCallEvent
 from moodle_llm_chat.agent.runner import AgentRunner
 from moodle_llm_chat.agent.tools import default_registry
 from moodle_llm_chat.chat.service import ChatError, ChatService
@@ -312,3 +313,151 @@ class TestQuota:
         await wait_done(svc, conv)
         final = next(e for e in svc.replay(v, conv, after_seq=0) if e["type"] == "final")
         assert final["forced"] is True and final["text"] == "Kurz."
+
+
+class ScriptedRunner:
+    """Yields scripted agent events; can pause after ``pause_after`` of them."""
+
+    def __init__(self, events: list[Any], *, pause_after: int | None = None) -> None:
+        self.events = events
+        self.pause_after = pause_after
+        self.paused = asyncio.Event()
+        self.go = asyncio.Event()
+        self.pruned: list[str] = []
+
+    async def run(self, ctx: Any, *, thread_id: str, turn_id: str, **kw: Any) -> Any:
+        for i, event in enumerate(self.events):
+            if i == self.pause_after:
+                self.paused.set()
+                await self.go.wait()
+            yield event.model_copy(update={"turn_id": turn_id})
+
+    def prune_thread(self, thread_id: str) -> None:
+        self.pruned.append(thread_id)
+
+
+def scripted(store: Store, runner: ScriptedRunner) -> ChatService:
+    svc = service(store, ScriptedModel())
+    svc.runner = runner  # type: ignore[assignment]
+    return svc
+
+
+def tokens(*deltas: str) -> list[Any]:
+    return [TokenEvent(delta=d) for d in deltas]
+
+
+def stored(store: Store, conv: str) -> list[dict[str, Any]]:
+    return [e for _, e in store.events(S, 7, conv)]
+
+
+def drain(queue: asyncio.Queue[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = []
+    while not queue.empty():
+        seen.append(queue.get_nowait())
+    return seen
+
+
+class TestStreamedRuns:
+    async def test_a_streamed_run_is_stored_once_but_sent_live_per_delta(
+        self,
+        world: Store,  # noqa: F811
+    ) -> None:
+        runner = ScriptedRunner([*tokens("Hal", "lo", " Welt"), FinalEvent(text="Hallo Welt")])
+        svc = scripted(world, runner)
+        v = verified(world)
+        conv = world.create_conversation(S, 7)
+        queue = svc.subscribe(conv)
+        await svc.send(v, conversation_id=conv, course_id=None, text="Hi")
+        await wait_done(svc, conv)
+        live = [e for e in drain(queue) if e["type"] == "token"]
+        assert [e["delta"] for e in live] == ["Hal", "lo", " Welt"]
+        assert [e["seq"] for e in live] == sorted({e["seq"] for e in live})
+        history = stored(world, conv)
+        assert kinds(history) == ["user_message", "token", "final", "quota"]
+        assert history[1]["delta"] == "Hallo Welt"
+        assert history[1]["seq"] == live[-1]["seq"]  # a client that saw it all skips it
+        assert svc.replay(v, conv, after_seq=0) == history
+
+    async def test_runs_end_at_every_change_of_kind(self, world: Store) -> None:  # noqa: F811
+        runner = ScriptedRunner(
+            [
+                ThinkingEvent(delta="a"),
+                ThinkingEvent(delta="b"),
+                *tokens("c", "d"),
+                ToolCallEvent(id="c1", name="current_datetime", args={}),
+                *tokens("e", "f"),
+                FinalEvent(text="cdef"),
+            ]
+        )
+        svc = scripted(world, runner)
+        v = verified(world)
+        conv, _ = await svc.send(v, conversation_id=None, course_id=None, text="?")
+        await wait_done(svc, conv)
+        history = stored(world, conv)
+        assert [(e["type"], e.get("delta")) for e in history[:-2]] == [
+            ("user_message", None),
+            ("thinking", "ab"),
+            ("token", "cd"),
+            ("tool_call", None),
+            ("token", "ef"),
+        ]
+        seqs = [e["seq"] for e in history]
+        assert seqs == sorted(set(seqs))
+
+    async def test_replay_mid_run_includes_the_unstored_deltas(self, world: Store) -> None:  # noqa: F811
+        runner = ScriptedRunner(
+            [*tokens("a", "b", "c", "d"), FinalEvent(text="abcd")], pause_after=3
+        )
+        svc = scripted(world, runner)
+        v = verified(world)
+        conv, _ = await svc.send(v, conversation_id=None, course_id=None, text="?")
+        await asyncio.wait_for(runner.paused.wait(), 2)
+        assert kinds(stored(world, conv)) == ["user_message"]
+        backlog = svc.replay(v, conv, after_seq=0)
+        assert [e.get("delta") for e in backlog] == [None, "a", "b", "c"]
+        second = backlog[2]["seq"]
+        assert [e["delta"] for e in svc.replay(v, conv, after_seq=second)] == ["c"]
+        runner.go.set()
+        await wait_done(svc, conv)
+        # A client that dropped mid-run gets only what it had not seen yet.
+        resumed = svc.replay(v, conv, after_seq=second)
+        assert [(e["type"], e.get("delta")) for e in resumed][:2] == [
+            ("token", "cd"),
+            ("final", None),
+        ]
+
+    async def test_cancel_stores_the_partial_run_first(self, world: Store) -> None:  # noqa: F811
+        runner = ScriptedRunner([*tokens("hal", "b"), FinalEvent(text="never")], pause_after=2)
+        svc = scripted(world, runner)
+        v = verified(world)
+        conv, turn = await svc.send(v, conversation_id=None, course_id=None, text="?")
+        await asyncio.wait_for(runner.paused.wait(), 2)
+        await svc.cancel(v, conversation_id=conv)
+        await wait_done(svc, conv)
+        history = stored(world, conv)
+        assert [(e["type"], e.get("delta")) for e in history] == [
+            ("user_message", None),
+            ("token", "halb"),
+            ("cancelled", None),
+        ]
+        assert world.turn(conv, turn).state == "cancelled"
+
+    async def test_checkpoints_are_pruned_when_a_turn_ends(self, world: Store) -> None:  # noqa: F811
+        runner = ScriptedRunner([FinalEvent(text="ok")])
+        svc = scripted(world, runner)
+        v = verified(world)
+        conv, _ = await svc.send(v, conversation_id=None, course_id=None, text="?")
+        await wait_done(svc, conv)
+        assert runner.pruned == [thread_id_for(S, 7, conv)]
+
+    async def test_a_real_turn_leaves_one_checkpoint(self, world: Store) -> None:  # noqa: F811
+        model = ScriptedModel(
+            script=[call("search_text", {"query": "Raum"}), AIMessage(content="Raum B204 [1].")]
+        )
+        svc = service(world, model)
+        v = verified(world)
+        conv, _ = await svc.send(v, conversation_id=None, course_id=None, text="Wo?")
+        await wait_done(svc, conv)
+        storage, _, _ = world.ckpt_rows(thread_id_for(S, 7, conv))
+        namespaces = [r["ns"] for r in storage]
+        assert len(namespaces) == len(set(namespaces))

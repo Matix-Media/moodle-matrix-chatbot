@@ -232,14 +232,14 @@ class api_client {
     }
 
     /**
-     * GET /api/conversations/{id}, with streamed deltas folded into one event per run.
+     * GET /api/conversations/{id}: the stored history, one event per streamed run.
      *
      * @param string $chattoken
      * @param string $id
      * @return array {conversation, events, last_seq, tools}
      */
     public function conversation(string $chattoken, string $id): array {
-        return $this->user_get($chattoken, '/api/conversations/' . rawurlencode($id), ['compact' => 'true']);
+        return $this->user_get($chattoken, '/api/conversations/' . rawurlencode($id));
     }
 
     /**

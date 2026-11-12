@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from moodle_llm_chat.access.tokens import TokenError, VerifiedToken, verify_chat_token
-from moodle_llm_chat.chat.history import compact_events
 from moodle_llm_chat.index.store import StoreError
 from moodle_llm_chat.web.auth import UNAUTHORIZED, StoreDep, bearer_token, require_tls
 
@@ -60,23 +59,21 @@ async def get_conversation(
     store: StoreDep,
     request: Request,
     after_seq: int = 0,
-    compact: bool = False,
 ) -> dict[str, Any]:
-    """History after ``after_seq``.
+    """Stored history after ``after_seq``: one event per streamed run, not per delta.
 
-    ``compact`` folds streamed deltas into one event per run (see :func:`compact_events`);
-    ``last_seq`` is what to resume after; ``tools`` is the same UI metadata as the
-    websocket's ``ready`` frame, so a server-side renderer can label tool cards.
+    A run still being streamed is not stored yet; the websocket resumes it from
+    ``last_seq``. ``tools`` is the same UI metadata as the websocket's ``ready`` frame,
+    so a server-side renderer can label tool cards.
     """
     try:
         conversation = store.conversation(v.site.site_id, v.scope.user_id, conversation_id)
         rows = store.events(v.site.site_id, v.scope.user_id, conversation_id, after_seq=after_seq)
     except StoreError as exc:
         raise NOT_FOUND from exc
-    events = [e for _, e in rows]
     return {
         "conversation": conversation.model_dump(exclude={"site_id", "user_id"}),
-        "events": compact_events(events) if compact else events,
+        "events": [e for _, e in rows],
         "last_seq": rows[-1][0] if rows else after_seq,
         "tools": request.app.state.registry.manifest(),
     }
