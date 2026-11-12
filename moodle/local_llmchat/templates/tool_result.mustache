@@ -26,7 +26,7 @@
         "hasresult": true,
         "blocks": [
             {"ishits": true, "items": [{"index": 1, "title": "Plan", "url": "https://moodle.example/mod/page/view.php?id=11", "hasurl": true, "meta": "LF7 › Woche 2 · 09.11.2026", "snippet": "Stundenplan: Raum B204 am Montag."}]},
-            {"isentries": true, "items": [{"name": "Woche 1", "path": "/LF7/Woche 1", "isfolder": true, "detail": "", "meta": "Ordner · 3 Einträge"}]},
+            {"isentries": true, "items": [{"name": "Woche 1", "path": "/LF7/Woche 1", "isfolder": true, "detail": "", "meta": "Ordner · 3 Einträge", "url": "https://moodle.example/course/section.php?id=7", "hasurl": true}]},
             {"isfields": true, "items": [{"label": "Geändert", "text": "09.11.2026", "islink": false, "url": "", "iscode": false}]},
             {"istext": true, "index": 1, "title": "Skript", "url": "", "hasurl": false, "range": "Zeichen 0–6000 von 18.000", "text": "[Seite 1] Ein VLAN trennt Netze."},
             {"istable": true, "columns": [{"label": "Kurs"}, {"label": "Rollen"}], "rows": [{"cells": [{"text": "LF7"}, {"text": "Teilnehmer/in"}]}]},
@@ -64,7 +64,7 @@
             <li class="d-flex align-items-baseline">
                 <span class="local-llmchat-entryicon text-muted me-2">{{#isfolder}}{{#pix}} i/folder, core {{/pix}}{{/isfolder}}{{^isfolder}}{{#pix}} f/document, core {{/pix}}{{/isfolder}}</span>
                 <span class="local-llmchat-minw0">
-                    <span data-region="entry" data-path="{{path}}">{{name}}</span>{{#detail}}<span> — {{detail}}</span>{{/detail}}
+                    <span data-region="entry" data-path="{{path}}">{{#hasurl}}<a href="{{url}}" target="_blank" rel="noopener">{{name}}</a>{{/hasurl}}{{^hasurl}}{{name}}{{/hasurl}}</span>{{#detail}}<span> — {{detail}}</span>{{/detail}}
                     {{#meta}}<span class="text-muted small"> · {{meta}}</span>{{/meta}}
                 </span>
             </li>

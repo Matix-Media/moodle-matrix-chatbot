@@ -253,6 +253,79 @@ const formatWhen = (value, strings, locale) => {
 const num = (n, locale) => Number(n).toLocaleString(locale);
 
 /**
+ * Template context for one display block, per kind: (block, items, cites, strings, locale) => context.
+ */
+const BLOCKS = {
+    hits: (block, items, cites, strings, locale) => ({ishits: true, items: items.map((hit) => {
+        const cite = cites.get(Number(hit.cite));
+        const names = segmentsOf(hit.path);
+        const url = httpUrl(cite && cite.url);
+        return {
+            index: hit.cite ?? '',
+            title: (cite && cite.title) || names[names.length - 1] || String(hit.path || ''),
+            url, hasurl: url !== '',
+            meta: [names.slice(0, -1).join(' › '), hit.page ? `${strings.page} ${hit.page}` : '',
+                formatWhen(hit.modified, strings, locale)].filter(Boolean).join(' · '),
+            snippet: String(hit.snippet || ''),
+        };
+    })}),
+    entries: (block, items, cites, strings, locale) => ({isentries: true, items: items.map((entry) => {
+        const type = String(entry.type || '');
+        const counted = entry.count !== null && entry.count !== undefined;
+        const size = [
+            counted ? fillAll(strings['toolresult:entries'], num(entry.count, locale)) : '',
+            entry.pages ? fillAll(strings['toolresult:pages'], num(entry.pages, locale)) : '',
+            !entry.pages && entry.chars ? fillAll(strings['toolresult:chars'], num(entry.chars, locale)) : '',
+        ];
+        return {
+            name: String(entry.name || ''), path: String(entry.path || ''), isfolder: type === 'folder',
+            // Filled where links are resolved: the page (linkEntries) or the server-side renderer.
+            url: '', hasurl: false,
+            detail: String(entry.detail || ''),
+            meta: [strings[`toolentry:${type}`] || humanise(type), ...size, formatWhen(entry.modified, strings, locale)]
+                .filter(Boolean).join(' · '),
+        };
+    })}),
+    fields: (block, items, cites, strings, locale) => ({isfields: true, items: items.map((field) => {
+        const value = String(field.value ?? '');
+        const url = field.format === 'link' ? httpUrl(value) : '';
+        return {
+            label: strings[`toolfield:${field.key}`] || String(field.label || humanise(field.key)),
+            text: field.format === 'date' ? formatWhen(value, strings, locale) : value,
+            islink: url !== '', url, iscode: field.format === 'code',
+        };
+    })}),
+    text: (block, items, cites, strings, locale) => {
+        const cite = cites.get(Number(block.cite));
+        const names = segmentsOf(block.title);
+        const url = httpUrl(cite && cite.url);
+        const ranged = [block.start, block.end, block.total].every((n) => typeof n === 'number')
+            && block.total > block.end - block.start;
+        return {
+            istext: true, text: String(block.text || ''), index: block.cite ?? '',
+            title: (cite && cite.title) || names[names.length - 1] || '',
+            url, hasurl: url !== '',
+            range: ranged ? fillAll(strings['toolresult:range'],
+                {start: num(block.start, locale), end: num(block.end, locale), total: num(block.total, locale)}) : '',
+        };
+    },
+    table: (block, items, cites, strings) => ({
+        istable: true,
+        columns: (block.columns || []).map((c) => ({label: strings[`toolfield:${c.key}`] || String(c.label || c.key)})),
+        rows: (block.rows || []).map((row) => ({cells: (row || []).map((cell) => ({text: String(cell ?? '')}))})),
+    }),
+    notice: (block, items, cites, strings) => {
+        const level = ['info', 'warning', 'error'].includes(block.level) ? block.level : 'info';
+        const translated = strings[`toolnotice:${block.code}`];
+        const own = String(block.text || '');
+        return {
+            isnotice: true, level, iserror: level === 'error', iswarning: level === 'warning',
+            text: translated || own, detail: translated && level === 'error' && own !== translated ? own : '',
+        };
+    },
+};
+
+/**
  * Template context for one display block, by kind. Unknown kinds are shown generically.
  *
  * @param {Object} block
@@ -263,81 +336,13 @@ const num = (n, locale) => Number(n).toLocaleString(locale);
  */
 const describeBlock = (block, cites, strings, locale) => {
     const items = Array.isArray(block.items) ? block.items : [];
-    switch (block.kind) {
-        case 'hits':
-            return {ishits: true, items: items.map((hit) => {
-                const cite = cites.get(Number(hit.cite));
-                const names = segmentsOf(hit.path);
-                const url = httpUrl(cite && cite.url);
-                return {
-                    index: hit.cite ?? '',
-                    title: (cite && cite.title) || names[names.length - 1] || String(hit.path || ''),
-                    url, hasurl: url !== '',
-                    meta: [names.slice(0, -1).join(' › '), hit.page ? `${strings.page} ${hit.page}` : '',
-                        formatWhen(hit.modified, strings, locale)].filter(Boolean).join(' · '),
-                    snippet: String(hit.snippet || ''),
-                };
-            })};
-        case 'entries':
-            return {isentries: true, items: items.map((entry) => {
-                const type = String(entry.type || '');
-                const counted = entry.count !== null && entry.count !== undefined;
-                const size = [
-                    counted ? fillAll(strings['toolresult:entries'], num(entry.count, locale)) : '',
-                    entry.pages ? fillAll(strings['toolresult:pages'], num(entry.pages, locale)) : '',
-                    !entry.pages && entry.chars ? fillAll(strings['toolresult:chars'], num(entry.chars, locale)) : '',
-                ];
-                return {
-                    name: String(entry.name || ''), path: String(entry.path || ''), isfolder: type === 'folder',
-                    detail: String(entry.detail || ''),
-                    meta: [strings[`toolentry:${type}`] || humanise(type), ...size, formatWhen(entry.modified, strings, locale)]
-                        .filter(Boolean).join(' · '),
-                };
-            })};
-        case 'fields':
-            return {isfields: true, items: items.map((field) => {
-                const value = String(field.value ?? '');
-                const url = field.format === 'link' ? httpUrl(value) : '';
-                return {
-                    label: strings[`toolfield:${field.key}`] || String(field.label || humanise(field.key)),
-                    text: field.format === 'date' ? formatWhen(value, strings, locale) : value,
-                    islink: url !== '', url, iscode: field.format === 'code',
-                };
-            })};
-        case 'text': {
-            const cite = cites.get(Number(block.cite));
-            const names = segmentsOf(block.title);
-            const url = httpUrl(cite && cite.url);
-            const ranged = [block.start, block.end, block.total].every((n) => typeof n === 'number');
-            return {
-                istext: true, text: String(block.text || ''), index: block.cite ?? '',
-                title: (cite && cite.title) || names[names.length - 1] || '',
-                url, hasurl: url !== '',
-                range: ranged && block.total > block.end - block.start ? fillAll(strings['toolresult:range'],
-                    {start: num(block.start, locale), end: num(block.end, locale), total: num(block.total, locale)}) : '',
-            };
-        }
-        case 'table':
-            return {
-                istable: true,
-                columns: (block.columns || []).map((c) => ({label: strings[`toolfield:${c.key}`] || String(c.label || c.key)})),
-                rows: (block.rows || []).map((row) => ({cells: (row || []).map((cell) => ({text: String(cell ?? '')}))})),
-            };
-        case 'notice': {
-            const level = ['info', 'warning', 'error'].includes(block.level) ? block.level : 'info';
-            const translated = strings[`toolnotice:${block.code}`];
-            const own = String(block.text || '');
-            return {
-                isnotice: true, level, iserror: level === 'error', iswarning: level === 'warning',
-                text: translated || own, detail: translated && level === 'error' && own !== translated ? own : '',
-            };
-        }
-        default: {
-            const rest = Object.assign({}, block);
-            delete rest.kind;
-            return {isgeneric: true, text: typeof block.text === 'string' ? block.text : JSON.stringify(rest, null, 2)};
-        }
+    const known = Object.prototype.hasOwnProperty.call(BLOCKS, block.kind) ? BLOCKS[block.kind] : null;
+    if (known) {
+        return known(block, items, cites, strings, locale);
     }
+    const rest = Object.assign({}, block);
+    delete rest.kind;
+    return {isgeneric: true, text: typeof block.text === 'string' ? block.text : JSON.stringify(rest, null, 2)};
 };
 
 /**

@@ -992,6 +992,9 @@ class ChatController {
         try {
             const resolved = await this.resolvePaths(paths);
             card.querySelectorAll('[data-region="entry"]').forEach((holder) => {
+                if (holder.querySelector('a')) {
+                    return;
+                }
                 const segments = resolved.get(holder.dataset.path);
                 const last = Array.isArray(segments) ? segments[segments.length - 1] : null;
                 const url = last && /^https?:\/\//i.test(String(last.url || '')) ? String(last.url) : '';
