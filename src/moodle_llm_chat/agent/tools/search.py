@@ -82,7 +82,7 @@ async def _render_hits(ctx: RunContext, hits: list[Hit]) -> ToolResult:
 def _hit(ctx: RunContext, n: int, document: Document, page: int | None, text: str) -> HitItem:
     return HitItem(
         cite=n,
-        path=ctx.tree.path_for(document.doc_id) or document.title,
+        location=ctx.tree.location_for(document.doc_id),
         page=page,
         modified=document.timemodified or None,
         snippet=text,

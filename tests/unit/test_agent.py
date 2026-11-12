@@ -102,7 +102,7 @@ class TestToolLoop:
         call_event = next(e for e in events if isinstance(e, ToolCallEvent))
         assert call_event.name == "search_text" and call_event.summary == "„Raum“"
         result = next(e for e in events if isinstance(e, ToolResultEvent))
-        assert result.citations[0].path == "/LF7/Woche 2/Plan"
+        assert [s.name for s in result.citations[0].location] == ["LF7", "Woche 2", "Plan"]
         assert result.display[0]["kind"] == "hits"
         final = events[-1]
         assert isinstance(final, FinalEvent)
@@ -110,6 +110,27 @@ class TestToolLoop:
         assert [c.index for c in final.citations] == [1]
         assert final.citations[0].url
         assert all(e.turn_id == "u1" for e in events)
+
+    async def test_tool_call_carries_the_resolved_location(self, world: Store) -> None:  # noqa: F811
+        model = ScriptedModel(
+            script=[
+                call("list_dir", {"path": "/lf7/woche 1"}, "c1"),
+                call("list_dir", {"path": "/"}, "c2"),
+                call("list_dir", {"path": "/LF9"}, "c3"),
+                AIMessage(content="ok"),
+            ]
+        )
+        events = await collect(
+            runner(model).run(ctx(world), thread_id="t", turn_id="u", message="?")
+        )
+        calls = {e.id: e for e in events if isinstance(e, ToolCallEvent)}
+        resolved = calls["c1"].model_dump(mode="json")["locations"]["path"]
+        assert resolved == [
+            {"kind": "course", "id": "2", "name": "LF7"},
+            {"kind": "section", "id": "1", "name": "Woche 1"},
+        ]
+        assert calls["c2"].locations == {"path": []}
+        assert calls["c3"].locations == {}
 
     async def test_model_sees_tool_output_and_user_header(self, world: Store) -> None:  # noqa: F811
         model = ScriptedModel(

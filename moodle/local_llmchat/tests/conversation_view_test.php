@@ -55,7 +55,7 @@ final class conversation_view_test extends \advanced_testcase {
      * Render events with links resolved by a fake.
      *
      * @param array $events
-     * @param array $links path => segments
+     * @param array $links "kind:id" => url
      * @return array [xpath, lastseq, html]
      */
     private function render(array $events, array $links = []): array {
@@ -65,7 +65,7 @@ final class conversation_view_test extends \advanced_testcase {
         $view = new conversation_view(
             $PAGE->get_renderer('core'),
             tool_display::from_lang(),
-            fn(array $paths) => array_intersect_key($links, array_flip($paths))
+            fn(array $refs) => array_intersect_key($links, array_flip(array_map(fn($r) => "{$r['kind']}:{$r['id']}", $refs)))
         );
         $result = $view->render($events, self::TOOLS);
         $dom = new \DOMDocument();
@@ -112,18 +112,18 @@ final class conversation_view_test extends \advanced_testcase {
         $this->assertSame(3, $lastseq, 'the quota after the final answer is left to the live client');
     }
 
-    public function test_finished_tool_card_with_summary_result_and_linked_path(): void {
+    public function test_finished_tool_card_with_summary_result_and_linked_location(): void {
         [$x] = $this->render([
             $this->ev('user_message', ['text' => 'Suche']),
-            $this->ev('tool_call', ['id' => 'c1', 'name' => 'search_text', 'args' => ['query' => 'Raum', 'path' => '/LF7/Plan']]),
+            $this->ev('tool_call', ['id' => 'c1', 'name' => 'search_text', 'args' => ['query' => 'Raum', 'path' => '/lf7/plan'],
+                'locations' => ['path' => [
+                    ['kind' => 'course', 'id' => '2', 'name' => 'LF7'], ['kind' => 'module', 'id' => '5', 'name' => 'Plan / Raum'],
+                ]]]),
             $this->ev('tool_result', ['id' => 'c1', 'name' => 'search_text', 'summary' => '2 Treffer', 'citations' => [
                 ['index' => 1, 'title' => 'Plan', 'url' => 'https://moodle.example/mod/page/view.php?id=5'],
             ]]),
             $this->ev('final', ['text' => 'Gefunden.']),
-        ], ['/LF7/Plan' => [
-            ['name' => 'LF7', 'url' => 'https://moodle.example/course/view.php?id=2'],
-            ['name' => 'Plan', 'url' => ''],
-        ]]);
+        ], ['course:2' => 'https://moodle.example/course/view.php?id=2', 'module:5' => '']);
         $card = $x->query('//*[@data-region="tool"]')->item(0);
         $this->assertNotNull($card);
         $this->assertStringNotContainsString('d-none', $x->query('//*[@data-region="tools"]')->item(0)->getAttribute('class'));
@@ -136,6 +136,33 @@ final class conversation_view_test extends \advanced_testcase {
         $crumb = $x->query('.//*[@data-region="path"]//a', $card);
         $this->assertSame(1, $crumb->length, 'only the segment the user can open is a link');
         $this->assertSame('https://moodle.example/course/view.php?id=2', $crumb->item(0)->getAttribute('href'));
+        $names = array_map(fn($n) => trim($n->textContent), iterator_to_array($x->query('.//*[@data-region="path"]//li', $card)));
+        $this->assertSame(['LF7', 'Plan / Raum'], $names, 'Moodle names, not path segments');
+    }
+
+    public function test_a_path_saved_without_a_location_is_shown_as_typed(): void {
+        [$x] = $this->render([
+            $this->ev('user_message', ['text' => 'Suche']),
+            $this->ev('tool_call', ['id' => 'c1', 'name' => 'list_dir', 'args' => ['path' => '/LF7/Woche 1']]),
+            $this->ev('final', ['text' => 'ok']),
+        ]);
+        $card = $x->query('//*[@data-region="tool"]')->item(0);
+        $this->assertSame(0, $x->query('.//*[@data-region="path"]', $card)->length);
+        $this->assertStringContainsString('/LF7/Woche 1', $card->textContent);
+    }
+
+    public function test_the_card_title_names_the_resolved_place(): void {
+        [$x] = $this->render([
+            $this->ev('user_message', ['text' => 'Zeig']),
+            $this->ev('tool_call', ['id' => 'c1', 'name' => 'list_dir', 'args' => ['path' => '/lf7/woche-1'],
+                'locations' => ['path' => [['kind' => 'course', 'id' => '2', 'name' => 'LF7'],
+                    ['kind' => 'section', 'id' => '7', 'name' => 'Woche 1']]]]),
+            $this->ev('final', ['text' => 'ok']),
+        ]);
+        $title = $x->query('//*[@data-region="tool"]//span[contains(@class, "text-truncate")]')->item(0);
+        $this->assertNotNull($title);
+        $this->assertStringContainsString('„Woche 1“', $title->textContent);
+        $this->assertStringNotContainsString('woche-1', $title->textContent);
     }
 
     public function test_tool_results_render_their_display_blocks(): void {
@@ -146,14 +173,19 @@ final class conversation_view_test extends \advanced_testcase {
             $this->ev('tool_call', ['id' => 'c1', 'name' => 'search_text', 'args' => ['query' => 'Raum']]),
             $this->ev('tool_result', ['id' => 'c1', 'name' => 'search_text', 'citations' => [$plan], 'display' => [
                 ['kind' => 'hits', 'items' => [
-                    ['cite' => 1, 'path' => '/LF7/Woche 2/Plan', 'page' => 2, 'snippet' => 'Raum B204'],
+                    ['cite' => 1, 'location' => [['kind' => 'course', 'id' => '2', 'name' => 'LF7'],
+                        ['kind' => 'module', 'id' => '5', 'name' => 'Plan']], 'page' => 2, 'snippet' => 'Raum B204'],
                 ]],
             ]]),
             $this->ev('tool_call', ['id' => 'c2', 'name' => 'list_dir', 'args' => ['path' => '/LF7']]),
             $this->ev('tool_result', ['id' => 'c2', 'name' => 'list_dir', 'display' => [
-                ['kind' => 'entries', 'path' => '/LF7', 'items' => [
-                    ['name' => 'Woche 1', 'type' => 'folder', 'path' => '/LF7/Woche 1', 'count' => 3],
-                    ['name' => 'Geheim', 'type' => 'file', 'path' => '/LF7/Geheim'],
+                ['kind' => 'entries', 'location' => [['kind' => 'course', 'id' => '2', 'name' => 'LF7']], 'items' => [
+                    ['name' => 'Woche 1', 'type' => 'folder', 'count' => 3, 'location' => [
+                        ['kind' => 'course', 'id' => '2', 'name' => 'LF7'], ['kind' => 'section', 'id' => '7', 'name' => 'Woche 1'],
+                    ]],
+                    ['name' => 'Geheim', 'type' => 'file', 'location' => [
+                        ['kind' => 'course', 'id' => '2', 'name' => 'LF7'], ['kind' => 'module', 'id' => '9', 'name' => 'Geheim'],
+                    ]],
                 ]],
             ]]),
             $this->ev('tool_call', ['id' => 'c3', 'name' => 'list_dir', 'args' => ['path' => '/LF8']]),
@@ -161,13 +193,8 @@ final class conversation_view_test extends \advanced_testcase {
                 ['kind' => 'notice', 'level' => 'error', 'code' => 'path_not_found', 'text' => 'Nicht gefunden: LF8'],
             ]]),
             $this->ev('final', ['text' => 'Raum B204 [1].', 'citations' => [$plan]]),
-        ], ['/LF7/Woche 1' => [
-            ['name' => 'LF7', 'url' => 'https://moodle.example/course/view.php?id=2'],
-            ['name' => 'Woche 1', 'url' => 'https://moodle.example/course/section.php?id=7'],
-        ], '/LF7/Geheim' => [
-            ['name' => 'LF7', 'url' => 'https://moodle.example/course/view.php?id=2'],
-            ['name' => 'Geheim', 'url' => ''],
-        ]]);
+        ], ['course:2' => 'https://moodle.example/course/view.php?id=2',
+            'section:7' => 'https://moodle.example/course/section.php?id=7', 'module:9' => '']);
         [$search, $listing, $failed] = iterator_to_array($x->query('//*[@data-region="tool"]'));
         $hit = $x->query('.//*[contains(@class, "local-llmchat-hits")]/li', $search)->item(0);
         $this->assertNotNull($hit, 'hits block');

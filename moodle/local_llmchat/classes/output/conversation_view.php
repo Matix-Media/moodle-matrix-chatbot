@@ -24,7 +24,7 @@
 
 namespace local_llmchat\output;
 
-use local_llmchat\content\path_resolver;
+use local_llmchat\content\ref_resolver;
 use local_llmchat\markdown;
 
 /**
@@ -45,45 +45,36 @@ final class conversation_view {
     /** Event types that end a turn. */
     private const TURN_ENDS = ['final', 'cancelled', 'error'];
 
-    /** @var callable fn(string[] $paths): array path => [{name, url}] */
-    private $resolvepaths;
+    /** @var callable fn(array $refs): array "kind:id" => url */
+    private $resolverefs;
 
     /**
      * Constructor.
      *
      * @param \renderer_base $output
      * @param tool_display $display
-     * @param callable|null $resolvepaths fn(string[] $paths): array path => [{name, url}];
-     *     default: what the current user can open ({@see path_resolver})
+     * @param callable|null $resolverefs fn(array $refs): array "kind:id" => url ('' when not accessible);
+     *     default: what the current user can open ({@see ref_resolver})
      */
     public function __construct(
         /** @var \renderer_base */
         private \renderer_base $output,
         /** @var tool_display */
         private tool_display $display,
-        ?callable $resolvepaths = null,
+        ?callable $resolverefs = null,
     ) {
-        $this->resolvepaths = $resolvepaths ?? [self::class, 'resolve_for_current_user'];
+        $this->resolverefs = $resolverefs ?? [self::class, 'resolve_for_current_user'];
     }
 
     /**
-     * Links for tool card paths, for the current user (as local_llmchat_resolve_paths).
+     * Links for tool card locations, for the current user (as local_llmchat_resolve_refs).
      *
-     * @param string[] $paths
-     * @return array path => [{name, url}]
+     * @param array $refs [{kind, id}]
+     * @return array "kind:id" => url
      */
-    public static function resolve_for_current_user(array $paths): array {
+    public static function resolve_for_current_user(array $refs): array {
         global $USER;
-        $resolver = new path_resolver();
-        $out = [];
-        foreach ($paths as $path) {
-            $segments = [];
-            foreach ($resolver->resolve(\core_text::substr($path, 0, 1000), (int)$USER->id) as $segment) {
-                $segments[] = ['name' => $segment['name'], 'url' => $segment['url'] ?? ''];
-            }
-            $out[$path] = $segments;
-        }
-        return $out;
+        return (new ref_resolver())->resolve($refs, (int)$USER->id);
     }
 
     /**
@@ -259,36 +250,55 @@ final class conversation_view {
     }
 
     /**
-     * Resolve the paths of all tool cards at once.
+     * Resolve the locations of all tool cards at once.
      *
      * @param array $messages
-     * @return array path => [{name, url}]
+     * @return array "kind:id" => url
      */
     private function resolve_links(array $messages): array {
-        $paths = [];
+        $refs = [];
         foreach ($messages as $message) {
             foreach ($message['tools'] ?? [] as $tool) {
-                $args = is_array($tool['call']['args'] ?? null) ? $tool['call']['args'] : [];
-                foreach ($this->display->describe_call($args)['paths'] as $path) {
-                    $paths[$path] = true;
-                }
+                $described = $this->display->describe_call(self::args($tool['call']), self::locations($tool['call']));
+                $found = $described['refs'];
                 if (is_array($tool['result'] ?? null)) {
-                    foreach ($this->display->describe_result($tool['result'])['paths'] as $path) {
-                        $paths[$path] = true;
-                    }
+                    $found = array_merge($found, $this->display->describe_result($tool['result'])['refs']);
+                }
+                foreach ($found as $ref) {
+                    $refs["{$ref['kind']}:{$ref['id']}"] = $ref;
                 }
             }
         }
-        if (!$paths) {
+        if (!$refs) {
             return [];
         }
         try {
-            return ($this->resolvepaths)(array_keys($paths));
+            return ($this->resolverefs)(array_values($refs));
         } catch (\Throwable $e) {
-            // Links are a convenience; the cards show the plain path without them.
-            debugging('local_llmchat: resolving tool paths failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            // Links are a convenience; the cards show the plain names without them.
+            debugging('local_llmchat: resolving tool card links failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
             return [];
         }
+    }
+
+    /**
+     * A tool_call event's arguments.
+     *
+     * @param array $call
+     * @return array
+     */
+    private static function args(array $call): array {
+        return is_array($call['args'] ?? null) ? $call['args'] : [];
+    }
+
+    /**
+     * A tool_call event's locations (none for calls saved before them).
+     *
+     * @param array $call
+     * @return array
+     */
+    private static function locations(array $call): array {
+        return is_array($call['locations'] ?? null) ? $call['locations'] : [];
     }
 
     /**
@@ -296,7 +306,7 @@ final class conversation_view {
      *
      * @param array $turn
      * @param array $meta tool name => metadata
-     * @param array $links path => resolved segments
+     * @param array $links "kind:id" => url
      * @return string
      */
     private function render_turn(array $turn, array $meta, array $links): string {
@@ -355,20 +365,21 @@ final class conversation_view {
      */
     private function render_tool(array $call, ?array $result, array $meta, array $links): string {
         $name = (string)($call['name'] ?? '');
-        $args = is_array($call['args'] ?? null) ? $call['args'] : [];
+        $args = self::args($call);
+        $locations = self::locations($call);
         $toolmeta = $meta[$name] ?? [];
         [$icon, $component] = tool_display::icon($name, $toolmeta);
-        $described = $this->display->describe_call($args);
+        $described = $this->display->describe_call($args, $locations);
         foreach ($described['params'] as $i => $param) {
-            if ($param['ispath'] && isset($links[$param['path']])) {
-                $described['params'][$i]['segments'] = tool_display::link_segments($param['segments'], $links[$param['path']]);
+            if ($param['ispath']) {
+                $described['params'][$i]['segments'] = tool_display::link_segments($param['segments'], $links);
             }
         }
         $context = array_merge([
             'uniqid' => \html_writer::random_id('llmchat-tool'),
             'icon' => $icon,
             'component' => $component,
-            'label' => tool_display::label($name, $args, $toolmeta),
+            'label' => tool_display::label($name, $args, $toolmeta, $locations, get_string('toolval:root', 'local_llmchat')),
         ], $described, [
             'done' => $result !== null,
             'summary' => $result !== null && !empty($result['summary']) ? (string)$result['summary'] : '',

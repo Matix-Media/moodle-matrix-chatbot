@@ -33,9 +33,9 @@ $functions = [
         'loginrequired' => true,
         'capabilities' => 'local/llmchat:use',
     ],
-    'local_llmchat_resolve_paths' => [
-        'classname' => '\local_llmchat\external\resolve_paths',
-        'description' => 'Links for agent paths, resolved for the current user.',
+    'local_llmchat_resolve_refs' => [
+        'classname' => '\local_llmchat\external\resolve_refs',
+        'description' => 'Links for Moodle objects by id, resolved for the current user.',
         'type' => 'read',
         'ajax' => true,
         'loginrequired' => true,

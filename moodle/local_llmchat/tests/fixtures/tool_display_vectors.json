@@ -39,8 +39,9 @@
         "hasparams": false,
         "params": [],
         "raw": "{}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "query and k",
@@ -73,8 +74,9 @@
           }
         ],
         "raw": "{\n  \"query\": \"Raum B204\",\n  \"k\": 5\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "known order then others",
@@ -106,19 +108,25 @@
             "segments": [
               {
                 "name": "LF7",
+                "kind": "course",
+                "id": "2",
+                "ref": "course:2",
                 "last": false,
                 "url": "",
                 "hasurl": false
               },
               {
-                "name": "Material Projekt",
+                "name": "Material / Projekt",
+                "kind": "section",
+                "id": "7",
+                "ref": "section:7",
                 "last": true,
                 "url": "",
                 "hasurl": false
               }
             ],
             "chips": [],
-            "path": "/LF7/Material Projekt/"
+            "arg": "path"
           },
           {
             "label": "Extra flag",
@@ -132,8 +140,29 @@
           }
         ],
         "raw": "{\n  \"extra_flag\": true,\n  \"path\": \"/LF7/Material Projekt/\",\n  \"query\": \"x\"\n}",
-        "paths": [
-          "/LF7/Material Projekt/"
+        "refs": [
+          {
+            "kind": "course",
+            "id": "2"
+          },
+          {
+            "kind": "section",
+            "id": "7"
+          }
+        ]
+      },
+      "locations": {
+        "path": [
+          {
+            "kind": "course",
+            "id": "2",
+            "name": "LF7"
+          },
+          {
+            "kind": "section",
+            "id": "7",
+            "name": "Material / Projekt"
+          }
         ]
       }
     },
@@ -157,7 +186,10 @@
           }
         ],
         "raw": "{\n  \"path\": \"/\"\n}",
-        "paths": []
+        "refs": []
+      },
+      "locations": {
+        "path": []
       }
     },
     {
@@ -180,8 +212,9 @@
           }
         ],
         "raw": "{\n  \"pattern\": \"\\\\b/2[4-9]\"\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "chips",
@@ -213,8 +246,9 @@
           }
         ],
         "raw": "{\n  \"course_ids\": [\n    529,\n    530\n  ]\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "mixed array is code",
@@ -240,8 +274,9 @@
           }
         ],
         "raw": "{\n  \"options\": [\n    {\n      \"a\": 1\n    }\n  ]\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "object is code",
@@ -265,8 +300,9 @@
           }
         ],
         "raw": "{\n  \"filter\": {\n    \"a\": \"b\"\n  }\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "enum known and unknown",
@@ -299,8 +335,9 @@
           }
         ],
         "raw": "{\n  \"order\": \"modified_desc\",\n  \"detail\": \"full_text\"\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "relative since",
@@ -322,8 +359,9 @@
           }
         ],
         "raw": "{\n  \"since\": \"-7d\"\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "empty values skipped",
@@ -358,8 +396,9 @@
           }
         ],
         "raw": "{\n  \"query\": \"\",\n  \"path\": null,\n  \"max_depth\": 0,\n  \"dry_run\": false\n}",
-        "paths": []
-      }
+        "refs": []
+      },
+      "locations": {}
     },
     {
       "name": "unicode",
@@ -381,7 +420,135 @@
           }
         ],
         "raw": "{\n  \"query\": \"Prüfung „Netze“ / Ü\"\n}",
-        "paths": []
+        "refs": []
+      },
+      "locations": {}
+    },
+    {
+      "name": "a path the API did not resolve is shown as typed",
+      "args": {
+        "path": "/LF9/x"
+      },
+      "locations": {},
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Location",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "/LF9/x",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"path\": \"/LF9/x\"\n}",
+        "refs": []
+      }
+    },
+    {
+      "name": "malformed segments are dropped",
+      "args": {
+        "path": "/a"
+      },
+      "locations": {
+        "path": [
+          {
+            "kind": "course",
+            "id": 2,
+            "name": "A"
+          },
+          "junk",
+          {
+            "kind": "module",
+            "name": "no id"
+          },
+          {
+            "kind": "planet",
+            "id": "1",
+            "name": "X"
+          },
+          {
+            "kind": "section",
+            "id": "5"
+          }
+        ]
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Location",
+            "istext": false,
+            "iscode": false,
+            "ispath": true,
+            "ischips": false,
+            "text": "",
+            "segments": [
+              {
+                "name": "A",
+                "kind": "course",
+                "id": "2",
+                "ref": "course:2",
+                "last": false,
+                "url": "",
+                "hasurl": false
+              },
+              {
+                "name": "",
+                "kind": "section",
+                "id": "5",
+                "ref": "section:5",
+                "last": true,
+                "url": "",
+                "hasurl": false
+              }
+            ],
+            "chips": [],
+            "arg": "path"
+          }
+        ],
+        "raw": "{\n  \"path\": \"/a\"\n}",
+        "refs": [
+          {
+            "kind": "course",
+            "id": "2"
+          },
+          {
+            "kind": "section",
+            "id": "5"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no usable segment is shown as typed",
+      "args": {
+        "path": "/a"
+      },
+      "locations": {
+        "path": [
+          "junk"
+        ]
+      },
+      "expected": {
+        "hasparams": true,
+        "params": [
+          {
+            "label": "Location",
+            "istext": true,
+            "iscode": false,
+            "ispath": false,
+            "ischips": false,
+            "text": "/a",
+            "segments": [],
+            "chips": []
+          }
+        ],
+        "raw": "{\n  \"path\": \"/a\"\n}",
+        "refs": []
       }
     }
   ],
@@ -394,7 +561,7 @@
         "blocks": [],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -413,7 +580,7 @@
         "blocks": [],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -454,7 +621,7 @@
             "hasurl": false
           }
         ],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -487,7 +654,7 @@
             "hasurl": true
           }
         ],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -517,20 +684,51 @@
             "items": [
               {
                 "cite": 1,
-                "path": "/LF7/Woche 2/Plan",
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "2",
+                    "name": "LF7"
+                  },
+                  {
+                    "kind": "section",
+                    "id": "8",
+                    "name": "Woche 2"
+                  },
+                  {
+                    "kind": "module",
+                    "id": "11",
+                    "name": "Plan"
+                  }
+                ],
                 "page": 2,
                 "modified": null,
                 "snippet": "Raum B204"
               },
               {
                 "cite": 7,
-                "path": "/LF7/Skript",
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "2",
+                    "name": "LF7"
+                  },
+                  {
+                    "kind": "module",
+                    "id": "12",
+                    "name": "Skript"
+                  }
+                ],
                 "page": null,
                 "snippet": ""
               },
               {
                 "cite": 3,
-                "path": "javascript:x"
+                "location": "javascript:x"
+              },
+              {
+                "cite": 9,
+                "path": "/LF7/Alt/Datei"
               }
             ]
           }
@@ -560,7 +758,15 @@
               },
               {
                 "index": 3,
-                "title": "javascript:x",
+                "title": "",
+                "url": "",
+                "hasurl": false,
+                "meta": "",
+                "snippet": ""
+              },
+              {
+                "index": 9,
+                "title": "/LF7/Alt/Datei",
                 "url": "",
                 "hasurl": false,
                 "meta": "",
@@ -579,7 +785,7 @@
             "hasurl": false
           }
         ],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -598,7 +804,18 @@
             "items": [
               {
                 "cite": 1,
-                "path": "/A/X"
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "1",
+                    "name": "A"
+                  },
+                  {
+                    "kind": "module",
+                    "id": "2",
+                    "name": "X"
+                  }
+                ]
               }
             ]
           }
@@ -623,7 +840,7 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -632,42 +849,118 @@
         "display": [
           {
             "kind": "entries",
-            "path": "/LF7",
             "items": [
               {
                 "name": "Woche 1",
                 "type": "folder",
-                "path": "/LF7/Woche 1",
                 "count": 3,
-                "detail": "Netzwerke LF7"
+                "detail": "Netzwerke LF7",
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "2",
+                    "name": "LF7"
+                  },
+                  {
+                    "kind": "section",
+                    "id": "3",
+                    "name": "Woche 1"
+                  }
+                ]
               },
               {
                 "name": "Leer",
                 "type": "folder",
-                "path": "/LF7/Leer",
-                "count": 0
+                "count": 0,
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "2",
+                    "name": "LF7"
+                  },
+                  {
+                    "kind": "section",
+                    "id": "4",
+                    "name": "Leer"
+                  }
+                ]
               },
               {
                 "name": "Skript",
                 "type": "file",
-                "path": "/LF7/Woche 1/Skript",
                 "pages": 12,
-                "chars": 900
+                "chars": 900,
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "2",
+                    "name": "LF7"
+                  },
+                  {
+                    "kind": "section",
+                    "id": "3",
+                    "name": "Woche 1"
+                  },
+                  {
+                    "kind": "module",
+                    "id": "10",
+                    "name": "Skript"
+                  }
+                ]
               },
               {
                 "name": "Notiz",
                 "type": "inline",
-                "path": "/LF7/Notiz",
-                "chars": 120
+                "chars": 120,
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "2",
+                    "name": "LF7"
+                  },
+                  {
+                    "kind": "section",
+                    "id": "5",
+                    "name": "Allgemein"
+                  },
+                  {
+                    "kind": "document",
+                    "id": "2:13:intro",
+                    "name": "Notiz"
+                  }
+                ]
               },
               {
                 "name": "Neu",
                 "type": "quiz_attempt",
-                "path": "/LF7/Neu"
+                "location": [
+                  {
+                    "kind": "course",
+                    "id": "2",
+                    "name": "LF7"
+                  },
+                  {
+                    "kind": "module",
+                    "id": "14",
+                    "name": "Neu"
+                  }
+                ]
               },
               {
                 "name": "Ohne Pfad",
                 "type": "external"
+              },
+              {
+                "name": "Alt",
+                "type": "folder",
+                "path": "/LF7/Alt"
+              }
+            ],
+            "location": [
+              {
+                "kind": "course",
+                "id": "2",
+                "name": "LF7"
               }
             ]
           }
@@ -681,69 +974,93 @@
             "items": [
               {
                 "name": "Woche 1",
-                "path": "/LF7/Woche 1",
                 "isfolder": true,
                 "url": "",
                 "hasurl": false,
                 "detail": "Netzwerke LF7",
-                "meta": "Folder · 3 entries"
+                "meta": "Folder · 3 entries",
+                "ref": "section:3"
               },
               {
                 "name": "Leer",
-                "path": "/LF7/Leer",
                 "isfolder": true,
                 "url": "",
                 "hasurl": false,
                 "detail": "",
-                "meta": "Folder · 0 entries"
+                "meta": "Folder · 0 entries",
+                "ref": "section:4"
               },
               {
                 "name": "Skript",
-                "path": "/LF7/Woche 1/Skript",
                 "isfolder": false,
                 "url": "",
                 "hasurl": false,
                 "detail": "",
-                "meta": "File · 12 pages"
+                "meta": "File · 12 pages",
+                "ref": "module:10"
               },
               {
                 "name": "Notiz",
-                "path": "/LF7/Notiz",
                 "isfolder": false,
                 "url": "",
                 "hasurl": false,
                 "detail": "",
-                "meta": "Text · 120 characters"
+                "meta": "Text · 120 characters",
+                "ref": "document:2:13:intro"
               },
               {
                 "name": "Neu",
-                "path": "/LF7/Neu",
                 "isfolder": false,
                 "url": "",
                 "hasurl": false,
                 "detail": "",
-                "meta": "Quiz attempt"
+                "meta": "Quiz attempt",
+                "ref": "module:14"
               },
               {
                 "name": "Ohne Pfad",
-                "path": "",
                 "isfolder": false,
                 "url": "",
                 "hasurl": false,
                 "detail": "",
-                "meta": "External"
+                "meta": "External",
+                "ref": ""
+              },
+              {
+                "name": "Alt",
+                "ref": "",
+                "isfolder": true,
+                "url": "",
+                "hasurl": false,
+                "detail": "",
+                "meta": "Folder"
               }
             ]
           }
         ],
         "hascitations": false,
         "citations": [],
-        "paths": [
-          "/LF7/Woche 1",
-          "/LF7/Leer",
-          "/LF7/Woche 1/Skript",
-          "/LF7/Notiz",
-          "/LF7/Neu"
+        "refs": [
+          {
+            "kind": "section",
+            "id": "3"
+          },
+          {
+            "kind": "section",
+            "id": "4"
+          },
+          {
+            "kind": "module",
+            "id": "10"
+          },
+          {
+            "kind": "document",
+            "id": "2:13:intro"
+          },
+          {
+            "kind": "module",
+            "id": "14"
+          }
         ]
       }
     },
@@ -832,7 +1149,7 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -855,11 +1172,23 @@
           {
             "kind": "text",
             "text": "Hallo\nWelt",
-            "title": "/LF7/Woche 2/Plan",
+            "title": "Plan",
             "cite": 1,
             "start": 0,
             "end": 40,
-            "total": 120
+            "total": 120,
+            "location": [
+              {
+                "kind": "course",
+                "id": "2",
+                "name": "LF7"
+              },
+              {
+                "kind": "module",
+                "id": "11",
+                "name": "Plan"
+              }
+            ]
           }
         ]
       },
@@ -878,7 +1207,7 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -911,7 +1240,7 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -939,7 +1268,7 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -1011,7 +1340,7 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -1095,7 +1424,7 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
       }
     },
     {
@@ -1131,79 +1460,191 @@
         ],
         "hascitations": false,
         "citations": [],
-        "paths": []
+        "refs": []
+      }
+    },
+    {
+      "name": "text without a citation is titled by its location",
+      "frame": {
+        "display": [
+          {
+            "kind": "text",
+            "text": "x",
+            "title": "",
+            "location": [
+              {
+                "kind": "course",
+                "id": "2",
+                "name": "LF7"
+              },
+              {
+                "kind": "module",
+                "id": "11",
+                "name": "Plan"
+              }
+            ]
+          },
+          {
+            "kind": "text",
+            "text": "y",
+            "title": "/LF7/Alt"
+          }
+        ]
+      },
+      "expected": {
+        "hasresult": true,
+        "blocks": [
+          {
+            "istext": true,
+            "text": "x",
+            "index": "",
+            "title": "Plan",
+            "url": "",
+            "hasurl": false,
+            "range": ""
+          },
+          {
+            "istext": true,
+            "text": "y",
+            "index": "",
+            "title": "/LF7/Alt",
+            "url": "",
+            "hasurl": false,
+            "range": ""
+          }
+        ],
+        "hascitations": false,
+        "citations": [],
+        "refs": []
       }
     }
   ],
   "links": [
     {
-      "name": "match by name",
+      "name": "linked by ref",
       "segments": [
         {
           "name": "LF7",
-          "last": false
+          "kind": "course",
+          "id": "2",
+          "ref": "course:2",
+          "last": false,
+          "url": "",
+          "hasurl": false
         },
         {
-          "name": "Datei",
-          "last": true
-        }
-      ],
-      "resolved": [
-        {
-          "name": "lf7",
-          "url": "https://moodle.example/course/view.php?id=2"
+          "name": "Geheim",
+          "kind": "section",
+          "id": "7",
+          "ref": "section:7",
+          "last": false,
+          "url": "",
+          "hasurl": false
         },
         {
-          "name": "Datei",
-          "url": ""
+          "name": "a.pdf",
+          "kind": "document",
+          "id": "2:9:file:/a.pdf",
+          "ref": "document:2:9:file:/a.pdf",
+          "last": true,
+          "url": "",
+          "hasurl": false
         }
       ],
+      "links": {
+        "course:2": "https://moodle.example/course/view.php?id=2",
+        "section:7": "",
+        "document:2:9:file:/a.pdf": "https://moodle.example/pluginfile.php/5/mod_folder/content/0/a.pdf"
+      },
       "expected": [
         {
           "name": "LF7",
+          "kind": "course",
+          "id": "2",
+          "ref": "course:2",
           "last": false,
           "url": "https://moodle.example/course/view.php?id=2",
           "hasurl": true
         },
         {
-          "name": "Datei",
-          "last": true,
-          "url": "",
-          "hasurl": false
-        }
-      ]
-    },
-    {
-      "name": "mismatch and bad scheme",
-      "segments": [
-        {
-          "name": "A",
-          "last": false
-        },
-        {
-          "name": "B",
-          "last": true
-        }
-      ],
-      "resolved": [
-        {
-          "name": "X",
-          "url": "https://x"
-        },
-        {
-          "name": "B",
-          "url": "javascript:x"
-        }
-      ],
-      "expected": [
-        {
-          "name": "A",
+          "name": "Geheim",
+          "kind": "section",
+          "id": "7",
+          "ref": "section:7",
           "last": false,
           "url": "",
           "hasurl": false
         },
         {
-          "name": "B",
+          "name": "a.pdf",
+          "kind": "document",
+          "id": "2:9:file:/a.pdf",
+          "ref": "document:2:9:file:/a.pdf",
+          "last": true,
+          "url": "https://moodle.example/pluginfile.php/5/mod_folder/content/0/a.pdf",
+          "hasurl": true
+        }
+      ]
+    },
+    {
+      "name": "only http(s) links",
+      "segments": [
+        {
+          "name": "LF7",
+          "kind": "course",
+          "id": "2",
+          "ref": "course:2",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "Geheim",
+          "kind": "section",
+          "id": "7",
+          "ref": "section:7",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "a.pdf",
+          "kind": "document",
+          "id": "2:9:file:/a.pdf",
+          "ref": "document:2:9:file:/a.pdf",
+          "last": true,
+          "url": "",
+          "hasurl": false
+        }
+      ],
+      "links": {
+        "course:2": "javascript:alert(1)",
+        "section:7": "/relative"
+      },
+      "expected": [
+        {
+          "name": "LF7",
+          "kind": "course",
+          "id": "2",
+          "ref": "course:2",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "Geheim",
+          "kind": "section",
+          "id": "7",
+          "ref": "section:7",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "a.pdf",
+          "kind": "document",
+          "id": "2:9:file:/a.pdf",
+          "ref": "document:2:9:file:/a.pdf",
           "last": true,
           "url": "",
           "hasurl": false
@@ -1214,14 +1655,58 @@
       "name": "no answer",
       "segments": [
         {
-          "name": "A",
-          "last": true
+          "name": "LF7",
+          "kind": "course",
+          "id": "2",
+          "ref": "course:2",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "Geheim",
+          "kind": "section",
+          "id": "7",
+          "ref": "section:7",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "a.pdf",
+          "kind": "document",
+          "id": "2:9:file:/a.pdf",
+          "ref": "document:2:9:file:/a.pdf",
+          "last": true,
+          "url": "",
+          "hasurl": false
         }
       ],
-      "resolved": null,
+      "links": null,
       "expected": [
         {
-          "name": "A",
+          "name": "LF7",
+          "kind": "course",
+          "id": "2",
+          "ref": "course:2",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "Geheim",
+          "kind": "section",
+          "id": "7",
+          "ref": "section:7",
+          "last": false,
+          "url": "",
+          "hasurl": false
+        },
+        {
+          "name": "a.pdf",
+          "kind": "document",
+          "id": "2:9:file:/a.pdf",
+          "ref": "document:2:9:file:/a.pdf",
           "last": true,
           "url": "",
           "hasurl": false

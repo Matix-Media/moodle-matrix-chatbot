@@ -29,6 +29,9 @@ namespace local_llmchat\output;
  * exactly as amd/src/tooldetails.js does on the client (pinned by
  * tests/fixtures/tool_display_vectors.json; change both together).
  *
+ * Places in Moodle arrive as locations - [{kind, id, name}] from the course down, resolved by the
+ * API - never as paths to parse: breadcrumbs show the names and are linked by "kind:id" refs.
+ *
  * @package    local_llmchat
  * @copyright  2026 Matix-Media
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -58,6 +61,9 @@ final class tool_display {
     /** Notice codes with a translation. */
     private const NOTICE_CODES = ['no_hits', 'empty', 'no_access', 'no_text', 'no_documents', 'path_not_found',
         'moodle_unavailable', 'invalid_input', 'access_note'];
+
+    /** Kinds of location segments. */
+    private const SEGMENT_KINDS = ['course', 'section', 'module', 'document'];
 
     /** Tool name => [pix key, component], used when the API's tool metadata names no pix icon. */
     private const TOOL_ICONS = [
@@ -183,13 +189,67 @@ final class tool_display {
     }
 
     /**
+     * The well-formed segments of a location ([] for anything else).
+     *
+     * @param mixed $location
+     * @return array [{kind, id, name}]
+     */
+    private static function segments_of($location): array {
+        if (!is_array($location) || !array_is_list($location)) {
+            return [];
+        }
+        $out = [];
+        foreach ($location as $s) {
+            if (
+                !is_array($s) || !in_array($s['kind'] ?? null, self::SEGMENT_KINDS, true)
+                || !(is_string($s['id'] ?? null) || is_int($s['id'] ?? null)) || (string)$s['id'] === ''
+            ) {
+                continue;
+            }
+            $out[] = ['kind' => $s['kind'], 'id' => (string)$s['id'], 'name' => is_string($s['name'] ?? null) ? $s['name'] : ''];
+        }
+        return $out;
+    }
+
+    /**
+     * Breadcrumb data for a location, unlinked.
+     *
+     * @param array $segments from segments_of()
+     * @return array [{name, kind, id, ref, last, url, hasurl}]
+     */
+    private static function breadcrumb(array $segments): array {
+        $last = count($segments) - 1;
+        $out = [];
+        foreach ($segments as $i => $s) {
+            $out[] = ['name' => $s['name'], 'kind' => $s['kind'], 'id' => $s['id'], 'ref' => "{$s['kind']}:{$s['id']}",
+                'last' => $i === $last, 'url' => '', 'hasurl' => false];
+        }
+        return $out;
+    }
+
+    /**
+     * Unique {kind, id} pairs, in order.
+     *
+     * @param array $segments
+     * @return array [{kind, id}]
+     */
+    private static function unique_refs(array $segments): array {
+        $seen = [];
+        foreach ($segments as $s) {
+            $seen["{$s['kind']}:{$s['id']}"] = ['kind' => $s['kind'], 'id' => $s['id']];
+        }
+        return array_values($seen);
+    }
+
+    /**
      * One parameter row for the template.
      *
      * @param string $key
      * @param mixed $value
+     * @param array $locations argument name => location, as the API resolved it
      * @return array|null null when there is nothing to show
      */
-    private function param(string $key, $value): ?array {
+    private function param(string $key, $value, array $locations): ?array {
         if ($value === null || $value === '') {
             return null;
         }
@@ -217,16 +277,15 @@ final class tool_display {
         }
         $text = (string)$value;
         if ($kind === 'path') {
-            $names = array_values(array_filter(array_map('trim', explode('/', $text)), fn($s) => $s !== ''));
-            if (!$names) {
+            // Shown as the API resolved it; a path it could not resolve (or a call saved before
+            // locations) is shown as typed, never parsed.
+            $location = $locations[$key] ?? null;
+            if ($location === []) {
                 return $row('text', ['text' => $this->strings['toolval:root']]);
             }
-            $last = count($names) - 1;
-            $segments = [];
-            foreach ($names as $i => $name) {
-                $segments[] = ['name' => $name, 'last' => $i === $last, 'url' => '', 'hasurl' => false];
-            }
-            return $row('path', ['path' => $text, 'segments' => $segments]);
+            $segments = self::segments_of($location);
+            return $segments ? $row('path', ['arg' => $key, 'segments' => self::breadcrumb($segments)])
+                : $row('text', ['text' => $text]);
         }
         if ($kind === 'code') {
             return $row('code', ['text' => $text]);
@@ -244,31 +303,32 @@ final class tool_display {
      * Display data for a tool call's arguments (describeCall).
      *
      * @param array $args
-     * @return array {hasparams, params, raw, paths}
+     * @param array $locations the call's locations (tool_call.locations)
+     * @return array {hasparams, params, raw, refs} - refs: [{kind, id}] of the breadcrumbs, for linking
      */
-    public function describe_call(array $args): array {
+    public function describe_call(array $args, array $locations = []): array {
         $keys = array_merge(
             array_values(array_filter(self::KNOWN_ARGS, fn($k) => array_key_exists($k, $args))),
             array_values(array_filter(array_map('strval', array_keys($args)), fn($k) => !in_array($k, self::KNOWN_ARGS, true))),
         );
         $params = [];
         foreach ($keys as $key) {
-            $row = $this->param($key, $args[$key]);
+            $row = $this->param($key, $args[$key], $locations);
             if ($row !== null) {
                 $params[] = $row;
             }
         }
-        $paths = [];
+        $segments = [];
         foreach ($params as $p) {
-            if ($p['ispath'] && !in_array($p['path'], $paths, true)) {
-                $paths[] = $p['path'];
+            if ($p['ispath']) {
+                array_push($segments, ...$p['segments']);
             }
         }
         return [
             'hasparams' => count($params) > 0,
             'params' => $params,
             'raw' => self::json((object)$args, true),
-            'paths' => $paths,
+            'refs' => self::unique_refs($segments),
         ];
     }
 
@@ -312,14 +372,23 @@ final class tool_display {
     }
 
     /**
-     * Path segments of a course path.
+     * The names along a location.
      *
-     * @param mixed $path
+     * @param mixed $location
      * @return string[]
      */
-    private static function segments_of($path): array {
-        $path = is_scalar($path) ? (string)$path : '';
-        return array_values(array_filter(array_map('trim', explode('/', $path)), fn($s) => $s !== ''));
+    private static function names_of($location): array {
+        return array_map(fn($s) => $s['name'], self::segments_of($location));
+    }
+
+    /**
+     * A string or number as text ('' for anything else; as the client's textOf).
+     *
+     * @param mixed $value
+     * @return string
+     */
+    private static function text_of($value): string {
+        return is_string($value) || is_int($value) || is_float($value) ? (string)$value : '';
     }
 
     /**
@@ -375,12 +444,14 @@ final class tool_display {
             case 'hits':
                 return ['ishits' => true, 'items' => array_map(function (array $hit) use ($cites): array {
                     $cite = $cites[(int)($hit['cite'] ?? 0)] ?? null;
-                    $names = self::segments_of($hit['path'] ?? '');
+                    // Hits saved before locations only have a path: shown as it is, not parsed.
+                    $names = self::names_of($hit['location'] ?? null);
                     $url = self::http_url($cite['url'] ?? '');
                     $title = (string)($cite['title'] ?? '');
+                    $last = $names ? end($names) : '';
                     return [
                         'index' => $hit['cite'] ?? '',
-                        'title' => $title !== '' ? $title : ($names ? end($names) : self::text($hit['path'] ?? '')),
+                        'title' => $title !== '' ? $title : ($last !== '' ? $last : self::text_of($hit['path'] ?? null)),
                         'url' => $url,
                         'hasurl' => $url !== '',
                         'meta' => implode(' · ', array_filter([
@@ -402,9 +473,11 @@ final class tool_display {
                         empty($entry['pages']) && !empty($entry['chars'])
                             ? self::fill((string)$this->str('toolresult:chars'), self::number($entry['chars'])) : '',
                     ];
+                    $location = self::segments_of($entry['location'] ?? null);
+                    $last = $location ? end($location) : null;
                     return [
                         'name' => self::text($entry['name'] ?? ''),
-                        'path' => self::text($entry['path'] ?? ''),
+                        'ref' => $last ? "{$last['kind']}:{$last['id']}" : '',
                         'isfolder' => $type === 'folder',
                         'url' => '',
                         'hasurl' => false,
@@ -433,7 +506,8 @@ final class tool_display {
                 }, $items)];
             case 'text':
                 $cite = $cites[(int)($block['cite'] ?? 0)] ?? null;
-                $names = self::segments_of($block['title'] ?? '');
+                $names = self::names_of($block['location'] ?? null);
+                $last = $names ? end($names) : '';
                 $url = self::http_url($cite['url'] ?? '');
                 $title = (string)($cite['title'] ?? '');
                 [$start, $end, $total] = [$block['start'] ?? null, $block['end'] ?? null, $block['total'] ?? null];
@@ -442,7 +516,7 @@ final class tool_display {
                     'istext' => true,
                     'text' => self::text($block['text'] ?? ''),
                     'index' => $block['cite'] ?? '',
-                    'title' => $title !== '' ? $title : ($names ? end($names) : ''),
+                    'title' => $title !== '' ? $title : ($last !== '' ? $last : self::text_of($block['title'] ?? null)),
                     'url' => $url,
                     'hasurl' => $url !== '',
                     'range' => $ranged ? self::fill((string)$this->str('toolresult:range'), [
@@ -489,7 +563,7 @@ final class tool_display {
      * (describeResult).
      *
      * @param array $frame tool_result{citations?, display?}
-     * @return array {hasresult, blocks, hascitations, citations, paths} - paths: entry paths, for linking
+     * @return array {hasresult, blocks, hascitations, citations, refs} - refs: [{kind, id}] of the entries, for linking
      */
     public function describe_result(array $frame): array {
         $all = array_values(array_filter(is_array($frame['citations'] ?? null) ? $frame['citations'] : [], 'is_array'));
@@ -524,11 +598,15 @@ final class tool_display {
                 'hasurl' => !empty($c['url']),
             ];
         }
-        $paths = [];
-        foreach ($blocks as $b) {
-            foreach (!empty($b['isentries']) ? $b['items'] : [] as $entry) {
-                if ($entry['path'] !== '' && !in_array($entry['path'], $paths, true)) {
-                    $paths[] = $entry['path'];
+        $lasts = [];
+        foreach ($display as $b) {
+            if (($b['kind'] ?? null) !== 'entries' || !is_array($b['items'] ?? null) || !array_is_list($b['items'])) {
+                continue;
+            }
+            foreach ($b['items'] as $entry) {
+                $location = self::segments_of(is_array($entry) ? ($entry['location'] ?? null) : null);
+                if ($location) {
+                    $lasts[] = end($location);
                 }
             }
         }
@@ -537,7 +615,7 @@ final class tool_display {
             'blocks' => $blocks,
             'hascitations' => count($citations) > 0,
             'citations' => $citations,
-            'paths' => $paths,
+            'refs' => self::unique_refs($lasts),
         ];
     }
 
@@ -545,7 +623,7 @@ final class tool_display {
      * Link the listed entries of a described result to what the user can open (as the page's linkEntries).
      *
      * @param array $result describe_result() output
-     * @param array $links path => [{name, url}]
+     * @param array $links ref ("kind:id") => url, '' when not accessible
      * @return array
      */
     public static function link_entries(array $result, array $links): array {
@@ -554,9 +632,7 @@ final class tool_display {
                 continue;
             }
             foreach ($block['items'] as $i => $entry) {
-                $segments = $links[$entry['path']] ?? null;
-                $last = is_array($segments) && $segments ? end($segments) : null;
-                $url = is_array($last) ? self::http_url($last['url'] ?? '') : '';
+                $url = $entry['ref'] !== '' ? self::http_url($links[$entry['ref']] ?? '') : '';
                 $result['blocks'][$b]['items'][$i]['url'] = $url;
                 $result['blocks'][$b]['items'][$i]['hasurl'] = $url !== '';
             }
@@ -565,33 +641,56 @@ final class tool_display {
     }
 
     /**
-     * Attach resolved links to breadcrumb segments (linkSegments).
+     * Attach resolved links to breadcrumb segments by ref (linkSegments).
      *
-     * @param array $segments [{name, last}]
-     * @param array|null $resolved [{name, url}] for the same path, url '' when not accessible
-     * @return array [{name, last, url, hasurl}]
+     * @param array $segments [{name, kind, id, ref, last}]
+     * @param array|null $links ref ("kind:id") => url, '' when not accessible
+     * @return array [{name, kind, id, ref, last, url, hasurl}]
      */
-    public static function link_segments(array $segments, ?array $resolved): array {
+    public static function link_segments(array $segments, ?array $links): array {
         $out = [];
-        foreach (array_values($segments) as $i => $segment) {
-            $answer = $resolved[$i] ?? null;
-            $same = is_array($answer)
-                && \core_text::strtolower((string)($answer['name'] ?? '')) === \core_text::strtolower((string)$segment['name']);
-            $url = $same && preg_match('#^https?://#i', (string)($answer['url'] ?? '')) ? (string)$answer['url'] : '';
+        foreach (array_values($segments) as $segment) {
+            $url = self::http_url($links[$segment['ref']] ?? '');
             $out[] = array_merge($segment, ['url' => $url, 'hasurl' => $url !== '']);
         }
         return $out;
     }
 
     /**
-     * Card label: the tool's summary template, else its label and first string argument (as chat.js).
+     * The tool card's title: the first string argument, or for a path argument the name of the place
+     * it resolved to (callTarget).
+     *
+     * @param array $args
+     * @param array $locations
+     * @param string $root the name for all courses
+     * @return string
+     */
+    public static function call_target(array $args, array $locations, string $root): string {
+        foreach ($args as $key => $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+            $location = $locations[$key] ?? null;
+            if (is_array($location) && array_is_list($location)) {
+                $segments = self::segments_of($location);
+                return $location ? ($segments ? end($segments)['name'] : $value) : $root;
+            }
+            return $value;
+        }
+        return '';
+    }
+
+    /**
+     * Card label: the tool's summary template, else its label and target (as chat.js).
      *
      * @param string $name
      * @param array $args
      * @param array $meta tool metadata from the API's manifest
+     * @param array $locations the call's locations
+     * @param string $root the name for all courses
      * @return string
      */
-    public static function label(string $name, array $args, array $meta): string {
+    public static function label(string $name, array $args, array $meta, array $locations = [], string $root = ''): string {
         if (!empty($meta['summary_template'])) {
             return preg_replace_callback('/\{(\w+)\}/', function ($m) use ($args) {
                 if (!array_key_exists($m[1], $args) || $args[$m[1]] === null) {
@@ -601,13 +700,7 @@ final class tool_display {
                 return is_bool($v) ? ($v ? 'true' : 'false') : (is_scalar($v) ? (string)$v : self::json($v));
             }, (string)$meta['summary_template']);
         }
-        $first = '';
-        foreach ($args as $v) {
-            if (is_string($v)) {
-                $first = $v;
-                break;
-            }
-        }
+        $first = self::call_target($args, $locations, $root);
         return (($meta['label'] ?? '') ?: $name) . ($first !== '' ? " „{$first}“" : '');
     }
 

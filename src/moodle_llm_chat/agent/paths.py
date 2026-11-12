@@ -8,6 +8,10 @@ appear at all.
 
 Path segments resolve exactly, then case-insensitively, then by unique prefix, then
 by close fuzzy match, so a model that slightly misspells a name still lands right.
+
+Paths are for the model only. Whatever reaches the plugin names a node by its
+:meth:`CourseTree.location`: typed segments with Moodle ids and Moodle's own names, free
+of the path's ``/`` replacements and ``(2)`` suffixes, so the plugin never parses a path.
 """
 
 from __future__ import annotations
@@ -15,6 +19,9 @@ from __future__ import annotations
 import difflib
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
+
+from pydantic import BaseModel
 
 from moodle_llm_chat.access.scope import AccessScope
 from moodle_llm_chat.index.models import Course, Document
@@ -37,6 +44,18 @@ class PathNotFound(LookupError):
         self.suggestions = suggestions
 
 
+class Segment(BaseModel):
+    """One step of a location: a Moodle object by id, with its Moodle name.
+
+    ``id`` is the course id, section id or cmid as a string, or a document's ``doc_id``
+    (``"{course}:{cmid}:{part}"``) for one document of a module with several.
+    """
+
+    kind: Literal["course", "section", "module", "document"]
+    id: str
+    name: str
+
+
 @dataclass
 class Node:
     name: str
@@ -46,6 +65,9 @@ class Node:
     document: Document | None = None
     course: Course | None = None
     aliases: tuple[str, ...] = ()
+    parent: Node | None = field(default=None, repr=False, compare=False)
+    #: This node as a location step (``None`` for the root).
+    segment: Segment | None = None
 
     @property
     def modified(self) -> int:
@@ -72,6 +94,11 @@ def _join(parent: str, name: str) -> str:
     return f"{parent.rstrip('/')}/{name}"
 
 
+def _raw(name: str, fallback: str) -> str:
+    """Moodle's own name (whitespace collapsed), or the fallback the path uses for none."""
+    return " ".join((name or "").split()) or fallback
+
+
 class CourseTree:
     def __init__(self, root: Node, by_doc: dict[str, Node]) -> None:
         self.root = root
@@ -91,14 +118,17 @@ class CourseTree:
             if course_id not in scope.course_ids:
                 continue
             course = courses.get(course_id)
-            name = _clean(course.shortname if course else "", f"Kurs {course_id}")
-            name = _unique(name, root.children)
+            fallback = f"Kurs {course_id}"
+            shortname = course.shortname if course else ""
+            name = _unique(_clean(shortname, fallback), root.children)
             node = Node(
                 name=name,
                 kind=NodeKind.COURSE,
                 path=_join("/", name),
                 course=course,
                 aliases=(course.fullname,) if course else (),
+                parent=root,
+                segment=Segment(kind="course", id=str(course_id), name=_raw(shortname, fallback)),
             )
             root.children[name] = node
             course_nodes[course_id] = node
@@ -121,31 +151,58 @@ class CourseTree:
             key = (course_id, first.section_id, first.section_order)
             section = section_nodes.get(key)
             if section is None:
-                name = _unique(
-                    _clean(first.section_name, f"Abschnitt {first.section_order}"),
-                    course_node.children,
+                fallback = f"Abschnitt {first.section_order}"
+                name = _unique(_clean(first.section_name, fallback), course_node.children)
+                section = Node(
+                    name=name,
+                    kind=NodeKind.SECTION,
+                    path=_join(course_node.path, name),
+                    parent=course_node,
+                    segment=Segment(
+                        kind="section",
+                        id=str(first.section_id),
+                        name=_raw(first.section_name, fallback),
+                    ),
                 )
-                section = Node(name=name, kind=NodeKind.SECTION, path=_join(course_node.path, name))
                 course_node.children[name] = section
                 section_nodes[key] = section
 
-            module_name = _unique(
-                _clean(first.module_name or first.title, "Inhalt"), section.children
-            )
+            raw_module = first.module_name or first.title
+            module_name = _unique(_clean(raw_module, "Inhalt"), section.children)
             module_path = _join(section.path, module_name)
+            module_segment = Segment(
+                kind="module", id=str(first.cmid), name=_raw(raw_module, "Inhalt")
+            )
             if len(docs) == 1:
                 file_node = Node(
-                    name=module_name, kind=NodeKind.FILE, path=module_path, document=first
+                    name=module_name,
+                    kind=NodeKind.FILE,
+                    path=module_path,
+                    document=first,
+                    parent=section,
+                    segment=module_segment,
                 )
                 section.children[module_name] = file_node
                 by_doc[first.doc_id] = file_node
                 continue
-            module = Node(name=module_name, kind=NodeKind.MODULE, path=module_path)
+            module = Node(
+                name=module_name,
+                kind=NodeKind.MODULE,
+                path=module_path,
+                parent=section,
+                segment=module_segment,
+            )
             section.children[module_name] = module
             for d in docs:
-                name = _unique(_clean(d.title or d.filename or "", d.doc_id), module.children)
+                raw_name = d.title or d.filename or ""
+                name = _unique(_clean(raw_name, d.doc_id), module.children)
                 file_node = Node(
-                    name=name, kind=NodeKind.FILE, path=_join(module_path, name), document=d
+                    name=name,
+                    kind=NodeKind.FILE,
+                    path=_join(module_path, name),
+                    document=d,
+                    parent=module,
+                    segment=Segment(kind="document", id=d.doc_id, name=_raw(raw_name, d.doc_id)),
                 )
                 module.children[name] = file_node
                 by_doc[d.doc_id] = file_node
@@ -157,6 +214,28 @@ class CourseTree:
 
     def node_for(self, doc_id: str) -> Node | None:
         return self._by_doc.get(doc_id)
+
+    @staticmethod
+    def location(node: Node) -> list[Segment]:
+        """The node's steps from its course down (empty for the root)."""
+        steps: list[Segment] = []
+        current: Node | None = node
+        while current is not None:
+            if current.segment is not None:
+                steps.append(current.segment)
+            current = current.parent
+        return steps[::-1]
+
+    def location_for(self, doc_id: str) -> list[Segment]:
+        node = self._by_doc.get(doc_id)
+        return self.location(node) if node else []
+
+    @staticmethod
+    def course_of(node: Node) -> Course | None:
+        current: Node | None = node
+        while current is not None and current.kind is not NodeKind.COURSE:
+            current = current.parent
+        return current.course if current else None
 
     def resolve(self, path: str) -> Node:
         node = self.root

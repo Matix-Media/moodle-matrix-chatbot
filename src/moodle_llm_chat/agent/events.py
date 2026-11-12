@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, TypeAdapter
 
 from moodle_llm_chat.agent.citations import CitationRef
+from moodle_llm_chat.agent.paths import Segment
 
 PROTOCOL_VERSION = 1
 
@@ -39,6 +40,9 @@ class ToolCallEvent(_Event):
     name: str
     args: dict[str, Any]
     summary: str = ""
+    #: Path arguments the tree resolved, by argument name: what the card shows instead
+    #: of the path (missing = did not resolve; empty = all courses).
+    locations: dict[str, list[Segment]] = Field(default_factory=dict)
 
 
 class ToolResultEvent(_Event):
