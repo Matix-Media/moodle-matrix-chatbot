@@ -497,6 +497,13 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     padding: 2rem 1rem;
 }
 
+/* A stored history stays hidden until all of it has rendered (chat.js setReplaying). */
+.local-llmchat-replaying > :not([data-region="loading"]) {
+    /* Must beat Bootstrap's display utilities (d-flex on user bubbles), which are !important. */
+    /* stylelint-disable-next-line declaration-no-important */
+    display: none !important;
+}
+
 .local-llmchat-intro {
     margin-bottom: 1rem;
 }

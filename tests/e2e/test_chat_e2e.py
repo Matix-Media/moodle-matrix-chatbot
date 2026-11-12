@@ -201,6 +201,23 @@ class TestStudentChat:
                 break
             student.page.wait_for_timeout(100)
         assert held, "the client fetches the conversation"
+        # What is visible after every change to the message list while the history renders.
+        student.page.evaluate(
+            """() => {
+                const list = document.querySelector('[data-region=messages]');
+                const count = (sel) => [...list.querySelectorAll(sel)]
+                    .filter((n) => n.checkVisibility()).length;
+                window.llmchatSeen = [];
+                window.llmchatObserver = new MutationObserver(() => window.llmchatSeen.push([
+                    count('.local-llmchat-msg-user'), count('.local-llmchat-msg-assistant'),
+                    count('[data-region=tool]'), count('a.local-llmchat-cite'),
+                    count('[data-region=loading]'),
+                ]));
+                window.llmchatObserver.observe(list, {
+                    childList: true, subtree: true, attributes: true, characterData: true,
+                });
+            }"""
+        )
         held[0].continue_()
         student.page.unroute(history, hold)
 
@@ -211,6 +228,12 @@ class TestStudentChat:
         tool = student.page.locator("[data-region=tool]").first
         expect(tool.locator("[data-region=done]")).to_be_visible()
         expect(tool.locator("[data-region=spinner]")).to_be_hidden()
+        seen = student.page.evaluate(
+            "() => { window.llmchatObserver.disconnect(); return window.llmchatSeen; }"
+        )
+        shown = {tuple(s[:4]) for s in seen if any(s[:4])}
+        assert shown == {(1, 1, 1, 1)}, f"the history appears at once, not part by part: {seen}"
+        assert not [s for s in seen if any(s[:4]) and s[4]], "the loader hides as history shows"
         tool.locator("[data-action=toggle]").first.click()
         hit = tool.locator(".local-llmchat-hits li").first
         expect(hit).to_contain_text("B204")
@@ -225,6 +248,35 @@ class TestStudentChat:
         student.ask("Und dienstags?")
         student.wait_answer("B205")
         expect(student.page.locator(".local-llmchat-msg-user")).to_have_count(2)
+
+    def test_reloaded_history_resolves_all_card_links_in_one_request(
+        self, student: Chat, mock: Mock
+    ) -> None:
+        mock.script(
+            {"tool": "list_dir", "args": {"path": "/"}},
+            {"tool": "list_dir", "args": {"path": "/LF7"}},
+            {"text": "Das liegt im Kurs LF7."},
+        )
+        student.open().ask("Was gibt es in meinen Kursen?")
+        student.wait_answer("Kurs LF7")
+        conversation_id = current_conversation(student)
+
+        resolves: list[str] = []
+
+        def on_request(request: Any) -> None:
+            if "local_llmchat_resolve_refs" in (request.post_data or ""):
+                resolves.append(request.post_data or "")
+
+        student.page.on("request", on_request)
+        student.open(f"?conversation={conversation_id}")
+        cards = student.page.locator("[data-region=tool]")
+        expect(cards).to_have_count(2)
+        # Both cards get their links …
+        for i in range(2):
+            expect(cards.nth(i).locator("[data-region=entry] a").first).to_be_attached()
+        expect(cards.nth(1).locator("[data-region=path] a").first).to_be_attached()
+        # … from one round trip for the whole history, not one per card.
+        assert len(resolves) == 1, resolves
 
     def test_pending_question_survives_a_reload(self, student: Chat, mock: Mock) -> None:
         mock.script(

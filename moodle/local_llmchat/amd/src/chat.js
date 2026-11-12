@@ -107,6 +107,17 @@ const fill = (template, a) => String(template)
     .replace(/\{\$a->(\w+)\}/g, (m, k) => (a && a[k] !== undefined ? String(a[k]) : ''))
     .replace(/\{\$a\}/g, a === undefined || a === null ? '' : String(a));
 
+/** Refs per local_llmchat_resolve_refs call (its MAX_REFS). */
+const REFS_PER_CALL = 100;
+
+/**
+ * Cache key of a Moodle object ref.
+ *
+ * @param {Object} ref {kind, id}
+ * @returns {string} "kind:id"
+ */
+const refKey = (ref) => `${ref.kind}:${ref.id}`;
+
 /**
  * Random id for client_msg_id.
  *
@@ -181,6 +192,8 @@ class ChatController {
         this.wasOffline = false;
         this.stickToBottom = true;
         this.linkCache = new Map();
+        /** Refs held back while a history replays (see batchRefs), or null. */
+        this.refBatch = null;
 
         this.socket = new ReconnectingSocket({
             credentials: async() => {
@@ -366,6 +379,15 @@ class ChatController {
     showLoading(loading) {
         this.regions.loading.classList.toggle('d-none', !loading);
         this.regions.empty.classList.toggle('d-none', loading);
+    }
+
+    /**
+     * Hide the message list (all but the loading indicator) while a stored history renders.
+     *
+     * @param {boolean} replaying
+     */
+    setReplaying(replaying) {
+        this.regions.messages.classList.toggle('local-llmchat-replaying', replaying);
     }
 
     /**
@@ -924,23 +946,73 @@ class ChatController {
      * @returns {Promise<Object>} "kind:id" => url ('' when the user cannot open it)
      */
     async resolveRefs(refs) {
-        const key = (ref) => `${ref.kind}:${ref.id}`;
-        const missing = refs.filter((ref) => !this.linkCache.has(key(ref)));
-        if (missing.length) {
-            const request = Ajax.call([{methodname: 'local_llmchat_resolve_refs', args: {refs: missing}}])[0];
-            missing.forEach((ref) => {
-                this.linkCache.set(key(ref), request.then((result) => (result.find((r) => key(r) === key(ref)) || {}).url || '')
-                    .catch(() => {
-                        this.linkCache.delete(key(ref));
-                        return '';
-                    }));
-            });
+        const missing = [];
+        refs.filter((ref) => !this.linkCache.has(refKey(ref))).forEach((ref) => {
+            const pending = {ref};
+            this.linkCache.set(refKey(ref), new Promise((resolve) => {
+                pending.resolve = resolve;
+            }));
+            missing.push(pending);
+        });
+        if (this.refBatch) {
+            // A history is replaying: its cards' links are asked for together once it is in place.
+            this.refBatch.push(...missing);
+        } else {
+            this.requestRefs(missing);
         }
         const out = {};
         for (const ref of refs) {
-            out[key(ref)] = await this.linkCache.get(key(ref));
+            out[refKey(ref)] = await this.linkCache.get(refKey(ref));
         }
         return out;
+    }
+
+    /**
+     * Collect the refs of the cards rendered from now on until flushRefs() (a replaying history).
+     */
+    batchRefs() {
+        this.refBatch = this.refBatch || [];
+    }
+
+    /**
+     * Ask for the refs collected since batchRefs() and stop collecting.
+     */
+    flushRefs() {
+        const batch = this.refBatch || [];
+        this.refBatch = null;
+        this.requestRefs(batch);
+    }
+
+    /**
+     * Resolve refs on the server: one HTTP request, split into calls of at most REFS_PER_CALL refs.
+     * A ref that fails resolves to '' and is dropped from the cache, so a later card asks again.
+     *
+     * @param {Array} pending [{ref, resolve}]
+     */
+    requestRefs(pending) {
+        if (!pending.length) {
+            return;
+        }
+        const chunks = [];
+        for (let i = 0; i < pending.length; i += REFS_PER_CALL) {
+            chunks.push(pending.slice(i, i + REFS_PER_CALL));
+        }
+        const calls = Ajax.call(chunks.map((chunk) => ({
+            methodname: 'local_llmchat_resolve_refs', args: {refs: chunk.map((p) => p.ref)},
+        })));
+        chunks.forEach(async(chunk, i) => {
+            let result;
+            try {
+                result = await calls[i];
+            } catch (e) {
+                chunk.forEach((p) => {
+                    this.linkCache.delete(refKey(p.ref));
+                    p.resolve('');
+                });
+                return;
+            }
+            chunk.forEach((p) => p.resolve((result.find((r) => refKey(r) === refKey(p.ref)) || {}).url || ''));
+        });
     }
 
     /**
@@ -1321,7 +1393,15 @@ class ChatController {
             // Access may have changed since the links were resolved.
             this.linkCache.clear();
             this.regions.messages.replaceChildren(this.regions.empty, this.regions.loading);
+            // Stored history renders frame by frame and template rendering yields to the browser
+            // between frames: keep it hidden behind the loader until all of it is in place.
+            this.setReplaying(Boolean(id));
             this.showLoading(Boolean(id));
+            // Links of cards from a history left mid-replay: those cards are gone.
+            this.flushRefs();
+            if (id) {
+                this.batchRefs();
+            }
             this.clearStatusErrors();
             this.setRunning(false);
             if (focus) {
@@ -1344,6 +1424,8 @@ class ChatController {
                 if (this.conversationId !== id) {
                     return;
                 }
+                this.setReplaying(false);
+                this.flushRefs();
                 this.showLoading(false);
                 if (restore) {
                     Log.debug(e);
@@ -1359,7 +1441,6 @@ class ChatController {
             if (this.conversationId !== id) {
                 return;
             }
-            this.regions.loading.classList.add('d-none');
             const events = data.events || [];
             events.forEach((frame) => this.handleFrame(Object.assign({'conversation_id': id}, frame), true));
             if (!events.length) {
@@ -1370,6 +1451,11 @@ class ChatController {
                 });
             }
             this.enqueue(() => {
+                if (this.conversationId === id) {
+                    this.regions.loading.classList.add('d-none');
+                    this.setReplaying(false);
+                    this.flushRefs();
+                }
                 this.setRunning(false);
                 // Anything newer than history (a running turn, a pending question) arrives via resume.
                 this.socket.send(frames.resume({conversationId: id, lastSeq: this.lastSeq[id]}));
