@@ -131,13 +131,13 @@ class TestStudentChat:
             expect(block.locator("[data-region=label-done]")).to_be_visible()
             toggle.click()
             expect(block.locator("[data-region=thinking-text]")).to_contain_text(thought)
-        # Stream order: thought, tool cards, thought, answer.
+        # Stream order: one activity group (thought, tool card, thought), then the answer.
         order = body.evaluate(
-            """b => [...b.children].map(n => n.dataset.region === 'thinking-block' ? 'thinking'
-                : n.dataset.region === 'tools' ? 'tools'
+            """b => [...b.children].map(n => n.dataset.region === 'tools'
+                    ? 'tools[' + [...n.children].map(c => c.dataset.region).join(' ') + ']'
                 : n.textContent.includes('B204') ? 'answer' : null).filter(Boolean)"""
         )
-        assert order == ["thinking", "tools", "thinking", "answer"], order
+        assert order == ["tools[thinking-block tool thinking-block]", "answer"], order
 
     def test_clarifying_question_round_trip(self, student: Chat, mock: Mock) -> None:
         mock.script(

@@ -250,23 +250,65 @@ final class conversation_view_test extends \advanced_testcase {
             $this->ev('token', ['delta' => 'Antwort']),
             $this->ev('final', ['text' => 'Antwort']),
         ]);
-        $order = [];
-        foreach ($x->query('//*[@data-region="body"]/*') as $node) {
-            $region = $node->getAttribute('data-region');
-            if ($region === 'tools') {
-                $region .= ':' . $x->query('.//*[@data-region="tool"]', $node)->length;
-            }
-            $order[] = $region ?: $node->getAttribute('class');
-        }
         $this->assertSame(
-            ['sr-only visually-hidden', 'text', 'thinking-block', 'tools:2', 'thinking-block', 'tools:1', 'text', 'footer',
+            ['sr-only visually-hidden', 'text', 'tools[thinking-block tool tool thinking-block tool]', 'text', 'footer',
                 'typing'],
-            $order,
-            'a thinking block per step, consecutive cards grouped, the answer after them'
+            $this->body_order($x),
+            'a thinking block per step, grouped with the tool cards around it, the answer after them'
         );
         $texts = $x->query('//*[@data-region="body"]/*[@data-region="text"]');
         $this->assertSame('', trim($texts->item(0)->textContent), 'the shell\'s first segment stays empty, as in the client');
         $this->assertSame('Antwort', trim($texts->item(1)->textContent));
+    }
+
+    public function test_text_between_steps_starts_a_new_activity_group(): void {
+        [$x] = $this->render([
+            $this->ev('user_message', ['text' => 'Frage']),
+            $this->ev('thinking', ['delta' => 'Erst suchen.']),
+            $this->ev('tool_call', ['id' => 'a', 'name' => 'search_text', 'args' => ['query' => 'a']]),
+            $this->ev('tool_result', ['id' => 'a', 'name' => 'search_text', 'summary' => 'ok']),
+            $this->ev('token', ['delta' => 'Zwischenstand.']),
+            $this->ev('thinking', ['delta' => 'Jetzt antworten.']),
+            $this->ev('token', ['delta' => 'Antwort']),
+            $this->ev('final', ['text' => 'Antwort']),
+        ]);
+        $this->assertSame(
+            ['sr-only visually-hidden', 'text', 'tools[thinking-block tool]', 'text', 'tools[thinking-block]', 'text',
+                'footer', 'typing'],
+            $this->body_order($x)
+        );
+    }
+
+    public function test_group_of_only_empty_thinking_is_left_out(): void {
+        [$x] = $this->render([
+            $this->ev('user_message', ['text' => 'Frage']),
+            $this->ev('thinking', ['delta' => ' ']),
+            $this->ev('token', ['delta' => 'Antwort']),
+            $this->ev('final', ['text' => 'Antwort']),
+        ]);
+        $this->assertSame(0, $x->query('//*[@data-region="tools"]')->length);
+    }
+
+    /**
+     * The regions of the first assistant body in order; an activity group lists its items.
+     *
+     * @param \DOMXPath $x
+     * @return string[]
+     */
+    private function body_order(\DOMXPath $x): array {
+        $order = [];
+        foreach ($x->query('(//*[@data-region="body"])[1]/*') as $node) {
+            $region = $node->getAttribute('data-region');
+            if ($region === 'tools') {
+                $items = [];
+                foreach ($x->query('./*', $node) as $item) {
+                    $items[] = $item->getAttribute('data-region');
+                }
+                $region .= '[' . implode(' ', $items) . ']';
+            }
+            $order[] = $region ?: $node->getAttribute('class');
+        }
+        return $order;
     }
 
     public function test_answered_question_shows_the_answer_and_text_after_it(): void {
