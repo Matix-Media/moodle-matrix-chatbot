@@ -95,7 +95,9 @@ const inline = (text, citations) => {
  */
 export const render = (markdown, citations = []) => {
     const cites = new Map((citations || []).map((c) => [Number(c.index), c]));
-    const lines = escapeHtml(markdown || '').split('\n');
+    // Models write narrow/thin spaces in times and dates ("08:30 Uhr" with U+202F); in the chat font
+    // they read as a squashed gap next to normal spaces. Keep them no-break, at normal width.
+    const lines = escapeHtml(String(markdown || '').replace(/[\u202f\u2009]/g, '\u00a0')).split('\n');
     const html = [];
     let list = null;
     let para = [];
