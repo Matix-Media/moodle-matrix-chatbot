@@ -75,6 +75,16 @@ class TestStudentChat:
         expect(cite).to_have_count(1)
         assert "/mod/page/view.php?id=" in (cite.get_attribute("href") or "")
 
+    def test_narrow_spaces_render_as_normal_width_spaces(self, student: Chat, mock: Mock) -> None:
+        """Models put narrow/thin spaces in times and dates; they read as a squashed gap."""
+        mock.script({"text": "Beginn um 08:30\u202fUhr am 13.\u2009Nov\u202f2026 in Raum B204."})
+        student.open().ask("Wann beginnt der Unterricht?")
+        answer = student.wait_answer("B204")
+        text = answer.text_content() or ""
+        assert "\u202f" not in text and "\u2009" not in text
+        # Still no-break, so a time or date does not split across lines.
+        assert "08:30\u00a0Uhr am 13.\u00a0Nov\u00a02026" in text
+
     def test_working_indicator_shows_while_the_model_works_after_a_tool(
         self, student: Chat, mock: Mock
     ) -> None:
