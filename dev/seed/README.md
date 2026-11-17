@@ -15,7 +15,36 @@ site: events → outbox → `/ingest`, the API downloading every file back from 
   files/…            anything a hand-written manifest points at with "path"
 ```
 
-## Three ways to get a dataset
+## Four ways to get a dataset
+
+**Generate the synthetic demo dataset.** No real data, so it can be shared freely and
+needs no bundle. `generate_demo.py` writes a whole fictional vocational-school class
+(FIAE 25a, school year 2026/27, dates around November 2026–March 2027): six courses
+built around one cross-subject project for an invented logistics company, so facts
+connect across courses (the LF5 schema, LF8 API, LF3 network plan and the English
+user guide all describe the same warehouse system).
+
+```bash
+python dev/seed/generate_demo.py dev/datasets/demo          # --force to regenerate
+MLC_DATASET_DIR=./datasets/demo docker compose -f dev/docker-compose.yml up -d --wait
+```
+
+It covers every file type and link adapter the API handles: PDF (with text, and
+image-only scans that need OCR), DOCX (and one named `.doc`), ODT, PPTX with speaker
+notes, XLSX, legacy XLS, CSV, TXT (cp1252), Markdown, SQL, HTML/HTM, `.url` shortcuts,
+PNG/JPEG/WEBP images (as files and embedded in pages), and live links of every adapter:
+two public TaskCards boards, two HackMD notes, Google Docs, Slides and Sheets, two
+Nextcloud shares (tab.digital) and three YouTube videos with transcripts. The TaskCards,
+HackMD, Google and Nextcloud documents were made for this dataset and hold content that
+belongs to it (group lists, class notes, a glossary, a pay calculator, …). Their text and
+URLs are in `demo/external.py`; if one disappears, recreate it from there.
+`python dev/seed/check_demo_links.py` fetches every link through the API's own adapters
+and reports which still work (needs network). Some files are realistic noise: RTF, JSON and XML pass the plugin's file type filter but
+have no extractor; SQL, images, `.url` and a Packet Tracer `.pkt` are outside the
+plugin's default filter. Hidden modules, restricted sections and uneven enrolments
+(student is not in LF8, student2 only in three courses) test access control.
+`PROBES.md` in the dataset lists questions to ask, the expected answer and who may see
+it. `tests/unit/test_dev_demo_dataset.py` keeps this coverage from going stale.
 
 **From a legacy bundle.** The legacy deployment's content index (only the `documents`
 table and the file blobs: no embeddings, chunks, PII tokens or credentials) was copied
