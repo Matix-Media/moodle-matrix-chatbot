@@ -74,6 +74,25 @@ class TestStudentChat:
         cite = answer.locator("a.local-llmchat-cite")
         expect(cite).to_have_count(1)
         assert "/mod/page/view.php?id=" in (cite.get_attribute("href") or "")
+        # Hovering the chip shows its source as a card; leaving it hides the card.
+        sources = student.page.locator(".local-llmchat-sources li a")
+        source = (sources.first.text_content() or "").strip()
+        card = student.page.locator(".local-llmchat-citecard")
+        # Keyboard focus shows the card too, and it names the chip's source.
+        cite.focus()
+        expect(card).to_be_visible()
+        expect(card).to_contain_text(source)
+        cite.blur()
+        expect(card).to_have_count(0)
+        # The mouse at the chip's centre (Playwright's hover() hit-check trips over the
+        # tool card just above the chip; the browser's own hit test finds the chip).
+        cite.scroll_into_view_if_needed()
+        box = cite.bounding_box()
+        assert box
+        student.page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        expect(card).to_be_visible()
+        student.page.mouse.move(0, 0)
+        expect(card).to_have_count(0)
 
     def test_narrow_spaces_render_as_normal_width_spaces(self, student: Chat, mock: Mock) -> None:
         """Models put narrow/thin spaces in times and dates; they read as a squashed gap."""
