@@ -133,6 +133,21 @@ final class chat_page_test extends \advanced_testcase {
         );
     }
 
+    public function test_header_title_names_the_conversation_when_known(): void {
+        global $PAGE;
+        $this->resetAfterTest();
+        $output = $PAGE->get_renderer('core');
+        $this->assertSame(
+            get_string('newconversation', 'local_llmchat'),
+            (new chat_page(0))->export_for_template($output)['title']
+        );
+        // A conversation the page did not load the list for: the client fills in its title.
+        $this->assertSame(
+            get_string('chattitle', 'local_llmchat'),
+            (new chat_page(0, '', 'c9'))->export_for_template($output)['title']
+        );
+    }
+
     public function test_compact_context_links_the_full_page(): void {
         global $PAGE;
         $this->resetAfterTest();
@@ -209,6 +224,9 @@ final class chat_page_test extends \advanced_testcase {
         );
         $this->assertSame(0, $xpath->query('.//a', $header)->length, 'no course link in the header');
         $this->assertSame(1, $xpath->query('.//h2', $header)->length);
+        $title = $xpath->query('.//h2[@data-region="title"]', $header);
+        $this->assertSame(1, $title->length, 'the header shows the conversation title, not a fixed heading');
+        $this->assertSame('New conversation', trim($title->item(0)->textContent));
         $buttons = $xpath->query('.//button', $header);
         $actions = [];
         foreach ($buttons as $button) {
@@ -321,6 +339,8 @@ final class chat_page_test extends \advanced_testcase {
             . get_string('noconversations', 'local_llmchat') . '")]')->length);
         $this->assertSame(['list' => true], $config['preloaded']);
         $this->assertSame('c1', $config['conversationid']);
+        $this->assertSame('Raumfrage', trim($x->query('//*[@data-region="panel"]//*[@data-region="title"]')->item(0)->textContent),
+            'the header names the open conversation');
 
         // Only the list: the chat is the client's, which shows it loading until then.
         $this->assertSame(['GET /api/conversations'], $t->sequence());

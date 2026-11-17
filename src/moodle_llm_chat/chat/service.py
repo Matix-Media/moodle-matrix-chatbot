@@ -20,6 +20,11 @@ is then marked interrupted and can be continued from its checkpoint.
   ``interrupted``; :meth:`ChatService.continue_turn` resumes them from the last
   checkpoint (completed tool calls are not repeated).
 * When a turn ends, the conversation's superseded LangGraph checkpoints are pruned.
+* A new conversation is titled with its first message at once; with a
+  :class:`TitleGenerator` (the utility model) a background task then names it properly
+  and publishes a ``title`` event, unless the user renamed it meanwhile. The turn's
+  ``final`` waits up to :data:`TITLE_WAIT_S` for it, since the plugin reloads its
+  conversation list on ``final``.
 """
 
 from __future__ import annotations
@@ -40,14 +45,17 @@ from moodle_llm_chat.agent.events import (
     STREAMED,
     CancelledEvent,
     ErrorEvent,
+    FinalEvent,
     QuestionEvent,
     QuotaEvent,
+    TitleEvent,
     TurnInterruptedEvent,
     UsageEvent,
     UserAnswerEvent,
     UserMessageEvent,
 )
 from moodle_llm_chat.agent.runner import AgentRunner
+from moodle_llm_chat.chat.titles import TITLE_CHARS, TitleGenerator
 from moodle_llm_chat.config import AgentSection
 from moodle_llm_chat.index.search import Searcher
 from moodle_llm_chat.index.store import Store, StoreError
@@ -56,8 +64,11 @@ from moodle_llm_chat.quota.service import QuotaExceeded, QuotaService
 log = structlog.get_logger(__name__)
 
 MAX_MESSAGE_CHARS = 10_000
-TITLE_CHARS = 60
 QUEUE_SIZE = 1000
+#: How long a first turn's ``final`` waits for the generated title.
+TITLE_WAIT_S = 5.0
+
+__all__ = ["TITLE_CHARS", "ChatError", "ChatService"]
 
 
 class ChatError(Exception):
@@ -81,6 +92,7 @@ class ChatService:
         quota: QuotaService,
         agent_settings: AgentSection,
         clock: Callable[[], datetime],
+        titles: TitleGenerator | None = None,
     ) -> None:
         self.store = store
         self.runner = runner
@@ -89,7 +101,10 @@ class ChatService:
         self.quota = quota
         self.settings = agent_settings
         self.clock = clock
+        self.titles = titles
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        #: Title generation in flight, per conversation.
+        self._title_tasks: dict[str, asyncio.Task[None]] = {}
         self._subs: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         #: The streamed run being published per conversation, not stored yet.
         self._runs: dict[str, list[dict[str, Any]]] = {}
@@ -231,7 +246,8 @@ class ChatService:
         self.store.start_turn(
             site_id, user_id, conversation_id, turn_id, client_msg_id=client_msg_id
         )
-        if not self.store.conversation(site_id, user_id, conversation_id).title:
+        untitled = not self.store.conversation(site_id, user_id, conversation_id).title
+        if untitled:
             self.store.set_conversation_title(site_id, user_id, conversation_id, text[:TITLE_CHARS])
         self._publish(
             v,
@@ -240,6 +256,10 @@ class ChatService:
                 turn_id=turn_id, text=text, course_id=course_id, client_msg_id=client_msg_id
             ).model_dump(mode="json"),
         )
+        if untitled and self.titles is not None:
+            self._title_tasks[conversation_id] = asyncio.create_task(
+                self._title(v, conversation_id, turn_id, text)
+            )
         self._spawn(v, conversation_id, turn_id, message=text, course_id=course_id)
         return conversation_id, turn_id
 
@@ -323,10 +343,49 @@ class ChatService:
 
     async def shutdown(self) -> None:
         self._shutting_down = True
-        tasks = [t for t in self._tasks.values() if not t.done()]
+        tasks = [t for t in (*self._tasks.values(), *self._title_tasks.values()) if not t.done()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    # ------------------------------------------------------------------ #
+    # Titles
+    # ------------------------------------------------------------------ #
+
+    async def _title(self, v: VerifiedToken, conversation_id: str, turn_id: str, text: str) -> None:
+        """Name the conversation after its first message; the truncated message stays the
+        title if this fails or the user renamed the conversation meanwhile."""
+        assert self.titles is not None
+        site_id, user_id = v.site.site_id, v.scope.user_id
+        fallback = text[:TITLE_CHARS]
+        try:
+            title, usage = await self.titles.generate(text)
+            if usage is not None:
+                self.quota.record(
+                    site_id, user_id, conversation_id, turn_id, usage, purpose="utility"
+                )
+            current = self.store.conversation(site_id, user_id, conversation_id).title
+            if not title or title == fallback or current != fallback:
+                return
+            self.store.set_conversation_title(site_id, user_id, conversation_id, title)
+            self._publish(
+                v,
+                conversation_id,
+                TitleEvent(turn_id=turn_id, title=title).model_dump(mode="json"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("chat.title_failed", conversation=conversation_id)
+        finally:
+            if self._title_tasks.get(conversation_id) is asyncio.current_task():
+                del self._title_tasks[conversation_id]
+
+    async def _await_title(self, conversation_id: str) -> None:
+        """Give a pending title a moment to land before the turn's ``final``."""
+        task = self._title_tasks.get(conversation_id)
+        if task is not None and not task.done():
+            await asyncio.wait({task}, timeout=TITLE_WAIT_S)
 
     # ------------------------------------------------------------------ #
     # Running a turn
@@ -411,6 +470,8 @@ class ChatService:
                     continue
                 if isinstance(event, QuestionEvent):
                     state = "waiting"
+                elif isinstance(event, FinalEvent):
+                    await self._await_title(conversation_id)
                 self._publish(v, conversation_id, event.model_dump(mode="json"))
         except asyncio.CancelledError:
             if self._shutting_down:

@@ -17,6 +17,9 @@ Control endpoints (used by the test runner):
 * ``GET /__calls`` — every chat request received (messages only), for assertions.
 * ``POST /__reset`` — clear queue and history.
 
+Requests for the utility model (``MOCK_UTILITY_MODEL``, conversation titles) never touch
+the queue or the history: they are answered ``Über <first three words of the message>``.
+
 ``/v1/embeddings`` returns deterministic bag-of-words vectors (``MOCK_EMBED_DIM``).
 """
 
@@ -38,6 +41,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 DIM = int(os.environ.get("MOCK_EMBED_DIM", "64"))
+UTILITY_MODEL = os.environ.get("MOCK_UTILITY_MODEL", "mock-utility")
 WORD = re.compile(r"\w+", re.UNICODE)
 
 app = FastAPI()
@@ -118,6 +122,13 @@ def _next_step(messages: list[dict[str, Any]]) -> dict[str, Any]:
     return step
 
 
+def _title(messages: list[dict[str, Any]]) -> str:
+    user = next((m for m in reversed(messages) if m.get("role") == "user"), {})
+    content = user.get("content")
+    text = content if isinstance(content, str) else json.dumps(content)
+    return "Über " + " ".join(WORD.findall(text)[:3])
+
+
 def _chunk(delta: dict[str, Any], finish: str | None = None) -> str:
     payload = {
         "id": "mock",
@@ -194,8 +205,11 @@ async def _stream(step: dict[str, Any], prompt_tokens: int) -> AsyncIterator[str
 async def chat(request: Request) -> Any:
     body = await request.json()
     messages = body.get("messages", [])
-    calls.append(messages)
-    step = _next_step(messages)
+    if body.get("model") == UTILITY_MODEL:
+        step = {"text": _title(messages)}
+    else:
+        calls.append(messages)
+        step = _next_step(messages)
     prompt_tokens = sum(len(json.dumps(m)) for m in messages) // 4
     if body.get("stream"):
         return StreamingResponse(_stream(step, prompt_tokens), media_type="text/event-stream")

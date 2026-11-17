@@ -122,6 +122,13 @@ class QuotaEvent(_Event):
     exempt: bool
 
 
+class TitleEvent(_Event):
+    """The utility model named the conversation (sent once, after its first message)."""
+
+    type: Literal["title"] = "title"
+    title: str
+
+
 AgentEvent = Annotated[
     ThinkingEvent
     | TokenEvent
@@ -135,7 +142,8 @@ AgentEvent = Annotated[
     | UserAnswerEvent
     | TurnInterruptedEvent
     | CancelledEvent
-    | QuotaEvent,
+    | QuotaEvent
+    | TitleEvent,
     Field(discriminator="type"),
 ]
 EVENT_ADAPTER: TypeAdapter[AgentEvent] = TypeAdapter(AgentEvent)

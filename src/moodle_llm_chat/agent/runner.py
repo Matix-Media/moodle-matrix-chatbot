@@ -68,7 +68,7 @@ def message_text(message: BaseMessage) -> str:
     )
 
 
-def _usage(message: AIMessage) -> UsageEvent | None:
+def usage_of(message: AIMessage) -> UsageEvent | None:
     meta = message.usage_metadata
     if not meta:
         return None
@@ -285,7 +285,7 @@ class AgentRunner:
                 continue
             for message in value.get("messages", []):
                 if isinstance(message, AIMessage):
-                    usage = _usage(message)
+                    usage = usage_of(message)
                     if usage is None and self._estimate is not None:
                         usage = UsageEvent(
                             output_tokens=self._estimate(message_text(message)), estimated=True
@@ -352,7 +352,7 @@ class AgentRunner:
             answer = AIMessage(content=str(answer.content))
         text = message_text(answer) or STEP_LIMIT_FALLBACK
         yield TokenEvent(delta=text)
-        usage = _usage(answer)
+        usage = usage_of(answer)
         if usage is not None:
             yield usage
         await graph.aupdate_state(config, {"messages": [AIMessage(content=text)]}, as_node="model")

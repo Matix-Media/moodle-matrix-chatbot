@@ -79,6 +79,7 @@ const FRAME_HANDLERS = {
     'turn_interrupted': 'onInterrupted',
     'rate_limited': 'onRateLimited',
     'quota': 'onQuota',
+    'title': 'onTitle',
     'error': 'onError',
 };
 
@@ -1343,25 +1344,59 @@ class ChatController {
     }
 
     /**
-     * Reload the conversation list.
+     * The API named the conversation: show the name in the header and the list.
+     *
+     * @param {Object} frame title{title}
+     * @param {boolean} replay
      */
-    async refreshConversations() {
-        if (this.compact && !this.conversationId) {
-            // The block lists nothing; a new conversation needs no request for its title.
+    onTitle(frame, replay) {
+        if (replay || !frame.title) {
+            // Stored history: the list request that opened it brought the current title.
+            return;
+        }
+        this.regions.title.textContent = frame.title;
+        const item = this.compact ? null : this.regions.conversations.querySelector(
+            `[data-action="open-conversation"][data-id="${CSS.escape(this.conversationId || '')}"] .text-truncate`);
+        if (item) {
+            item.textContent = frame.title;
+        } else if (!this.compact) {
+            this.refreshConversations();
+        }
+    }
+
+    /**
+     * Show the open conversation's title in the header.
+     *
+     * @param {Array|null} items the conversation list (null: not loaded)
+     */
+    showTitle(items) {
+        if (!this.conversationId) {
             this.regions.title.textContent = this.str.newconversation;
             return;
+        }
+        if (items) {
+            const current = items.find((c) => String(c.id) === this.conversationId);
+            this.regions.title.textContent = (current && current.title) || this.str.untitled;
+        }
+    }
+
+    /**
+     * Reload the conversation list (and the header's title).
+     */
+    async refreshConversations() {
+        if (!this.conversationId) {
+            this.showTitle(null);
+            if (this.compact) {
+                // The block lists nothing; a new conversation needs no request for its title.
+                return;
+            }
         }
         try {
             const data = await this.apiGet('/api/conversations');
             const items = Array.isArray(data) ? data : (data.conversations || data.items || []);
+            // The conversation may have changed while the list loaded.
+            this.showTitle(items);
             if (this.compact) {
-                // The conversation may have changed while the list loaded.
-                if (!this.conversationId) {
-                    this.regions.title.textContent = this.str.newconversation;
-                    return;
-                }
-                const current = items.find((c) => String(c.id) === this.conversationId);
-                this.regions.title.textContent = (current && current.title) || this.str.untitled;
                 return;
             }
             await renderInto(this.regions.conversations, 'local_llmchat/conversation_list', {

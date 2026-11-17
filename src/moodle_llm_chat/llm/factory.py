@@ -8,7 +8,8 @@ function so the mapping can be tested without constructing anything.
 Thinking levels (``off|low|medium|high``) map to:
 
 * **gemini** — ``thinking_budget`` (1k / 8k / 24k tokens, or the explicit budget) plus
-  ``include_thoughts`` so thought summaries stream. ``off`` leaves the model default.
+  ``include_thoughts`` so thought summaries stream. ``off`` is a budget of 0 (2.5 Flash
+  thinks by default; Pro models cannot be switched off and reject it).
 * **anthropic** — current Claude models use *adaptive* thinking steered by
   ``output_config.effort``; ``budget_tokens`` and sampling parameters are rejected
   (400), and Opus 5.5 cannot disable thinking at all. So every level, including
@@ -16,13 +17,17 @@ Thinking levels (``off|low|medium|high``) map to:
 * **openai** — hosted: Responses API with ``reasoning={effort, summary}`` so summaries
   stream; an OpenAI-compatible server (``base_url`` set) gets plain
   ``reasoning_effort`` on chat completions, except OpenRouter, which takes
-  ``reasoning={effort}`` in the request body. ``temperature`` is dropped when
+  ``reasoning={effort}`` in the request body — and ``reasoning={enabled: false}`` for
+  ``off``, since many of its models reason by default. ``temperature`` is dropped when
   reasoning. Compatible servers are built as :class:`ChatOpenAICompatible`, which keeps
   the reasoning they stream (plain ``ChatOpenAI`` drops it).
 * **ollama** — ``reasoning=True|False`` (the ``think`` flag).
 
 ``thinking_params`` (raw provider kwargs) are merged last, for servers this table
-does not know. Utility calls (titles, OCR) never think.
+does not know.
+
+``off`` is sent explicitly wherever a provider can reason by default. Utility calls
+(titles, OCR) are always ``off``, and ``thinking_params`` never apply to them.
 """
 
 from __future__ import annotations
@@ -73,7 +78,9 @@ def chat_model_kwargs(cfg: LLMConfig, *, utility: bool = False) -> tuple[str, di
     if provider is Provider.GEMINI:
         kwargs["api_key"] = api_key
         kwargs["temperature"] = cfg.temperature
-        if thinking is not ThinkingLevel.OFF:
+        if thinking is ThinkingLevel.OFF:
+            kwargs["thinking_budget"] = 0
+        else:
             kwargs["thinking_budget"] = cfg.thinking_budget_tokens or _GEMINI_BUDGETS[thinking]
             kwargs["include_thoughts"] = True
 
@@ -99,6 +106,9 @@ def chat_model_kwargs(cfg: LLMConfig, *, utility: bool = False) -> tuple[str, di
         kwargs["stream_usage"] = True
         if thinking is ThinkingLevel.OFF:
             kwargs["temperature"] = cfg.temperature
+            if cfg.base_url and _is_openrouter(cfg.base_url):
+                # Many OpenRouter models reason unless told not to.
+                kwargs["extra_body"] = {"reasoning": {"enabled": False}}
         elif cfg.base_url and _is_openrouter(cfg.base_url):
             # ``reasoning=`` would switch ChatOpenAI to the Responses API.
             kwargs["extra_body"] = {"reasoning": {"effort": thinking.value}}
