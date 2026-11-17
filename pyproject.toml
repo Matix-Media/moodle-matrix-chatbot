@@ -86,6 +86,10 @@ ignore = [
     "RUF003",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Course material for the demo dataset: long table rows and prose are content, not code.
+"dev/seed/demo/courses/*" = ["E501"]
+
 [tool.mypy]
 python_version = "3.13"
 mypy_path = "src"
