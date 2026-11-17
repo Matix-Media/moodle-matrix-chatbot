@@ -17,7 +17,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {callTarget, citationMeta, describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
+import {callTarget, citationCard, citationMeta, describeCall, describeResult, linkSegments, STRING_KEYS} from '../../amd/src/tooldetails.js';
 
 // Vectors in tests/fixtures/tool_display_vectors.json.
 const VECTORS = JSON.parse(readFileSync(new URL('../fixtures/tool_display_vectors.json', import.meta.url), 'utf8'));
@@ -298,4 +298,22 @@ test('a cited document lists every page it was found on', () => {
 test('citations saved before pages existed fall back to their single page', () => {
     assert.equal(citationMeta({'course_name': 'LF7', page: 3}, 'Page'), 'LF7 · Page 3');
     assert.equal(citationMeta({pages: []}, 'Page'), '');
+});
+
+test('a citation card shows title, course and pages, and where in the course the source is', () => {
+    const location = [
+        {kind: 'course', id: '2', name: 'LF7'},
+        {kind: 'section', id: '11', name: 'Organisation'},
+        {kind: 'module', id: '40', name: 'Kollegium'},
+    ];
+    assert.deepEqual(citationCard({index: 2, title: 'Kollegium', 'course_name': 'LF7', pages: [4], location,
+        url: 'https://moodle.example/mod/page/view.php?id=40'}, 'Page'), {
+        index: 2, title: 'Kollegium', meta: 'LF7 · Page 4', path: 'Organisation',
+        url: 'https://moodle.example/mod/page/view.php?id=40', hasurl: true,
+    });
+});
+
+test('a citation card without location or url still has a title', () => {
+    assert.deepEqual(citationCard({index: 1, title: '', url: 'javascript:alert(1)'}, 'Page'),
+        {index: 1, title: 'javascript:alert(1)', meta: '', path: '', url: '', hasurl: false});
 });
