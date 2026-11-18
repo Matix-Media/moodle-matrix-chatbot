@@ -20,9 +20,11 @@
     Chat shell; local_llmchat/chat fills it. Everything inside the card is replaced or appended
     by the client through the other local_llmchat templates.
 
-    Only the conversation list is rendered on the server: "conversationlist" (a
-    local_llmchat/conversation_list context) fills it when the API answered while the page was
-    rendered; without it the client loads the list. The chat is always rendered by the client.
+    Only the conversation list and the token budget are rendered on the server: "conversationlist"
+    (a local_llmchat/conversation_list context) fills the list and "quota" the ring in the header
+    (its "panel" is a local_llmchat/quota_panel context) when the API answered while the page was
+    rendered; without them the client loads the list and the budget arrives with the first answer.
+    The chat is always rendered by the client.
     "loading" (a conversation is about to be opened) shows the loading indicator instead of the
     empty state; the client shows it too while it loads a conversation picked later.
 
@@ -44,7 +46,20 @@
         "title": "New conversation",
         "intro": "Ask about LF7 Vernetzte Systeme: material, deadlines and activities.",
         "suggestions": [{"text": "What is due this week?"}, {"text": "Summarise the latest material"}],
-        "loading": false
+        "loading": false,
+        "quota": {
+            "dasharray": "44.3 94.248",
+            "label": "47%",
+            "longlabel": false,
+            "state": "",
+            "title": "Today: 23,410 of 50,000 tokens used",
+            "panel": {
+                "exempt": false,
+                "rows": [{"label": "Today", "usedof": "23,410 of 50,000", "percent": 47, "warning": false, "danger": false}],
+                "hasresets": true,
+                "resets": "Wednesday, 11 November 2026, 12:00 AM"
+            }
+        }
     }
 }}
 <div id="{{rootid}}" class="local-llmchat{{#compact}} local-llmchat-compact{{/compact}}" data-region="llmchat"
@@ -80,18 +95,18 @@
                     {{#compact}}
                     <h3 class="h6 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title" data-region="title">{{title}}</h3>
                     {{/compact}}
-                    <div class="local-llmchat-quota invisible" data-region="quota">
+                    <div class="local-llmchat-quota{{^quota}} invisible{{/quota}}" data-region="quota"{{#quota}} data-state="{{state}}"{{/quota}}>
                         <button type="button" class="btn btn-link local-llmchat-iconbtn local-llmchat-quotabtn" data-action="quota-toggle"
-                            aria-expanded="false" aria-controls="{{rootid}}-quota" data-region="quota-button">
+                            aria-expanded="false" aria-controls="{{rootid}}-quota" data-region="quota-button"{{#quota}} title="{{title}}"{{/quota}}>
                             <svg class="local-llmchat-ring" viewBox="0 0 36 36" aria-hidden="true" focusable="false">
                                 <circle class="local-llmchat-ring-track" cx="18" cy="18" r="15"></circle>
-                                <circle class="local-llmchat-ring-bar" cx="18" cy="18" r="15" stroke-dasharray="0 94.25" data-region="quota-ring"></circle>
+                                <circle class="local-llmchat-ring-bar" cx="18" cy="18" r="15" stroke-dasharray="{{#quota}}{{dasharray}}{{/quota}}{{^quota}}0 94.25{{/quota}}" data-region="quota-ring"></circle>
                             </svg>
-                            <span class="local-llmchat-ringlabel" data-region="quota-percent" aria-hidden="true"></span>
+                            <span class="local-llmchat-ringlabel{{#quota}}{{#longlabel}} local-llmchat-ringlabel-long{{/longlabel}}{{/quota}}" data-region="quota-percent" aria-hidden="true">{{#quota}}{{label}}{{/quota}}</span>
                             <span class="sr-only visually-hidden">{{#str}} quota:open, local_llmchat {{/str}}</span>
                         </button>
                         <div class="dropdown-menu dropdown-menu-right dropdown-menu-end local-llmchat-quotapanel" id="{{rootid}}-quota"
-                            data-region="quota-panel" role="region" aria-label="{{#str}} quota:title, local_llmchat {{/str}}"></div>
+                            data-region="quota-panel" role="region" aria-label="{{#str}} quota:title, local_llmchat {{/str}}">{{#quota}}{{#panel}}{{> local_llmchat/quota_panel}}{{/panel}}{{/quota}}</div>
                     </div>
                     {{#compact}}
                     <button type="button" class="btn btn-link local-llmchat-iconbtn local-llmchat-iconbtn-sm" data-action="new-conversation"

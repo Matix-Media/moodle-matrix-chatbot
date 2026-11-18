@@ -26,6 +26,7 @@ namespace local_llmchat\output;
 
 use local_llmchat\access\chat_token;
 use local_llmchat\api_client;
+use local_llmchat\api_exception;
 
 /**
  * Data for the chat page and the AMD module's init config.
@@ -38,8 +39,14 @@ class chat_page implements \renderable, \templatable {
     /** @var string Root element id of the full chat page. */
     public const ROOT_ID = 'local-llmchat-root';
 
+    /** Circumference of the budget ring's circle (r = 15); the client's ring uses the same. */
+    private const RING_CIRCUMFERENCE = 2 * M_PI * 15;
+
     /** @var array|null the user's conversations, when {@see preload()} got them */
     private ?array $conversations = null;
+
+    /** @var array|null the user's token budget, when {@see preload()} got it */
+    private ?array $quota = null;
 
     /**
      * Constructor.
@@ -82,11 +89,12 @@ class chat_page implements \renderable, \templatable {
     }
 
     /**
-     * Fetch the conversation list from the API, so the page arrives with it instead of the client
-     * loading it after it rendered. The chat itself is always the client's: it loads the open
-     * conversation and shows it loading meanwhile. Waits at most {@see api_client::PAGE_TIMEOUT}
-     * seconds; if that fails the client loads the list too. Not for the compact block view,
-     * which has no list and must not hold up the course page.
+     * Fetch the conversation list and the token budget from the API, so the page arrives with
+     * them instead of the client loading them after it rendered. The chat itself is always the
+     * client's: it loads the open conversation and shows it loading meanwhile. Waits at most
+     * {@see api_client::PAGE_TIMEOUT} seconds per request; what fails the client loads too (the
+     * budget arrives with the first answer). Not for the compact block view, which has no list
+     * and must not hold up the course page.
      */
     public function preload(): void {
         global $USER;
@@ -96,9 +104,23 @@ class chat_page implements \renderable, \templatable {
         try {
             $client = api_client::from_config(api_client::PAGE_TIMEOUT);
             $token = chat_token::issue((int)$USER->id, $this->courseid ?: null)['token'];
+        } catch (\Throwable $e) {
+            debugging('local_llmchat: preparing the page requests failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            return;
+        }
+        try {
             $this->conversations = $client->conversations($token);
         } catch (\Throwable $e) {
             debugging('local_llmchat: loading the conversation list failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
+            if ($e instanceof api_exception && $e->status === 0) {
+                return; // Unreachable: the budget request would only make the page wait again.
+            }
+        }
+        // Separate, so an API without the route (older than the plugin) still gives the list.
+        try {
+            $this->quota = $client->quota($token);
+        } catch (\Throwable $e) {
+            debugging('local_llmchat: loading the token budget failed: ' . $e->getMessage(), DEBUG_DEVELOPER);
         }
     }
 
@@ -138,6 +160,74 @@ class chat_page implements \renderable, \templatable {
             ];
         }
         return ['hasconversations' => count($items) > 0, 'conversations' => $items];
+    }
+
+    /**
+     * The token budget as a context for the header's ring and its panel, the way the client's
+     * onQuota() draws it (null: nothing to show yet, or no limit applies).
+     *
+     * @return array|null
+     */
+    private function quota_ring(): ?array {
+        $quota = $this->quota;
+        if (!is_array($quota) || !array_key_exists('used_today', $quota)) {
+            return null;
+        }
+        $exempt = !empty($quota['exempt']);
+        $windows = [];
+        $periods = [
+            ['quota:today', 'quota:remaining', 'used_today', 'limit_today'],
+            ['quota:thismonth', 'quota:remainingmonth', 'used_month', 'limit_month'],
+        ];
+        foreach ($periods as [$label, $remaining, $usedkey, $limitkey]) {
+            $limit = $quota[$limitkey] ?? null;
+            if (!is_numeric($limit) || $limit <= 0) {
+                continue;
+            }
+            $used = (int)($quota[$usedkey] ?? 0);
+            $a = (object)['used' => format_float($used, 0), 'limit' => format_float((float)$limit, 0)];
+            $windows[] = [
+                'label' => get_string($label, 'local_llmchat'),
+                'percent' => (int)min(100, round($used / $limit * 100)),
+                'usedof' => get_string('quota:usedof', 'local_llmchat', $a),
+                'text' => get_string($remaining, 'local_llmchat', $a),
+            ];
+        }
+        if (!$exempt && !$windows) {
+            return null;
+        }
+        $rows = [];
+        foreach ($windows as $w) {
+            $rows[] = [
+                'label' => $w['label'],
+                'usedof' => $w['usedof'],
+                'percent' => $w['percent'],
+                'warning' => $w['percent'] >= 80 && $w['percent'] < 100,
+                'danger' => $w['percent'] >= 100,
+            ];
+        }
+        $percent = $exempt ? 0 : max(array_column($rows, 'percent'));
+        $label = $exempt ? '∞' : $percent . '%';
+        $state = '';
+        if (in_array(true, array_column($rows, 'danger'), true)) {
+            $state = 'danger';
+        } else if (in_array(true, array_column($rows, 'warning'), true)) {
+            $state = 'warning';
+        }
+        $resets = (int)($quota['resets_at'] ?? 0);
+        return [
+            'dasharray' => sprintf('%.3F %.3F', $percent / 100 * self::RING_CIRCUMFERENCE, self::RING_CIRCUMFERENCE),
+            'label' => $label,
+            'longlabel' => \core_text::strlen($label) > 3,
+            'state' => $state,
+            'title' => $exempt ? get_string('quota:exemptuser', 'local_llmchat') : implode(' · ', array_column($windows, 'text')),
+            'panel' => [
+                'exempt' => $exempt,
+                'rows' => $rows,
+                'hasresets' => $resets > 0 && !$exempt,
+                'resets' => $resets > 0 ? userdate($resets) : '',
+            ],
+        ];
     }
 
     /**
@@ -183,6 +273,7 @@ class chat_page implements \renderable, \templatable {
                 : get_string('emptyintro', 'local_llmchat'),
             'suggestions' => $suggestions,
             'conversationlist' => $this->conversation_list(),
+            'quota' => $this->quota_ring(),
             // The client opens this conversation; until it has, the chat shows it loading.
             'loading' => $this->conversationid !== '',
         ];

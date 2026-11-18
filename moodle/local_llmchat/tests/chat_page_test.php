@@ -342,8 +342,8 @@ final class chat_page_test extends \advanced_testcase {
         $title = $x->query('//*[@data-region="panel"]//*[@data-region="title"]')->item(0);
         $this->assertSame('Raumfrage', trim($title->textContent), 'the header names the open conversation');
 
-        // Only the list: the chat is the client's, which shows it loading until then.
-        $this->assertSame(['GET /api/conversations'], $t->sequence());
+        // Only the list and the budget: the chat is the client's, which shows it loading until then.
+        $this->assertSame(['GET /api/conversations', 'GET /api/quota'], $t->sequence());
         $this->assertSame(0, $x->query('//*[@data-region="messages"]//*[contains(@class, "local-llmchat-msg")]')->length);
         $this->assertTrue(self::hidden($x, 'empty'), 'no empty state for a conversation that is about to load');
         $this->assertFalse(self::hidden($x, 'loading'));
@@ -361,7 +361,7 @@ final class chat_page_test extends \advanced_testcase {
         $t = $this->fake_api();
         $t->routes['GET /api/conversations'] = fake_transport::json([]);
         [$x, $config] = $this->preloaded_page();
-        $this->assertSame(['GET /api/conversations'], $t->sequence());
+        $this->assertSame(['GET /api/conversations', 'GET /api/quota'], $t->sequence());
         $this->assertStringContainsString(
             get_string('noconversations', 'local_llmchat'),
             $x->query('//*[@data-region="conversations"]')->item(0)->textContent
@@ -382,7 +382,118 @@ final class chat_page_test extends \advanced_testcase {
             $x->query('//*[@data-region="conversations"]')->item(0)->textContent
         );
         $this->assertFalse(self::hidden($x, 'loading'), 'the client still opens the conversation');
+        // An unreachable API is not asked twice: the page would wait for both.
         $this->assertSame(['GET /api/conversations'], $t->sequence());
+        $this->assertTrue(self::quota_hidden($x));
+    }
+
+    /**
+     * Whether the token budget in the header is still hidden.
+     *
+     * @param \DOMXPath $x
+     * @return bool
+     */
+    private static function quota_hidden(\DOMXPath $x): bool {
+        $node = $x->query('//*[@data-region="panel"]//*[@data-region="quota"]')->item(0);
+        return in_array('invisible', explode(' ', $node->getAttribute('class')), true);
+    }
+
+    /**
+     * Text of a region of the rendered page.
+     *
+     * @param \DOMXPath $x
+     * @param string $region
+     * @return string
+     */
+    private static function region_text(\DOMXPath $x, string $region): string {
+        return trim($x->query('//*[@data-region="' . $region . '"]')->item(0)->textContent);
+    }
+
+    public function test_page_arrives_with_the_token_budget_filled_in(): void {
+        $t = $this->fake_api();
+        $resets = 1790035200;
+        $t->routes['GET /api/quota'] = fake_transport::json([
+            'used_today' => 23410, 'limit_today' => 50000, 'used_month' => 390000, 'limit_month' => 400000,
+            'resets_at' => $resets, 'exempt' => false,
+        ]);
+        [$x] = $this->preloaded_page();
+
+        $this->assertFalse(self::quota_hidden($x), 'the ring shows on arrival, not after the first message');
+        $quota = $x->query('//*[@data-region="quota"]')->item(0);
+        $this->assertSame('warning', $quota->getAttribute('data-state'), 'the fullest window (98%) is nearly out');
+        $this->assertSame('98%', self::region_text($x, 'quota-percent'));
+        $ring = $x->query('//*[@data-region="quota-ring"]')->item(0);
+        $this->assertSame('92.363 94.248', $ring->getAttribute('stroke-dasharray'));
+
+        $a = (object)['used' => format_float(23410, 0), 'limit' => format_float(50000, 0)];
+        $b = (object)['used' => format_float(390000, 0), 'limit' => format_float(400000, 0)];
+        $this->assertSame(
+            get_string('quota:remaining', 'local_llmchat', $a) . ' · ' . get_string('quota:remainingmonth', 'local_llmchat', $b),
+            $x->query('//*[@data-region="quota-button"]')->item(0)->getAttribute('title')
+        );
+
+        $bars = $x->query('//*[@data-region="quota-panel"]//*[@role="progressbar"]');
+        $this->assertSame(2, $bars->length);
+        $this->assertSame('47', $bars->item(0)->getAttribute('aria-valuenow'));
+        $this->assertSame('98', $bars->item(1)->getAttribute('aria-valuenow'));
+        $this->assertStringContainsString('bg-warning', $bars->item(1)->getAttribute('class'));
+        $this->assertStringNotContainsString('bg-warning', $bars->item(0)->getAttribute('class'));
+        $panel = self::region_text($x, 'quota-panel');
+        $this->assertStringContainsString(get_string('quota:usedof', 'local_llmchat', $a), $panel);
+        $this->assertStringContainsString(get_string('quota:resets', 'local_llmchat', userdate($resets)), $panel);
+    }
+
+    public function test_budget_over_the_limit_is_marked_as_exhausted(): void {
+        $t = $this->fake_api();
+        $t->routes['GET /api/quota'] = fake_transport::json([
+            'used_today' => 61000, 'limit_today' => 50000, 'used_month' => 10, 'limit_month' => null,
+            'resets_at' => 1790035200, 'exempt' => false,
+        ]);
+        [$x] = $this->preloaded_page();
+        $this->assertSame('danger', $x->query('//*[@data-region="quota"]')->item(0)->getAttribute('data-state'));
+        $this->assertSame('100%', self::region_text($x, 'quota-percent'), 'capped like the client does');
+        $this->assertSame(1, $x->query('//*[@data-region="quota-panel"]//*[@role="progressbar"]')->length, 'no month limit');
+    }
+
+    public function test_exempt_user_sees_the_unlimited_ring(): void {
+        $t = $this->fake_api();
+        $t->routes['GET /api/quota'] = fake_transport::json([
+            'used_today' => 5, 'limit_today' => null, 'used_month' => 5, 'limit_month' => null,
+            'resets_at' => 1790035200, 'exempt' => true,
+        ]);
+        [$x] = $this->preloaded_page();
+        $this->assertFalse(self::quota_hidden($x));
+        $this->assertSame('∞', self::region_text($x, 'quota-percent'));
+        $this->assertSame('', $x->query('//*[@data-region="quota"]')->item(0)->getAttribute('data-state'));
+        $this->assertSame(
+            get_string('quota:exemptuser', 'local_llmchat'),
+            $x->query('//*[@data-region="quota-button"]')->item(0)->getAttribute('title')
+        );
+        $panel = self::region_text($x, 'quota-panel');
+        $this->assertStringContainsString(get_string('quota:exemptuser', 'local_llmchat'), $panel);
+        $this->assertSame(0, $x->query('//*[@data-region="quota-panel"]//*[@role="progressbar"]')->length);
+    }
+
+    public function test_no_limits_means_no_ring(): void {
+        $t = $this->fake_api();
+        $t->routes['GET /api/quota'] = fake_transport::json([
+            'used_today' => 5, 'limit_today' => null, 'used_month' => 5, 'limit_month' => null,
+            'resets_at' => 1790035200, 'exempt' => false,
+        ]);
+        [$x] = $this->preloaded_page();
+        $this->assertTrue(self::quota_hidden($x));
+    }
+
+    public function test_failing_budget_request_does_not_cost_the_list(): void {
+        $t = $this->fake_api();
+        $t->routes['GET /api/conversations'] = fake_transport::json([['id' => 'c1', 'title' => 'Raumfrage']]);
+        // An API that predates the route.
+        $t->routes['GET /api/quota'] = new response(404, '{"detail":"Not Found"}');
+        [$x, $config] = $this->preloaded_page('c1');
+        $this->assertDebuggingCalled();
+        $this->assertSame(['list' => true], $config['preloaded']);
+        $this->assertSame(1, $x->query('//*[@data-region="conversations"]//*[@data-action="open-conversation"]')->length);
+        $this->assertTrue(self::quota_hidden($x), 'the websocket still fills it in after a turn');
     }
 
     public function test_compact_block_never_waits_for_the_api(): void {
