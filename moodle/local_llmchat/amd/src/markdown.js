@@ -14,14 +14,16 @@
 // along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Small, safe markdown renderer for answers: everything is escaped first, then a subset
- * (code, bold, italics, headings, lists, links) is re-introduced, and [n] markers become
- * citation links to the module URL.
+ * Markdown renderer for answers, built on markdown-it (CommonMark plus GFM tables and
+ * strikethrough). Raw HTML is escaped, only http(s) links are followed, images are not
+ * embedded, and [n] markers become citation links to the module URL.
  *
  * @module     local_llmchat/markdown
  * @copyright  2026 Matix-Media
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+
+import MarkdownIt from 'local_llmchat/markdown-it';
 
 /**
  * Escape HTML.
@@ -52,38 +54,74 @@ export const safeUrl = (url) => {
 };
 
 /**
- * Inline formatting on escaped text.
+ * Citation [n] => its link, or null when the answer has no linkable source n.
  *
- * @param {string} text escaped
  * @param {Map} citations index => citation
- * @returns {string}
+ * @param {number} n
+ * @returns {{href: string, title: string}|null}
  */
-const inline = (text, citations) => {
-    // Code spans are parked behind private-use placeholders while the other rules run.
-    const codes = [];
-    let out = text.replace(/`([^`]+)`/g, (m, code) => {
-        codes.push(code);
-        return `\uE000${codes.length - 1}\uE000`;
-    });
-    out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (m, label, url) => {
-        const href = safeUrl(url.replace(/&amp;/g, '&'));
-        return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${label}</a>` : m;
-    });
-    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    out = out.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
-    out = out.replace(/\s*\[(\d{1,3})\]/g, (m, n) => {
-        const cite = citations.get(Number(n));
-        const href = cite && cite.url ? safeUrl(cite.url) : null;
-        if (!href) {
-            return m;
-        }
-        const pages = Array.isArray(cite.pages) && cite.pages.length ? cite.pages : [cite.page].filter(Boolean);
-        const title = escapeHtml([cite.title, pages.length ? `S. ${pages.join(', ')}` : ''].filter(Boolean).join(' · '));
-        const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
-        return `&nbsp;<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
-            ` title="${title}">${hidden('[')}${n}${hidden(']')}</a>`;
-    });
-    return out.replace(/\uE000(\d+)\uE000/g, (m, i) => `<code>${codes[Number(i)]}</code>`);
+const citationLink = (citations, n) => {
+    const cite = citations.get(n);
+    const href = cite && cite.url ? safeUrl(cite.url) : null;
+    if (!href) {
+        return null;
+    }
+    const pages = Array.isArray(cite.pages) && cite.pages.length ? cite.pages : [cite.page].filter(Boolean);
+    return {href, title: [cite.title, pages.length ? `S. ${pages.join(', ')}` : ''].filter(Boolean).join(' · ')};
+};
+
+/**
+ * Inline rule: [n] naming a known source becomes a citation token, glued to the word before it.
+ *
+ * @param {Object} state markdown-it StateInline; state.env.citations is the citation map
+ * @param {boolean} silent
+ * @returns {boolean}
+ */
+const citationRule = (state, silent) => {
+    const match = state.src.slice(state.pos).match(/^\[(\d{1,3})\]/);
+    const link = match && state.env.citations ? citationLink(state.env.citations, Number(match[1])) : null;
+    if (!link) {
+        return false;
+    }
+    if (!silent) {
+        state.pending = state.pending.replace(/\s+$/, '');
+        const token = state.push('citation', '', 0);
+        token.content = match[1];
+        token.meta = link;
+    }
+    state.pos += match[0].length;
+    return true;
+};
+
+const md = new MarkdownIt('default', {html: false, linkify: true, breaks: true, typographer: false});
+md.linkify.set({fuzzyEmail: false});
+md.disable('image');
+md.validateLink = (url) => /^https?:\/\//i.test(url.trim());
+md.inline.ruler.before('link', 'citation', citationRule);
+
+// Answers sit inside a page that already has h1-h3: # is h4, everything from ### on is h6.
+md.core.ruler.push('demote_headings', (state) => {
+    state.tokens.filter((t) => t.type === 'heading_open' || t.type === 'heading_close')
+        .forEach((t) => {
+            t.tag = `h${Math.min(6, Number(t.tag.slice(1)) + 3)}`;
+        });
+});
+
+const rules = md.renderer.rules;
+rules.link_open = (tokens, idx, options, env, self) => {
+    tokens[idx].attrSet('target', '_blank');
+    tokens[idx].attrSet('rel', 'noopener');
+    return self.renderToken(tokens, idx, options);
+};
+// Wide tables scroll inside their own box instead of widening the chat.
+rules.table_open = (tokens, idx, options, env, self) =>
+    '<div class="local-llmchat-table">' + self.renderToken(tokens, idx, options);
+rules.table_close = () => '</table></div>\n';
+rules.citation = (tokens, idx) => {
+    const {href, title} = tokens[idx].meta;
+    const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
+    return `&nbsp;<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
+        ` title="${escapeHtml(title)}">${hidden('[')}${tokens[idx].content}${hidden(']')}</a>`;
 };
 
 /**
@@ -97,67 +135,6 @@ export const render = (markdown, citations = []) => {
     const cites = new Map((citations || []).map((c) => [Number(c.index), c]));
     // Models write narrow/thin spaces in times and dates ("08:30 Uhr" with U+202F); in the chat font
     // they read as a squashed gap next to normal spaces. Keep them no-break, at normal width.
-    const lines = escapeHtml(String(markdown || '').replace(/[\u202f\u2009]/g, '\u00a0')).split('\n');
-    const html = [];
-    let list = null;
-    let para = [];
-    let code = null;
-    const flushPara = () => {
-        if (para.length) {
-            html.push(`<p>${inline(para.join('<br>'), cites)}</p>`);
-            para = [];
-        }
-    };
-    const flushList = () => {
-        if (list) {
-            html.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i, cites)}</li>`).join('')}</${list.tag}>`);
-            list = null;
-        }
-    };
-    for (const line of lines) {
-        if (code !== null) {
-            if (/^```/.test(line)) {
-                html.push(`<pre><code>${code.join('\n')}</code></pre>`);
-                code = null;
-            } else {
-                code.push(line);
-            }
-            continue;
-        }
-        if (/^```/.test(line)) {
-            flushPara();
-            flushList();
-            code = [];
-            continue;
-        }
-        const heading = line.match(/^(#{1,4})\s+(.*)$/);
-        const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-        const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-        if (heading) {
-            flushPara();
-            flushList();
-            const level = Math.min(6, heading[1].length + 3);
-            html.push(`<h${level}>${inline(heading[2], cites)}</h${level}>`);
-        } else if (bullet || numbered) {
-            flushPara();
-            const tag = bullet ? 'ul' : 'ol';
-            if (!list || list.tag !== tag) {
-                flushList();
-                list = {tag, items: []};
-            }
-            list.items.push((bullet || numbered)[1]);
-        } else if (line.trim() === '') {
-            flushPara();
-            flushList();
-        } else {
-            flushList();
-            para.push(line);
-        }
-    }
-    if (code !== null) {
-        html.push(`<pre><code>${code.join('\n')}</code></pre>`);
-    }
-    flushPara();
-    flushList();
-    return html.join('');
+    const text = String(markdown || '').replace(/[\u202f\u2009]/g, '\u00a0');
+    return md.render(text, {citations: cites});
 };

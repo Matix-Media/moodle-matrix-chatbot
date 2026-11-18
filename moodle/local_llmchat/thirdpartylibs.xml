@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<libraries>
+    <library>
+        <location>amd/src/markdown-it.js</location>
+        <name>markdown-it</name>
+        <description>Markdown parser, renders the assistant's answers.</description>
+        <version>15.0.3</version>
+        <license>MIT</license>
+        <repository>https://github.com/markdown-it/markdown-it</repository>
+        <copyrights>
+            <copyright>2014 Vitaly Puzrin, Alex Kocharin</copyright>
+        </copyrights>
+    </library>
+</libraries>

@@ -1,83 +1,83 @@
 {
-  "$comment": "Vectors for tests/js/markdown.test.mjs: what amd/src/markdown.js renders. URLs are given already normalised (the JS resolves them with new URL()).",
+  "$comment": "Vectors for tests/js/markdown.test.mjs: what amd/src/markdown.js renders (markdown-it, CommonMark + GFM tables and strikethrough). URLs are given already normalised (the JS resolves them with new URL()).",
   "vectors": [
     {
       "name": "plain",
       "markdown": "Hallo Welt",
       "citations": [],
-      "html": "<p>Hallo Welt</p>"
+      "html": "<p>Hallo Welt</p>\n"
     },
     {
       "name": "escapes html",
       "markdown": "<script>alert(\"x\")</script> & 'q'",
       "citations": [],
-      "html": "<p>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;q&#39;</p>"
+      "html": "<p>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; 'q'</p>\n"
     },
     {
       "name": "paragraphs and line breaks",
       "markdown": "Zeile eins\nZeile zwei\n\nNeuer Absatz",
       "citations": [],
-      "html": "<p>Zeile eins<br>Zeile zwei</p><p>Neuer Absatz</p>"
+      "html": "<p>Zeile eins<br>\nZeile zwei</p>\n<p>Neuer Absatz</p>\n"
     },
     {
       "name": "bold italic code",
       "markdown": "Das ist **fett**, *kursiv* und `a < b`.",
       "citations": [],
-      "html": "<p>Das ist <strong>fett</strong>, <em>kursiv</em> und <code>a &lt; b</code>.</p>"
+      "html": "<p>Das ist <strong>fett</strong>, <em>kursiv</em> und <code>a &lt; b</code>.</p>\n"
     },
     {
       "name": "code is not formatted",
       "markdown": "Nutze `**nicht fett**` hier",
       "citations": [],
-      "html": "<p>Nutze <code>**nicht fett**</code> hier</p>"
+      "html": "<p>Nutze <code>**nicht fett**</code> hier</p>\n"
     },
     {
       "name": "headings",
       "markdown": "# Titel\n## Unter\n#### Klein",
       "citations": [],
-      "html": "<h4>Titel</h4><h5>Unter</h5><h6>Klein</h6>"
+      "html": "<h4>Titel</h4>\n<h5>Unter</h5>\n<h6>Klein</h6>\n"
     },
     {
       "name": "bullet list",
-      "markdown": "- eins\n- zwei\n* drei",
+      "markdown": "- eins\n- zwei\n- drei",
       "citations": [],
-      "html": "<ul><li>eins</li><li>zwei</li><li>drei</li></ul>"
+      "html": "<ul>\n<li>eins</li>\n<li>zwei</li>\n<li>drei</li>\n</ul>\n"
     },
     {
       "name": "numbered list",
-      "markdown": "1. erst\n2) dann",
+      "markdown": "1. erst\n2. dann",
       "citations": [],
-      "html": "<ol><li>erst</li><li>dann</li></ol>"
+      "html": "<ol>\n<li>erst</li>\n<li>dann</li>\n</ol>\n"
     },
     {
       "name": "list switch",
       "markdown": "- a\n1. b",
       "citations": [],
-      "html": "<ul><li>a</li></ul><ol><li>b</li></ol>"
+      "html": "<ul>\n<li>a</li>\n</ul>\n<ol>\n<li>b</li>\n</ol>\n"
     },
     {
       "name": "code block",
       "markdown": "```python\nx = 1 < 2\n**y**\n```\nDanach",
       "citations": [],
-      "html": "<pre><code>x = 1 &lt; 2\n**y**</code></pre><p>Danach</p>"
+      "html": "<pre><code class=\"language-python\">x = 1 &lt; 2\n**y**\n</code></pre>\n<p>Danach</p>\n"
     },
     {
       "name": "unterminated code block",
       "markdown": "```\nopen",
       "citations": [],
-      "html": "<pre><code>open</code></pre>"
+      "html": "<pre><code>open</code></pre>\n"
     },
     {
       "name": "link",
       "markdown": "Siehe [Kursseite](https://moodle.example/course/view.php?id=2&x=1).",
       "citations": [],
-      "html": "<p>Siehe <a href=\"https://moodle.example/course/view.php?id=2&amp;x=1\" target=\"_blank\" rel=\"noopener\">Kursseite</a>.</p>"
+      "html": "<p>Siehe <a href=\"https://moodle.example/course/view.php?id=2&amp;x=1\" target=\"_blank\" rel=\"noopener\">Kursseite</a>.</p>\n"
     },
     {
       "name": "non-http link stays text",
       "markdown": "[x](javascript:alert(1))",
       "citations": [],
-      "html": "<p>[x](javascript:alert(1))</p>"
+      "html": "<p>[x](javascript:alert(1))</p>\n"
     },
     {
       "name": "citation",
@@ -95,7 +95,7 @@
           "url": ""
         }
       ],
-      "html": "<p>Raum B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a> und [2].</p>"
+      "html": "<p>Raum B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a> und [2].</p>\n"
     },
     {
       "name": "citation title is escaped",
@@ -107,13 +107,13 @@
           "url": "https://moodle.example/mod/resource/view.php?id=9"
         }
       ],
-      "html": "<p>Siehe&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/resource/view.php?id=9\" target=\"_blank\" rel=\"noopener\" title=\"A &quot;B&quot; &lt;c&gt;\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>"
+      "html": "<p>Siehe&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/resource/view.php?id=9\" target=\"_blank\" rel=\"noopener\" title=\"A &quot;B&quot; &lt;c&gt;\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
     },
     {
       "name": "unknown citation stays",
       "markdown": "Nichts [7]",
       "citations": [],
-      "html": "<p>Nichts [7]</p>"
+      "html": "<p>Nichts [7]</p>\n"
     },
     {
       "name": "empty",
@@ -123,9 +123,114 @@
     },
     {
       "name": "list then paragraph",
-      "markdown": "- a\n- b\nText",
+      "markdown": "- a\n- b\n\nText",
       "citations": [],
-      "html": "<ul><li>a</li><li>b</li></ul><p>Text</p>"
+      "html": "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<p>Text</p>\n"
+    },
+    {
+      "name": "table",
+      "markdown": "| Tag | Raum |\n|---|--:|\n| Mo | B204 [1] |",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        }
+      ],
+      "html": "<div class=\"local-llmchat-table\"><table>\n<thead>\n<tr>\n<th>Tag</th>\n<th style=\"text-align:right\">Raum</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Mo</td>\n<td style=\"text-align:right\">B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></td>\n</tr>\n</tbody>\n</table></div>\n"
+    },
+    {
+      "name": "blockquote",
+      "markdown": "> Zitat\n> weiter",
+      "citations": [],
+      "html": "<blockquote>\n<p>Zitat<br>\nweiter</p>\n</blockquote>\n"
+    },
+    {
+      "name": "nested list",
+      "markdown": "- a\n  - b\n- c",
+      "citations": [],
+      "html": "<ul>\n<li>a\n<ul>\n<li>b</li>\n</ul>\n</li>\n<li>c</li>\n</ul>\n"
+    },
+    {
+      "name": "strikethrough",
+      "markdown": "~~alt~~ neu",
+      "citations": [],
+      "html": "<p><s>alt</s> neu</p>\n"
+    },
+    {
+      "name": "horizontal rule",
+      "markdown": "a\n\n---\n\nb",
+      "citations": [],
+      "html": "<p>a</p>\n<hr>\n<p>b</p>\n"
+    },
+    {
+      "name": "underscore emphasis",
+      "markdown": "_kursiv_ und __fett__",
+      "citations": [],
+      "html": "<p><em>kursiv</em> und <strong>fett</strong></p>\n"
+    },
+    {
+      "name": "bare url is linked",
+      "markdown": "Siehe https://moodle.example/x.",
+      "citations": [],
+      "html": "<p>Siehe <a href=\"https://moodle.example/x\" target=\"_blank\" rel=\"noopener\">https://moodle.example/x</a>.</p>\n"
+    },
+    {
+      "name": "email is not linked",
+      "markdown": "Mail an a@b.de",
+      "citations": [],
+      "html": "<p>Mail an a@b.de</p>\n"
+    },
+    {
+      "name": "images are not embedded",
+      "markdown": "![Logo](https://moodle.example/a.png)",
+      "citations": [],
+      "html": "<p>!<a href=\"https://moodle.example/a.png\" target=\"_blank\" rel=\"noopener\">Logo</a></p>\n"
+    },
+    {
+      "name": "block html is escaped",
+      "markdown": "<div onclick=\"x()\">hi</div>",
+      "citations": [],
+      "html": "<p>&lt;div onclick=&quot;x()&quot;&gt;hi&lt;/div&gt;</p>\n"
+    },
+    {
+      "name": "citation after formatting",
+      "markdown": "**B204** [1]",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        }
+      ],
+      "html": "<p><strong>B204</strong>&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
+    },
+    {
+      "name": "citation linked by reference is not a link",
+      "markdown": "[1]\n\n[1]: https://evil.example/",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        }
+      ],
+      "html": "<p>&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
+    },
+    {
+      "name": "narrow spaces read as normal width",
+      "markdown": "08:30 Uhr",
+      "citations": [],
+      "html": "<p>08:30 Uhr</p>\n"
+    },
+    {
+      "name": "quotes are not curled",
+      "markdown": "\"Hallo\" -- ja",
+      "citations": [],
+      "html": "<p>&quot;Hallo&quot; -- ja</p>\n"
     }
   ]
 }
