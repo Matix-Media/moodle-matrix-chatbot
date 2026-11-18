@@ -19,18 +19,15 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
 
-// Resolve AMD names: local_llmchat/x is amd/src/x.js, or the shipped build of a vendored
-// library that has no source in amd/src (markdown-it).
-const amd = new URL('../../amd/', import.meta.url);
-const vendored = new Set(['markdown-it']);
+// Resolve AMD names like RequireJS does in Moodle: local_llmchat/x is amd/src/x.js.
+const amdSrc = new URL('../../amd/src/', import.meta.url);
 registerHooks({
     resolve(specifier, context, next) {
         const name = specifier.match(/^local_llmchat\/(.+)$/)?.[1];
         if (!name) {
             return next(specifier, context);
         }
-        const path = vendored.has(name) ? `build/${name}.min.js` : `src/${name}.js`;
-        return {url: new URL(path, amd).href, shortCircuit: true};
+        return {url: new URL(`${name}.js`, amdSrc).href, shortCircuit: true};
     },
 });
 

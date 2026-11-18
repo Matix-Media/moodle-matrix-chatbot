@@ -28,6 +28,16 @@ lists all conversations (`chat.php?courseid=…&conversation=…`).
 
 `tests/fixtures/jwt_vectors.json` is a copy of the API's shared vectors (HKDF/HS256 with `kid`); the PHP encoder reproduces them byte for byte.
 
+## Third-party code
+
+`amd/src/markdown-it.js` is [markdown-it](https://github.com/markdown-it/markdown-it) 15.0.3
+(MIT), the package's `dist/browser/markdown-it.umd.min.js` unmodified apart from a header. It
+renders the assistant's answers (`amd/src/markdown.js`). It is deliberately not listed in a
+`thirdpartylibs.xml`: Moodle's grunt passes every `amd/src` file to ESLint by name, and a listed
+(ignored) file is reported as a warning, which fails CI's `--max-lint-warnings 0`. The
+`/* eslint-disable */` header keeps ESLint quiet instead. To update it, replace the body with
+the new release's `dist/browser/markdown-it.umd.min.js` and rebuild with `grunt amd`.
+
 ## Tests
 
 ```bash
