@@ -353,8 +353,15 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     transform: rotate(-90deg);
 }
 
-.local-llmchat-tools {
-    margin-bottom: .75rem;
+/* Breathing room above and below an activity group; the doubled class outweighs the theme's
+   .list-group margin rules. A group that opens the message (only the screen-reader label and the
+   still empty text segment come before it) needs no space above it. */
+.local-llmchat .local-llmchat-tools {
+    margin: 1.25rem 0;
+}
+
+.local-llmchat .local-llmchat-body > .sr-only + .local-llmchat-text:empty + .local-llmchat-tools {
+    margin-top: 0;
 }
 
 .local-llmchat-tool {

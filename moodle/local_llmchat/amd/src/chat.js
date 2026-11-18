@@ -982,14 +982,18 @@ class ChatController {
     }
 
     /**
-     * The activity group for thinking blocks and tool cards: the current one if nothing was placed
-     * after it, else a new one.
+     * The activity group for thinking blocks and tool cards: the current one if nothing visible was
+     * placed after it, else a new one, so steps without text between them read as one flow.
      *
      * @param {Object} turn
      * @returns {HTMLElement}
      */
     toolGroup(turn) {
-        if (!turn.toolGroup || turn.toolGroup.nextElementSibling !== turn.typing) {
+        const blanks = [];
+        for (let n = turn.toolGroup && turn.toolGroup.nextElementSibling; n && n !== turn.typing; n = n.nextElementSibling) {
+            blanks.push(n.classList.contains('local-llmchat-text') && !n.textContent.trim());
+        }
+        if (!turn.toolGroup || !turn.toolGroup.isConnected || !activity.joinsGroup(blanks)) {
             turn.toolGroup = document.createElement('div');
             turn.toolGroup.className = 'list-group local-llmchat-tools';
             turn.toolGroup.dataset.region = 'tools';

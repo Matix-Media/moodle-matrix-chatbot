@@ -99,3 +99,13 @@ export const startsThinking = (before, after) => before.phase !== 'thinking' && 
  * @returns {boolean}
  */
 export const endsThinking = (before, after) => before.phase === 'thinking' && after.phase !== 'thinking';
+
+/**
+ * Whether the next thinking block or tool card continues the last activity group instead of
+ * starting a new one: only if nothing visible was placed after that group. Blank text segments
+ * (whitespace the model streams between two steps) are invisible and do not count.
+ *
+ * @param {boolean[]} blanks one entry per node after the group: true for a blank text segment
+ * @returns {boolean}
+ */
+export const joinsGroup = (blanks) => blanks.every(Boolean);
