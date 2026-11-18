@@ -122,7 +122,7 @@ $string['settings'] = 'Einstellungen';
 $string['settings:apiurl'] = 'API-URL';
 $string['settings:apiurl_desc'] = 'Basis-URL der Chat-API, z. B. https://chat-api.example.org';
 $string['settings:connection'] = 'Verbindung';
-$string['settings:connection_desc'] = 'Lege auf dem API-Host mit <code>moodle-llm-chat site add "&lt;Name&gt;"</code> eine Website an und füge das ausgegebene Secret unten ein. <a href="{$a}">Verbindung testen</a>';
+$string['settings:connection_desc'] = 'Registriere dieses Moodle auf dem API-Host mit <code>moodle-llm-chat site add &lt;id&gt; --name "&lt;Name&gt;" --url &lt;Adresse dieser Website&gt;</code> und füge das ausgegebene Secret unten ein. <a href="{$a}">Verbindung testen</a>';
 $string['settings:count_reasoning'] = 'Denk-Tokens mitzählen';
 $string['settings:count_reasoning_desc'] = 'Tokens für das „Nachdenken“ des Modells in die Kontingente einrechnen.';
 $string['settings:exempt_users_bypass_site'] = 'Ausgenommene umgehen Website-Limits';

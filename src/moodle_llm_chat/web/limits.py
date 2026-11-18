@@ -5,11 +5,37 @@ from __future__ import annotations
 import time
 from collections import deque
 from collections.abc import Callable, Hashable
+from urllib.parse import urlparse
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def site_origin(url: str) -> str:
+    """The browser ``Origin`` of a URL: scheme, host and non-default port, no path.
+
+    A site registered as ``https://campus.example/moodle`` (Moodle in a sub-directory)
+    is seen by the browser as ``https://campus.example`` — the header never carries a path.
+    Anything that is not an absolute URL (e.g. the literal ``null`` origin) is returned
+    trimmed and lower-cased, so it never equals a real origin.
+    """
+    parsed = urlparse(url.strip())
+    host = parsed.hostname
+    if not parsed.scheme or not host:
+        return url.strip().rstrip("/").lower()
+    scheme = parsed.scheme.lower()
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    suffix = f":{port}" if port is not None and port != _DEFAULT_PORTS.get(scheme) else ""
+    return f"{scheme}://{host}{suffix}"
 
 
 class BurstLimiter:
@@ -32,7 +58,10 @@ class BurstLimiter:
 
 
 class SiteCORS(BaseHTTPMiddleware):
-    """CORS for ``/api/*``: only the URLs of registered, unrevoked Moodle sites."""
+    """CORS for ``/api/*``: only the origins of registered, unrevoked Moodle sites.
+
+    ``allowed_origins`` returns origins as :func:`site_origin` spells them.
+    """
 
     def __init__(self, app: ASGIApp, allowed_origins: Callable[[], set[str]]) -> None:
         super().__init__(app)
@@ -41,7 +70,7 @@ class SiteCORS(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         origin = request.headers.get("origin", "").rstrip("/")
         is_api = request.url.path.startswith("/api/")
-        allowed = bool(origin) and is_api and origin in self._allowed()
+        allowed = bool(origin) and is_api and site_origin(origin) in self._allowed()
         if (
             request.method == "OPTIONS"
             and is_api
