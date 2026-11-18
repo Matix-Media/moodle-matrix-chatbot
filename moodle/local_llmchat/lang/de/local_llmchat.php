@@ -33,6 +33,7 @@ $string['cancelled'] = 'Abgebrochen.';
 $string['chat'] = 'Chat';
 $string['chattitle'] = 'Kurs-Assistent';
 $string['choice:select'] = 'Auswählen';
+$string['citeopen'] = 'Klicken, um die Quelle zu öffnen';
 $string['composerhint'] = 'Enter zum Senden · Umschalt+Enter für eine neue Zeile';
 $string['confirm:no'] = 'Nein';
 $string['confirm:yes'] = 'Ja';

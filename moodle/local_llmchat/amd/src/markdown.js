@@ -71,17 +71,20 @@ const inline = (text, citations) => {
     });
     out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     out = out.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
-    out = out.replace(/\s*\[(\d{1,3})\]/g, (m, n) => {
-        const cite = citations.get(Number(n));
-        const href = cite && cite.url ? safeUrl(cite.url) : null;
-        if (!href) {
+    // "[1]" and grouped "[1, 2]": each linked number becomes a chip (chat.js shows its source card).
+    out = out.replace(/\s*\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]/g, (m, group) => {
+        const parts = group.split(',').map((n) => {
+            const cite = citations.get(Number(n));
+            return {n: n.trim(), href: cite && cite.url ? safeUrl(cite.url) : null};
+        });
+        if (!parts.some((p) => p.href)) {
             return m;
         }
-        const pages = Array.isArray(cite.pages) && cite.pages.length ? cite.pages : [cite.page].filter(Boolean);
-        const title = escapeHtml([cite.title, pages.length ? `S. ${pages.join(', ')}` : ''].filter(Boolean).join(' · '));
         const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
-        return `&nbsp;<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
-            ` title="${title}">${hidden('[')}${n}${hidden(']')}</a>`;
+        return '&nbsp;' + parts.map(({n, href}, i) => (href
+            ? `<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
+                ` data-cite="${n}">${hidden('[')}${n}${hidden(']')}</a>`
+            : `${i ? ' ' : ''}[${n}]`)).join('');
     });
     return out.replace(/\uE000(\d+)\uE000/g, (m, i) => `<code>${codes[Number(i)]}</code>`);
 };
