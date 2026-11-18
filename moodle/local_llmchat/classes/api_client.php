@@ -232,6 +232,17 @@ class api_client {
     }
 
     /**
+     * GET /api/quota: the user's token budget, the numbers the chat's ring shows.
+     *
+     * @param string $chattoken
+     * @return array {used_today, limit_today, used_month, limit_month, resets_at, exempt}; a limit
+     *     of null means none applies
+     */
+    public function quota(string $chattoken): array {
+        return $this->user_get($chattoken, '/api/quota');
+    }
+
+    /**
      * GET /ingest/status.
      *
      * @return array

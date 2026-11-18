@@ -37,7 +37,7 @@ from moodle_llm_chat.llm.factory import build_chat_model, build_embeddings
 from moodle_llm_chat.llm.ocr import VisionOCR
 from moodle_llm_chat.quota.service import QuotaService
 from moodle_llm_chat.web.limits import BurstLimiter, SiteCORS
-from moodle_llm_chat.web.routes import chat_ws, conversations, ingest, site_admin
+from moodle_llm_chat.web.routes import chat_ws, conversations, ingest, quota, site_admin
 
 log = structlog.get_logger(__name__)
 
@@ -236,6 +236,12 @@ def create_app(
             "chat": getattr(app.state, "chat", None) is not None,
         }
 
-    for router in (ingest.router, site_admin.router, conversations.router, chat_ws.router):
+    for router in (
+        ingest.router,
+        site_admin.router,
+        conversations.router,
+        quota.router,
+        chat_ws.router,
+    ):
         app.include_router(router)
     return app

@@ -64,6 +64,21 @@ final class api_client_test extends \advanced_testcase {
         $this->assertStringNotContainsString('sekret', implode("\n", $req['headers']));
     }
 
+    public function test_quota_authenticates_as_the_user(): void {
+        $t = new fake_transport();
+        $status = ['used_today' => 120, 'limit_today' => 1000, 'used_month' => 4000, 'limit_month' => null,
+            'resets_at' => 1790000000, 'exempt' => false];
+        $t->routes['GET /api/quota'] = fake_transport::json($status);
+        $client = new api_client('https://api.example', 'sekret', $t);
+
+        $this->assertSame($status, $client->quota('chat.jwt'));
+        $req = $t->requests[0];
+        $this->assertSame('GET', $req['method']);
+        $this->assertSame('https://api.example/api/quota', $req['url']);
+        $this->assertContains('Authorization: Bearer chat.jwt', $req['headers']);
+        $this->assertStringNotContainsString('sekret', implode("\n", $req['headers']));
+    }
+
     public function test_chat_token_is_redacted_from_errors(): void {
         $t = new fake_transport();
         $t->routes['GET /api/conversations'] = new response(401, 'bad token chat.jwt');

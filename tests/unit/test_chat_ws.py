@@ -347,6 +347,47 @@ class TestConversationsApi:
         assert "access-control-allow-origin" not in bad.headers
 
 
+class TestQuotaApi:
+    """The page asks for the token budget while it renders, instead of waiting for a turn."""
+
+    def _get(self, env: Env, **claims: Any) -> Any:
+        token = env.token(**claims)
+        return env.client.get("/api/quota", headers={"Authorization": f"Bearer {token}"})
+
+    def test_status_before_any_turn(self, env: Env) -> None:
+        r = self._get(env, quota={"day": 1000, "month": 5000})
+        assert r.status_code == 200
+        assert r.json() == {
+            "used_today": 0,
+            "limit_today": 1000,
+            "used_month": 0,
+            "limit_month": 5000,
+            "resets_at": r.json()["resets_at"],
+            "exempt": False,
+        }
+        assert r.json()["resets_at"] > 0
+
+    def test_status_counts_usage_and_keeps_the_token_valid(self, env: Env) -> None:
+        env.model.script.extend([AIMessage(content="Antwort")])
+        with connect(env) as ws:
+            authed(env, ws)
+            ws.send_json({"type": "send", "text": "Frage", "token": env.token()})
+            sent = until(ws, "quota")[-1]
+        token = env.token(quota={"day": 1000})
+        headers = {"Authorization": f"Bearer {token}"}
+        first = env.client.get("/api/quota", headers=headers).json()
+        # Read-only: the same token still answers (and is still good for a websocket frame).
+        assert env.client.get("/api/quota", headers=headers).json() == first
+        assert first["used_today"] == sent["used_today"] > 0
+        assert first["limit_today"] == 1000
+
+    def test_exempt_user(self, env: Env) -> None:
+        assert self._get(env, quota={"exempt": True}).json()["exempt"] is True
+
+    def test_requires_token(self, env: Env) -> None:
+        assert env.client.get("/api/quota").status_code == 401
+
+
 class TestPolicyAndUsage:
     def test_policy_push_and_usage_report(self, env: Env) -> None:
         site_auth = {"Authorization": f"Bearer {env.secret}"}
