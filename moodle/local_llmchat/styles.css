@@ -48,8 +48,16 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     display: none;
 }
 
+/* Boost keeps 3rem free under the main area (and 1.5rem of padding) for its floating footer button.
+   The chat page needs that room for the conversation, and the button floats in the margin beside
+   the card, so only a little breathing space stays below it. */
+body.local-llmchat-fullpage #page.drawers .main-inner {
+    margin-bottom: 0;
+    padding-bottom: .5rem;
+}
+
 /* Below md, Boost shows its footer in the page instead of the floating button: the chat keeps the
-   window (navbar 60px and the main area's .5rem + 3rem margins aside), the footer follows below. */
+   window (navbar 60px and the main area's top margin aside), the footer follows below. */
 @media (max-width: 767.98px) {
     body.local-llmchat-fullpage #page.drawers {
         flex: 1 0 auto;
@@ -57,7 +65,13 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
 
     body.local-llmchat-fullpage #page.drawers .main-inner {
         flex: 0 0 auto;
-        height: calc(100vh - 60px - 3.5rem);
+        height: calc(100vh - 60px - .5rem);
+    }
+}
+
+@media (min-width: 576px) and (max-width: 767.98px) {
+    body.local-llmchat-fullpage #page.drawers .main-inner {
+        height: calc(100vh - 60px - 1.5rem);
     }
 }
 
