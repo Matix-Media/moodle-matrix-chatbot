@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <libraries>
     <library>
-        <location>amd/src/markdown-it.js</location>
+        <location>amd/build/markdown-it.min.js</location>
         <name>markdown-it</name>
         <description>Markdown parser, renders the assistant's answers.</description>
         <version>15.0.3</version>

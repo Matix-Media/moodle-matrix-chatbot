@@ -96,23 +96,25 @@ md.core.ruler.push('demote_headings', (state) => {
         });
 });
 
-const rules = md.renderer.rules;
-rules.link_open = (tokens, idx, options, env, self) => {
-    tokens[idx].attrSet('target', '_blank');
-    tokens[idx].attrSet('rel', 'noopener');
-    return self.renderToken(tokens, idx, options);
-};
-// Wide tables scroll inside their own box instead of widening the chat.
-rules.table_open = (tokens, idx, options, env, self) =>
-    '<div class="local-llmchat-table">' + self.renderToken(tokens, idx, options);
-rules.table_close = () => '</table></div>\n';
-rules.citation = (tokens, idx) => {
-    const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
-    return '&nbsp;' + tokens[idx].meta.map(({n, href}, i) => (href
-        ? `<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
-            ` data-cite="${n}">${hidden('[')}${n}${hidden(']')}</a>`
-        : `${i ? ' ' : ''}[${n}]`)).join('');
-};
+// Token names in markdown-it are snake_case, hence the quoted keys.
+Object.assign(md.renderer.rules, {
+    'link_open': (tokens, idx, options, env, self) => {
+        tokens[idx].attrSet('target', '_blank');
+        tokens[idx].attrSet('rel', 'noopener');
+        return self.renderToken(tokens, idx, options);
+    },
+    // Wide tables scroll inside their own box instead of widening the chat.
+    'table_open': (tokens, idx, options, env, self) =>
+        '<div class="local-llmchat-table">' + self.renderToken(tokens, idx, options),
+    'table_close': () => '</table></div>\n',
+    citation: (tokens, idx) => {
+        const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
+        return '&nbsp;' + tokens[idx].meta.map(({n, href}, i) => (href
+            ? `<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
+                ` data-cite="${n}">${hidden('[')}${n}${hidden(']')}</a>`
+            : `${i ? ' ' : ''}[${n}]`)).join('');
+    },
+});
 
 /**
  * Render markdown to safe HTML.
