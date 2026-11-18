@@ -1,0 +1,43 @@
+{{!
+    This file is part of Moodle - https://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+}}
+{{!
+    @template local_llmchat/citation_card
+
+    The card a citation chip ([n] in an answer) shows while hovered or focused: the source,
+    its course and pages, and where in the course it is.
+
+    Example context (json):
+    {
+        "index": 2,
+        "title": "Kollegium",
+        "meta": "LF7 · Page 4",
+        "path": "Organisation › Personal",
+        "url": "https://moodle.example/mod/page/view.php?id=40",
+        "hasurl": true
+    }
+}}
+<div class="local-llmchat-citecard card shadow-sm" role="tooltip">
+    <div class="card-body d-flex align-items-start p-2">
+        <span class="local-llmchat-citenum me-2" aria-hidden="true">{{index}}</span>
+        <div class="local-llmchat-minw0">
+            <div class="local-llmchat-citecard-title">{{title}}</div>
+            {{#meta}}<div class="small text-muted">{{meta}}</div>{{/meta}}
+            {{#path}}<div class="small text-muted local-llmchat-citecard-path">{{path}}</div>{{/path}}
+            {{#hasurl}}<div class="small local-llmchat-citecard-hint mt-1">{{#str}} citeopen, local_llmchat {{/str}}</div>{{/hasurl}}
+        </div>
+    </div>
+</div>

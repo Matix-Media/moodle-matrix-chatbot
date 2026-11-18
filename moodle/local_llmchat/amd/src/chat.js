@@ -38,7 +38,8 @@ import {render as renderMarkdown, escapeHtml} from 'local_llmchat/markdown';
 import {rendererFor} from 'local_llmchat/interactions/registry';
 import {renderNode, renderInto, uniqid} from 'local_llmchat/render';
 import {
-    callTarget, citationMeta, describeCall, describeResult, linkSegments, RESULT_STRING_KEYS, STRING_KEYS as TOOL_STRING_KEYS,
+    callTarget, citationCard, citationMeta, describeCall, describeResult, linkSegments, RESULT_STRING_KEYS,
+    STRING_KEYS as TOOL_STRING_KEYS,
 } from 'local_llmchat/tooldetails';
 
 const STRING_KEYS = [
@@ -194,6 +195,10 @@ class ChatController {
         this.linkCache = new Map();
         /** Refs held back while a history replays (see batchRefs), or null. */
         this.refBatch = null;
+        /** Assistant message node => the citations its [n] chips refer to. */
+        this.citationsOf = new WeakMap();
+        /** The citation card shown for a hovered or focused chip: {chip, card}, or null. */
+        this.citeCard = null;
 
         this.socket = new ReconnectingSocket({
             credentials: async() => {
@@ -240,10 +245,25 @@ class ChatController {
             }
         });
         this.regions.messages.addEventListener('scroll', () => {
+            this.hideCitationCard();
             const m = this.regions.messages;
             this.stickToBottom = m.scrollTop + m.clientHeight >= m.scrollHeight - 48;
         });
         this.root.addEventListener('click', (e) => this.onClick(e));
+        // Citation chips ([n] in an answer) show their source on hover and keyboard focus.
+        const chipOf = (e) => e.target.closest && e.target.closest('.local-llmchat-cite[data-cite]');
+        ['mouseover', 'focusin'].forEach((type) => this.root.addEventListener(type, (e) => {
+            const chip = chipOf(e);
+            if (chip) {
+                this.showCitationCard(chip);
+            }
+        }));
+        ['mouseout', 'focusout'].forEach((type) => this.root.addEventListener(type, (e) => {
+            const chip = chipOf(e);
+            if (chip && !(e.relatedTarget && chip.contains(e.relatedTarget))) {
+                this.hideCitationCard(chip);
+            }
+        }));
         // The token panel closes on Escape and on any click outside it.
         document.addEventListener('click', (e) => {
             if (!this.regions.quota.contains(e.target)) {
@@ -251,6 +271,9 @@ class ChatController {
             }
         });
         document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.hideCitationCard();
+            }
             if (e.key === 'Escape' && this.regions['quota-panel'].classList.contains('show')) {
                 this.toggleQuotaPanel(false);
                 this.regions['quota-button'].focus();
@@ -288,6 +311,61 @@ class ChatController {
             this.openConversation(null);
         } else if (action === 'copy') {
             this.copy(target.dataset.copytext || '');
+        }
+    }
+
+    /**
+     * Show the source card for a citation chip, above it (below when there is no room).
+     *
+     * @param {HTMLElement} chip a.local-llmchat-cite[data-cite]
+     */
+    async showCitationCard(chip) {
+        if (this.citeCard && this.citeCard.chip === chip) {
+            return;
+        }
+        this.hideCitationCard();
+        const citations = this.citationsOf.get(chip.closest('[data-role="assistant"]')) || [];
+        const citation = citations.find((c) => Number(c.index) === Number(chip.dataset.cite));
+        if (!citation) {
+            return;
+        }
+        const shown = {chip, card: null};
+        this.citeCard = shown;
+        const card = await renderNode('citation_card', citationCard(citation, this.str.page));
+        if (this.citeCard !== shown || !chip.isConnected) {
+            return;
+        }
+        shown.card = card;
+        card.id = uniqid('local-llmchat-citecard');
+        chip.setAttribute('aria-describedby', card.id);
+        this.root.appendChild(card);
+        const gap = 6;
+        const margin = 8;
+        const anchor = chip.getBoundingClientRect();
+        const box = card.getBoundingClientRect();
+        const above = anchor.top - box.height - gap;
+        const top = above >= margin ? above : anchor.bottom + gap;
+        const left = Math.min(Math.max(margin, anchor.left + anchor.width / 2 - box.width / 2),
+            window.innerWidth - box.width - margin);
+        card.style.top = `${Math.round(top)}px`;
+        card.style.left = `${Math.round(Math.max(margin, left))}px`;
+        card.classList.add('show');
+    }
+
+    /**
+     * Remove the citation card (only the one for `chip`, when given).
+     *
+     * @param {HTMLElement} [chip]
+     */
+    hideCitationCard(chip) {
+        const shown = this.citeCard;
+        if (!shown || (chip && shown.chip !== chip)) {
+            return;
+        }
+        this.citeCard = null;
+        shown.chip.removeAttribute('aria-describedby');
+        if (shown.card) {
+            shown.card.remove();
         }
     }
 
@@ -860,7 +938,12 @@ class ChatController {
         this.advance(turn, 'token');
         const text = this.textSegment(turn);
         turn.raw += frame.delta || '';
+        this.citationsOf.set(turn.node, turn.citations);
         text.innerHTML = renderMarkdown(turn.raw, turn.citations);
+        if (this.citeCard && !this.citeCard.chip.isConnected) {
+            // The chip it belonged to was re-rendered with the text.
+            this.hideCitationCard();
+        }
     }
 
     /**
@@ -1164,6 +1247,7 @@ class ChatController {
         turn.citations = frame.citations || turn.citations || [];
         const text = this.textSegment(turn);
         turn.raw = frame.text ?? turn.raw;
+        this.citationsOf.set(turn.node, turn.citations);
         text.innerHTML = renderMarkdown(turn.raw, turn.citations);
         const footer = await renderNode('answer_footer', {
             copytext: turn.raw,
