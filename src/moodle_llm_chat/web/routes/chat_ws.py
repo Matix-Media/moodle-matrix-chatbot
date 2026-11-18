@@ -35,6 +35,7 @@ from moodle_llm_chat.access.tokens import TokenError, VerifiedToken, verify_chat
 from moodle_llm_chat.agent.events import PROTOCOL_VERSION
 from moodle_llm_chat.chat.service import ChatError, ChatService
 from moodle_llm_chat.index.store import Store
+from moodle_llm_chat.web.limits import site_origin
 
 router = APIRouter()
 log = structlog.get_logger(__name__)
@@ -163,7 +164,9 @@ class _Connection:
 def _origin_allowed(ws: WebSocket, site_url: str) -> bool:
     origin = ws.headers.get("origin")
     # Browsers always send Origin; a missing one is a non-browser client.
-    return origin is None or origin.rstrip("/") == site_url.rstrip("/")
+    # The header holds scheme, host and port only, so a Moodle in a sub-directory
+    # (https://host/moodle) is compared by its origin, not its full URL.
+    return origin is None or site_origin(origin) == site_origin(site_url)
 
 
 @router.websocket("/ws/chat")

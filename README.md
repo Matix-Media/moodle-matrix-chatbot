@@ -55,6 +55,9 @@ Every search tool takes a path and time filters. New tools are one class
 
 ## Running the API
 
+> **Full walkthrough** — API server, TLS proxy, Moodle plugin and how to connect them, with
+> troubleshooting: [docs/SETUP.md](docs/SETUP.md). The summary below is the short version.
+
 ```bash
 pip install .
 moodle-llm-chat gen-master-key --out secrets/master.key     # mode 0600; back it up separately

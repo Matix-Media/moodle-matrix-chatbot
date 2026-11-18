@@ -20,6 +20,7 @@ from moodle_llm_chat.config import Settings
 from moodle_llm_chat.crypto.keys import KeyRing
 from moodle_llm_chat.index.store import Store
 from moodle_llm_chat.web.app import create_app
+from moodle_llm_chat.web.limits import site_origin
 
 S = "site-a"
 URL = "https://moodle.a.test"
@@ -345,6 +346,77 @@ class TestConversationsApi:
             headers={"Origin": "https://evil.test", "Access-Control-Request-Method": "GET"},
         )
         assert "access-control-allow-origin" not in bad.headers
+
+
+class TestSubPathSite:
+    """A Moodle served from a sub-path: the browser's Origin never carries the path."""
+
+    SUB_SITE = "site-sub"
+    SUB_URL = "https://campus.test/moodle"
+    SUB_ORIGIN = "https://campus.test"
+
+    def _register(self, env: Env) -> str:
+        return str(
+            env.on_loop(lambda: env.store.add_site(self.SUB_SITE, name="Sub", url=self.SUB_URL))
+        )
+
+    def _token(self, secret: str) -> str:
+        """A fresh token each call: the jti is single-use."""
+        self._n = getattr(self, "_n", 0) + 1
+        now = int(time.time())
+        claims = {
+            "iss": self.SUB_URL,
+            "sub": "7",
+            "name": "Erika",
+            "caps": ["read", "interact"],
+            "courses": [2],
+            "cmids": [10],
+            "jti": f"sub-{self._n}-{now}",
+            "iat": now,
+            "exp": now + 600,
+        }
+        return issue_chat_token(secret, self.SUB_SITE, claims)
+
+    def test_websocket_accepts_the_host_origin(self, env: Env) -> None:
+        secret = self._register(env)
+        with connect(env, headers={"origin": self.SUB_ORIGIN}) as ws:
+            ws.send_json({"type": "auth", "token": self._token(secret)})
+            assert ws.receive_json()["type"] == "ready"
+
+    def test_websocket_still_refuses_other_origins(self, env: Env) -> None:
+        secret = self._register(env)
+        for origin in ("https://evil.test", "http://campus.test", "https://campus.test:8443"):
+            with connect(env, headers={"origin": origin}) as ws:
+                ws.send_json({"type": "auth", "token": self._token(secret)})
+                with pytest.raises(WebSocketDisconnect) as err:
+                    ws.receive_json()
+                assert err.value.code == 4403, origin
+
+    def test_cors_allows_the_host_origin(self, env: Env) -> None:
+        self._register(env)
+        ok = env.client.options(
+            "/api/conversations",
+            headers={"Origin": self.SUB_ORIGIN, "Access-Control-Request-Method": "GET"},
+        )
+        assert ok.headers.get("access-control-allow-origin") == self.SUB_ORIGIN
+
+
+class TestSiteOrigin:
+    @pytest.mark.parametrize(
+        ("url", "origin"),
+        [
+            ("https://moodle.a.test", "https://moodle.a.test"),
+            ("https://moodle.a.test/", "https://moodle.a.test"),
+            ("https://campus.test/moodle", "https://campus.test"),
+            ("https://Campus.Test/moodle/", "https://campus.test"),
+            ("https://campus.test:8443/lms", "https://campus.test:8443"),
+            ("https://campus.test:443/lms", "https://campus.test"),
+            ("http://localhost:8080", "http://localhost:8080"),
+            ("http://localhost:80", "http://localhost"),
+        ],
+    )
+    def test_scheme_host_and_port_only(self, url: str, origin: str) -> None:
+        assert site_origin(url) == origin
 
 
 class TestQuotaApi:

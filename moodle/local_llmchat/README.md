@@ -6,8 +6,12 @@ websocket client inside Moodle).
 
 ## Install
 
+The full walkthrough (API server, TLS, connecting the two, troubleshooting) is
+[docs/SETUP.md](../../docs/SETUP.md). In short:
+
 1. Copy this directory to `<moodle>/local/llmchat` and run the upgrade.
-2. On the API host: `moodle-llm-chat site add "<name>"`, which prints a secret once.
+2. On the API host: `moodle-llm-chat site add <id> --name "<name>" --url <Moodle wwwroot>`, which
+   prints a secret once.
 3. In *Site administration → Plugins → Local plugins → Course chat (LLM) → Settings*, enter
    the API URL (it must be `https://`; `http://` only works with developer debugging) and the
    secret. The secret is stored encrypted with `\core\encryption`.

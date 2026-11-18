@@ -36,7 +36,7 @@ from moodle_llm_chat.llm.embed import CachingEmbedder
 from moodle_llm_chat.llm.factory import build_chat_model, build_embeddings
 from moodle_llm_chat.llm.ocr import VisionOCR
 from moodle_llm_chat.quota.service import QuotaService
-from moodle_llm_chat.web.limits import BurstLimiter, SiteCORS
+from moodle_llm_chat.web.limits import BurstLimiter, SiteCORS, site_origin
 from moodle_llm_chat.web.routes import chat_ws, conversations, ingest, quota, site_admin
 
 log = structlog.get_logger(__name__)
@@ -224,7 +224,7 @@ def create_app(
         store: Store | None = getattr(app.state, "store", None)
         if store is None:
             return set()
-        return {s.url.rstrip("/") for s in store.sites() if s.revoked_at is None}
+        return {site_origin(s.url) for s in store.sites() if s.revoked_at is None}
 
     app.add_middleware(SiteCORS, allowed_origins=allowed_origins)
 

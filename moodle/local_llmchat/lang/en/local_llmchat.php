@@ -122,7 +122,7 @@ $string['settings'] = 'Settings';
 $string['settings:apiurl'] = 'API URL';
 $string['settings:apiurl_desc'] = 'Base URL of the chat API, e.g. https://chat-api.example.org';
 $string['settings:connection'] = 'Connection';
-$string['settings:connection_desc'] = 'Create a site on the API host with <code>moodle-llm-chat site add "&lt;name&gt;"</code> and paste the printed secret below. <a href="{$a}">Test connection</a>';
+$string['settings:connection_desc'] = 'Register this Moodle on the API host with <code>moodle-llm-chat site add &lt;id&gt; --name "&lt;name&gt;" --url &lt;this site\'s address&gt;</code> and paste the printed secret below. <a href="{$a}">Test connection</a>';
 $string['settings:count_reasoning'] = 'Count reasoning tokens';
 $string['settings:count_reasoning_desc'] = 'Include model reasoning ("thinking") tokens in quotas.';
 $string['settings:exempt_users_bypass_site'] = 'Exempt users bypass site limits';
