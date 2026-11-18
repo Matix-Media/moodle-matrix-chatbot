@@ -141,6 +141,24 @@ class chat_page implements \renderable, \templatable {
     }
 
     /**
+     * The header's title: the open conversation's title when the preloaded list has it, "New
+     * conversation" when none is open, else a neutral heading until the client knows it.
+     *
+     * @return string
+     */
+    private function title(): string {
+        if ($this->conversationid === '') {
+            return get_string('newconversation', 'local_llmchat');
+        }
+        foreach ($this->conversations ?? [] as $c) {
+            if (is_array($c) && isset($c['id']) && (string)$c['id'] === $this->conversationid) {
+                return (string)(($c['title'] ?? '') ?: get_string('untitled', 'local_llmchat'));
+            }
+        }
+        return get_string('chattitle', 'local_llmchat');
+    }
+
+    /**
      * Template context.
      *
      * @param \renderer_base $output
@@ -160,6 +178,7 @@ class chat_page implements \renderable, \templatable {
             'coursename' => $this->coursename,
             'courseurl' => $hascourse ? (new \moodle_url('/course/view.php', ['id' => $this->courseid]))->out(false) : '',
             'hascourse' => $hascourse,
+            'title' => $this->title(),
             'intro' => $hascourse ? get_string('emptyintrocourse', 'local_llmchat', $this->coursename)
                 : get_string('emptyintro', 'local_llmchat'),
             'suggestions' => $suggestions,

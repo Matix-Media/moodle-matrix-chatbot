@@ -235,6 +235,24 @@ export const citationMeta = (citation, pageWord) => {
     return [courseName, pages.length ? `${pageWord} ${pages.join(', ')}` : ''].filter(Boolean).join(' · ');
 };
 
+/**
+ * Context for the card a citation chip in the answer shows (templates/citation_card): the source,
+ * its course and pages, and where in the course it is (the location between course and source).
+ *
+ * @param {Object} citation {index, title, url, course_name?, page?, pages?, location?}
+ * @param {string} pageWord the word for "page"
+ * @returns {Object} {index, title, meta, path, url, hasurl}
+ */
+export const citationCard = (citation, pageWord) => {
+    const url = httpUrl(citation.url);
+    const path = segmentsOf(citation.location).slice(0, -1).filter((s) => s.kind !== 'course')
+        .map((s) => s.name).filter(Boolean).join(' › ');
+    return {
+        index: citation.index, title: citation.title || citation.url || '', meta: citationMeta(citation, pageWord),
+        path, url, hasurl: url !== '',
+    };
+};
+
 /** Display-block labels with a translation; others use the label the server sent. */
 const FIELD_KEYS = ['title', 'kind', 'size', 'modified', 'link', 'note', 'date', 'weekday', 'time', 'week', 'timezone',
     'name', 'lang', 'course', 'courses', 'teaching', 'roles', 'groups'];

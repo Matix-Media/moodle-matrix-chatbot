@@ -95,10 +95,10 @@
           "url": ""
         }
       ],
-      "html": "<p>Raum B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a> und [2].</p>\n"
+      "html": "<p>Raum B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a> und [2].</p>\n"
     },
     {
-      "name": "citation title is escaped",
+      "name": "citation title stays out of the markup",
       "markdown": "Siehe [1]",
       "citations": [
         {
@@ -107,7 +107,7 @@
           "url": "https://moodle.example/mod/resource/view.php?id=9"
         }
       ],
-      "html": "<p>Siehe&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/resource/view.php?id=9\" target=\"_blank\" rel=\"noopener\" title=\"A &quot;B&quot; &lt;c&gt;\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
+      "html": "<p>Siehe&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/resource/view.php?id=9\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
     },
     {
       "name": "unknown citation stays",
@@ -138,7 +138,7 @@
           "page": 3
         }
       ],
-      "html": "<div class=\"local-llmchat-table\"><table>\n<thead>\n<tr>\n<th>Tag</th>\n<th style=\"text-align:right\">Raum</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Mo</td>\n<td style=\"text-align:right\">B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></td>\n</tr>\n</tbody>\n</table></div>\n"
+      "html": "<div class=\"local-llmchat-table\"><table>\n<thead>\n<tr>\n<th>Tag</th>\n<th style=\"text-align:right\">Raum</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Mo</td>\n<td style=\"text-align:right\">B204&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></td>\n</tr>\n</tbody>\n</table></div>\n"
     },
     {
       "name": "blockquote",
@@ -205,7 +205,7 @@
           "page": 3
         }
       ],
-      "html": "<p><strong>B204</strong>&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
+      "html": "<p><strong>B204</strong>&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
     },
     {
       "name": "citation linked by reference is not a link",
@@ -218,7 +218,7 @@
           "page": 3
         }
       ],
-      "html": "<p>&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" title=\"Stundenplan · S. 3\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
+      "html": "<p>&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
     },
     {
       "name": "narrow spaces read as normal width",
@@ -231,6 +231,98 @@
       "markdown": "\"Hallo\" -- ja",
       "citations": [],
       "html": "<p>&quot;Hallo&quot; -- ja</p>\n"
+    },
+    {
+      "name": "grouped citations",
+      "markdown": "Dr. Henrike Albers (Kürzel ALB) [1, 2].",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        },
+        {
+          "index": 2,
+          "title": "Kollegium",
+          "url": "https://moodle.example/mod/resource/view.php?id=9"
+        },
+        {
+          "index": 3,
+          "title": "Ohne Link",
+          "url": ""
+        }
+      ],
+      "html": "<p>Dr. Henrike Albers (Kürzel ALB)&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a><a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/resource/view.php?id=9\" target=\"_blank\" rel=\"noopener\" data-cite=\"2\"><span class=\"sr-only visually-hidden\">[</span>2<span class=\"sr-only visually-hidden\">]</span></a>.</p>\n"
+    },
+    {
+      "name": "grouped citations without spaces",
+      "markdown": "Siehe [2,1]",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        },
+        {
+          "index": 2,
+          "title": "Kollegium",
+          "url": "https://moodle.example/mod/resource/view.php?id=9"
+        },
+        {
+          "index": 3,
+          "title": "Ohne Link",
+          "url": ""
+        }
+      ],
+      "html": "<p>Siehe&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/resource/view.php?id=9\" target=\"_blank\" rel=\"noopener\" data-cite=\"2\"><span class=\"sr-only visually-hidden\">[</span>2<span class=\"sr-only visually-hidden\">]</span></a><a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a></p>\n"
+    },
+    {
+      "name": "grouped citations keep unlinked numbers as text",
+      "markdown": "Siehe [1, 3, 9]",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        },
+        {
+          "index": 2,
+          "title": "Kollegium",
+          "url": "https://moodle.example/mod/resource/view.php?id=9"
+        },
+        {
+          "index": 3,
+          "title": "Ohne Link",
+          "url": ""
+        }
+      ],
+      "html": "<p>Siehe&nbsp;<a class=\"local-llmchat-cite\" href=\"https://moodle.example/mod/page/view.php?id=5\" target=\"_blank\" rel=\"noopener\" data-cite=\"1\"><span class=\"sr-only visually-hidden\">[</span>1<span class=\"sr-only visually-hidden\">]</span></a> [3] [9]</p>\n"
+    },
+    {
+      "name": "grouped citations with no link stay text",
+      "markdown": "Siehe [3, 9]",
+      "citations": [
+        {
+          "index": 1,
+          "title": "Stundenplan",
+          "url": "https://moodle.example/mod/page/view.php?id=5",
+          "page": 3
+        },
+        {
+          "index": 2,
+          "title": "Kollegium",
+          "url": "https://moodle.example/mod/resource/view.php?id=9"
+        },
+        {
+          "index": 3,
+          "title": "Ohne Link",
+          "url": ""
+        }
+      ],
+      "html": "<p>Siehe [3, 9]</p>\n"
     }
   ]
 }

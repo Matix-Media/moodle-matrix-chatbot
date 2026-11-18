@@ -89,3 +89,16 @@ test('frames that change nothing on screen keep the state', () => {
 test('a stray tool result never drives the running count below zero', () => {
     assert.deepEqual(indicators(['tool_result', 'tool_call']), [true, false]);
 });
+
+test('an activity group takes over after nothing but blank text segments', () => {
+    // The model may stream whitespace between two steps; that must not split the group in two.
+    assert.equal(activity.joinsGroup([]), true);
+    assert.equal(activity.joinsGroup([true]), true);
+    assert.equal(activity.joinsGroup([true, true]), true);
+});
+
+test('an activity group stays apart after real content', () => {
+    // Visible text, a question card, an answer footer: the next card starts a new group.
+    assert.equal(activity.joinsGroup([false]), false);
+    assert.equal(activity.joinsGroup([true, false]), false);
+});

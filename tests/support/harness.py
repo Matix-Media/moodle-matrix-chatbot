@@ -58,6 +58,8 @@ class Api:
         self.master = master
         self.moodle = moodle
         self.model = ScriptedModel()
+        #: The utility model for conversation titles; ``None`` = titles off.
+        self.title_model: ScriptedModel | None = None
         self.embeddings = HashEmbeddings(EMBED_DIM)
         self.client: TestClient | None = None
         #: The active respx router: mock external sites with ``api.web.get(...)``.
@@ -73,6 +75,7 @@ class Api:
             Settings(),
             ring=KeyRing(self.master),
             chat_model=self.model,
+            title_model=self.title_model,
             embeddings=self.embeddings,
         )
         with TestClient(app, base_url="https://testserver") as client:

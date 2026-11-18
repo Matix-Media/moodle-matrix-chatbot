@@ -26,6 +26,10 @@
     "loading" (a conversation is about to be opened) shows the loading indicator instead of the
     empty state; the client shows it too while it loads a conversation picked later.
 
+    "title" is the open conversation's title when the server knows it (the preloaded list), else
+    "New conversation" or, for a conversation the client is about to open, a neutral heading; the
+    client keeps it current (list reloads and "title" events).
+
     The full page shows the conversation list next to the chat. The compact variant (the chat
     block) shows only the current conversation, with a "new conversation" button and a link that
     opens it in the full page, where the other conversations are listed.
@@ -37,6 +41,7 @@
         "compact": false,
         "fullurl": "https://moodle.example/local/llmchat/chat.php?courseid=2",
         "hascourse": true,
+        "title": "New conversation",
         "intro": "Ask about LF7 Vernetzte Systeme: material, deadlines and activities.",
         "suggestions": [{"text": "What is due this week?"}, {"text": "Summarise the latest material"}],
         "loading": false
@@ -70,10 +75,10 @@
                         aria-controls="{{rootid}}-sidebar" aria-expanded="false" title="{{#str}} conversations, local_llmchat {{/str}}">
                         {{#pix}} conversation, local_llmchat {{/pix}}<span class="sr-only visually-hidden">{{#str}} conversations, local_llmchat {{/str}}</span>
                     </button>
-                    <h2 class="h5 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title">{{#str}} chattitle, local_llmchat {{/str}}</h2>
+                    <h2 class="h5 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title" data-region="title">{{title}}</h2>
                     {{/compact}}
                     {{#compact}}
-                    <h3 class="h6 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title" data-region="title">{{#str}} newconversation, local_llmchat {{/str}}</h3>
+                    <h3 class="h6 mb-0 flex-grow-1 text-truncate" id="{{rootid}}-title" data-region="title">{{title}}</h3>
                     {{/compact}}
                     <div class="local-llmchat-quota invisible" data-region="quota">
                         <button type="button" class="btn btn-link local-llmchat-iconbtn local-llmchat-quotabtn" data-action="quota-toggle"

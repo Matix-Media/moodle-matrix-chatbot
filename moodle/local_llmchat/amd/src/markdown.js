@@ -54,40 +54,29 @@ export const safeUrl = (url) => {
 };
 
 /**
- * Citation [n] => its link, or null when the answer has no linkable source n.
+ * Inline rule: "[1]" or grouped "[1, 2]" naming at least one linkable source becomes a citation
+ * token, glued to the word before it. Each linked number becomes a chip (chat.js shows its source
+ * card); numbers without a link stay as text.
  *
- * @param {Map} citations index => citation
- * @param {number} n
- * @returns {{href: string, title: string}|null}
- */
-const citationLink = (citations, n) => {
-    const cite = citations.get(n);
-    const href = cite && cite.url ? safeUrl(cite.url) : null;
-    if (!href) {
-        return null;
-    }
-    const pages = Array.isArray(cite.pages) && cite.pages.length ? cite.pages : [cite.page].filter(Boolean);
-    return {href, title: [cite.title, pages.length ? `S. ${pages.join(', ')}` : ''].filter(Boolean).join(' · ')};
-};
-
-/**
- * Inline rule: [n] naming a known source becomes a citation token, glued to the word before it.
- *
- * @param {Object} state markdown-it StateInline; state.env.citations is the citation map
+ * @param {Object} state markdown-it StateInline; state.env.citations maps index => citation
  * @param {boolean} silent
  * @returns {boolean}
  */
 const citationRule = (state, silent) => {
-    const match = state.src.slice(state.pos).match(/^\[(\d{1,3})\]/);
-    const link = match && state.env.citations ? citationLink(state.env.citations, Number(match[1])) : null;
-    if (!link) {
+    const match = state.src.slice(state.pos).match(/^\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]/);
+    if (!match || !state.env.citations) {
+        return false;
+    }
+    const parts = match[1].split(',').map((n) => {
+        const cite = state.env.citations.get(Number(n));
+        return {n: n.trim(), href: cite && cite.url ? safeUrl(cite.url) : null};
+    });
+    if (!parts.some((p) => p.href)) {
         return false;
     }
     if (!silent) {
         state.pending = state.pending.replace(/\s+$/, '');
-        const token = state.push('citation', '', 0);
-        token.content = match[1];
-        token.meta = link;
+        state.push('citation', '', 0).meta = parts;
     }
     state.pos += match[0].length;
     return true;
@@ -118,10 +107,11 @@ rules.table_open = (tokens, idx, options, env, self) =>
     '<div class="local-llmchat-table">' + self.renderToken(tokens, idx, options);
 rules.table_close = () => '</table></div>\n';
 rules.citation = (tokens, idx) => {
-    const {href, title} = tokens[idx].meta;
     const hidden = (text) => `<span class="sr-only visually-hidden">${text}</span>`;
-    return `&nbsp;<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
-        ` title="${escapeHtml(title)}">${hidden('[')}${tokens[idx].content}${hidden(']')}</a>`;
+    return '&nbsp;' + tokens[idx].meta.map(({n, href}, i) => (href
+        ? `<a class="local-llmchat-cite" href="${escapeHtml(href)}" target="_blank" rel="noopener"` +
+            ` data-cite="${n}">${hidden('[')}${n}${hidden(']')}</a>`
+        : `${i ? ' ' : ''}[${n}]`)).join('');
 };
 
 /**

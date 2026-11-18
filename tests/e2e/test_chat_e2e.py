@@ -74,6 +74,25 @@ class TestStudentChat:
         cite = answer.locator("a.local-llmchat-cite")
         expect(cite).to_have_count(1)
         assert "/mod/page/view.php?id=" in (cite.get_attribute("href") or "")
+        # Hovering the chip shows its source as a card; leaving it hides the card.
+        sources = student.page.locator(".local-llmchat-sources li a")
+        source = (sources.first.text_content() or "").strip()
+        card = student.page.locator(".local-llmchat-citecard")
+        # Keyboard focus shows the card too, and it names the chip's source.
+        cite.focus()
+        expect(card).to_be_visible()
+        expect(card).to_contain_text(source)
+        cite.blur()
+        expect(card).to_have_count(0)
+        # The mouse at the chip's centre (Playwright's hover() hit-check trips over the
+        # tool card just above the chip; the browser's own hit test finds the chip).
+        cite.scroll_into_view_if_needed()
+        box = cite.bounding_box()
+        assert box
+        student.page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        expect(card).to_be_visible()
+        student.page.mouse.move(0, 0)
+        expect(card).to_have_count(0)
 
     def test_narrow_spaces_render_as_normal_width_spaces(self, student: Chat, mock: Mock) -> None:
         """Models put narrow/thin spaces in times and dates; they read as a squashed gap."""
@@ -164,6 +183,26 @@ class TestStudentChat:
         expect(option).to_be_visible(timeout=30_000)
         option.click()
         student.wait_answer("Dann schaue ich in LF7 nach.")
+
+    def test_header_and_list_show_the_generated_title(self, student: Chat, mock: Mock) -> None:
+        """The utility model's title (the mock: "Über" + three words) replaces the
+        first message as the title, live and when the conversation is reopened."""
+        mock.script({"text": "Am Freitag."})
+        student.open().ask("Wann ist die Abgabe für Subnetting?")
+        student.wait_answer("Am Freitag.")
+        header = student.page.locator("[data-region=panel] [data-region=title]")
+        active = student.page.locator("[data-region=conversations] .active")
+        expect(header).to_have_text("Über Wann ist die", timeout=15_000)
+        expect(active).to_have_text("Über Wann ist die")
+        # Reopened from the list after a reload (the page itself starts a new conversation).
+        student.page.reload()
+        reopen = student.page.locator(
+            "[data-region=conversations] [data-action=open-conversation]",
+            has_text="Über Wann ist die",
+        )
+        expect(reopen.first).to_be_visible(timeout=15_000)
+        reopen.first.click()
+        expect(header).to_have_text("Über Wann ist die", timeout=15_000)
 
     def test_history_survives_a_reload(self, student: Chat, mock: Mock) -> None:
         mock.script({"text": "Gespeicherte Antwort zum Merken."})
@@ -364,9 +403,9 @@ class TestRights:
         page = context.new_page()
         login(page, "student2")
         Chat(page).open()
-        expect(
-            page.locator("[data-region=conversations]", has_text="Private Frage von Sophie")
-        ).to_have_count(0)
+        expect(page.locator("[data-region=conversations]", has_text="Private Frage")).to_have_count(
+            0
+        )
         context.close()
 
 

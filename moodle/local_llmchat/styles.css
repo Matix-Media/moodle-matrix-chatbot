@@ -398,8 +398,15 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
     transform: rotate(-90deg);
 }
 
-.local-llmchat-tools {
-    margin-bottom: .75rem;
+/* Breathing room above and below an activity group; the doubled class outweighs the theme's
+   .list-group margin rules. A group that opens the message (only the screen-reader label and the
+   still empty text segment come before it) needs no space above it. */
+.local-llmchat .local-llmchat-tools {
+    margin: 1.25rem 0;
+}
+
+.local-llmchat .local-llmchat-body > .sr-only + .local-llmchat-text:empty + .local-llmchat-tools {
+    margin-top: 0;
 }
 
 .local-llmchat-tool {
@@ -907,4 +914,49 @@ body.local-llmchat-fullpage .local-llmchat-sidecol:not(.show) {
 
 .local-llmchat-compact .local-llmchat-toolsummary {
     display: none;
+}
+
+/* Source card a citation chip shows on hover and focus (chat.js showCitationCard). */
+.local-llmchat .local-llmchat-citecard {
+    position: fixed;
+    z-index: 1070;
+    width: max-content;
+    max-width: 20rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .12s ease-out;
+}
+
+.local-llmchat .local-llmchat-citecard.show {
+    opacity: 1;
+}
+
+.local-llmchat .local-llmchat-citecard .local-llmchat-citenum {
+    margin-top: .0625rem;
+}
+
+.local-llmchat-citecard-title {
+    font-size: .875rem;
+    font-weight: 600;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.local-llmchat-citecard-path {
+    overflow-wrap: anywhere;
+}
+
+.local-llmchat-citecard-hint {
+    color: var(--llmchat-accent);
+}
+
+/* Grouped citations ([1, 2]) sit side by side with a small gap. */
+.local-llmchat .local-llmchat-cite + .local-llmchat-cite {
+    margin-left: .125rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .local-llmchat .local-llmchat-citecard {
+        transition: none;
+    }
 }
