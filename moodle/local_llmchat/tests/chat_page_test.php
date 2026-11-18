@@ -339,8 +339,8 @@ final class chat_page_test extends \advanced_testcase {
             . get_string('noconversations', 'local_llmchat') . '")]')->length);
         $this->assertSame(['list' => true], $config['preloaded']);
         $this->assertSame('c1', $config['conversationid']);
-        $this->assertSame('Raumfrage', trim($x->query('//*[@data-region="panel"]//*[@data-region="title"]')->item(0)->textContent),
-            'the header names the open conversation');
+        $title = $x->query('//*[@data-region="panel"]//*[@data-region="title"]')->item(0);
+        $this->assertSame('Raumfrage', trim($title->textContent), 'the header names the open conversation');
 
         // Only the list: the chat is the client's, which shows it loading until then.
         $this->assertSame(['GET /api/conversations'], $t->sequence());
