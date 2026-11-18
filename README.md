@@ -75,6 +75,10 @@ Providers (`MLC_LLM__PROVIDER`, `MLC_EMBEDDING__PROVIDER`): `gemini`, `openai`
 `ollama`, `anthropic` (chat only). `MLC_LLM__THINKING=off|low|medium|high` enables
 reasoning on models that support it; `MLC_AGENT__SHOW_THINKING` decides whether users
 see it.
+`MLC_LLM__UTILITY_MODEL` (default: the chat model) names new conversations and does OCR;
+it is always called with thinking explicitly off (on OpenRouter `reasoning: {enabled:
+false}`, on Gemini a zero thinking budget), so pick a model that can answer without it.
+`MLC_AGENT__GENERATE_TITLES=false` keeps the first message as the title instead.
 
 ### Operator commands
 

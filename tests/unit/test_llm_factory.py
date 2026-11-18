@@ -102,9 +102,10 @@ class TestChatModelClasses:
 
 
 class TestThinkingMapping:
-    def test_gemini_off_sends_no_thinking_params(self) -> None:
+    def test_gemini_off_sets_a_zero_budget(self) -> None:
+        """Gemini 2.5 Flash thinks by default: "off" has to be said."""
         _, kwargs = chat_model_kwargs(_llm(Provider.GEMINI))
-        assert "thinking_budget" not in kwargs
+        assert kwargs["thinking_budget"] == 0
         assert kwargs.get("include_thoughts") is not True
 
     @pytest.mark.parametrize(
@@ -184,11 +185,13 @@ class TestThinkingMapping:
         assert "reasoning_effort" not in kwargs and "reasoning" not in kwargs
         assert "use_responses_api" not in kwargs
 
-    def test_openrouter_off_sends_no_reasoning(self) -> None:
+    def test_openrouter_off_disables_reasoning_explicitly(self) -> None:
+        """Many OpenRouter models reason unless told not to."""
         _, kwargs = chat_model_kwargs(
             _llm(Provider.OPENAI, base_url="https://openrouter.ai/api/v1")
         )
-        assert "extra_body" not in kwargs
+        assert kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+        assert "reasoning_effort" not in kwargs and "reasoning" not in kwargs
 
     def test_openai_compatible_servers_keep_streamed_reasoning(self) -> None:
         model = build_chat_model(_llm(Provider.OPENAI, base_url="http://localhost:1234/v1"))
@@ -226,7 +229,61 @@ class TestThinkingMapping:
         _, kwargs = chat_model_kwargs(
             _llm(Provider.GEMINI, thinking=ThinkingLevel.HIGH), utility=True
         )
-        assert "thinking_budget" not in kwargs
+        assert kwargs["thinking_budget"] == 0
+        assert kwargs.get("include_thoughts") is not True
+
+
+class TestUtilityNeverThinks:
+    """Titles and OCR must not think, whatever the main model's level."""
+
+    @pytest.mark.parametrize("main", list(ThinkingLevel))
+    def test_openrouter_utility_disables_reasoning_explicitly(self, main: ThinkingLevel) -> None:
+        _, kwargs = chat_model_kwargs(
+            _llm(Provider.OPENAI, base_url="https://openrouter.ai/api/v1", thinking=main),
+            utility=True,
+        )
+        assert kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+        assert kwargs["model"] == "small-model"
+        assert "reasoning_effort" not in kwargs and "reasoning" not in kwargs
+
+    def test_openrouter_utility_model_builds_with_reasoning_off(self) -> None:
+        model = build_chat_model(
+            _llm(Provider.OPENAI, base_url="https://openrouter.ai/api/v1"), utility=True
+        )
+        assert isinstance(model, ChatOpenAI)
+        assert model.extra_body == {"reasoning": {"enabled": False}}
+
+    @pytest.mark.parametrize("main", list(ThinkingLevel))
+    def test_gemini_utility_sets_a_zero_budget(self, main: ThinkingLevel) -> None:
+        model = build_chat_model(_llm(Provider.GEMINI, thinking=main), utility=True)
+        assert isinstance(model, ChatGoogleGenerativeAI)
+        assert model.thinking_budget == 0
+        assert model.include_thoughts is not True
+
+    def test_ollama_utility_turns_think_off(self) -> None:
+        _, kwargs = chat_model_kwargs(
+            _llm(Provider.OLLAMA, thinking=ThinkingLevel.HIGH), utility=True
+        )
+        assert kwargs["reasoning"] is False
+
+    def test_anthropic_utility_uses_lowest_effort_without_thinking_block(self) -> None:
+        _, kwargs = chat_model_kwargs(
+            _llm(Provider.ANTHROPIC, thinking=ThinkingLevel.HIGH), utility=True
+        )
+        assert kwargs["reasoning_effort"] == "low"
+        assert "thinking" not in kwargs
+
+    def test_thinking_params_never_reach_utility_calls(self) -> None:
+        _, kwargs = chat_model_kwargs(
+            _llm(
+                Provider.OPENAI,
+                base_url="https://openrouter.ai/api/v1",
+                thinking=ThinkingLevel.HIGH,
+                thinking_params={"extra_body": {"reasoning": {"effort": "high"}}},
+            ),
+            utility=True,
+        )
+        assert kwargs["extra_body"] == {"reasoning": {"enabled": False}}
 
 
 class TestEmbeddings:

@@ -26,6 +26,7 @@ from moodle_llm_chat.agent.context import AccessChecker
 from moodle_llm_chat.agent.runner import AgentRunner
 from moodle_llm_chat.agent.tools import default_registry
 from moodle_llm_chat.chat.service import ChatService
+from moodle_llm_chat.chat.titles import TitleGenerator
 from moodle_llm_chat.config import ConfigError, Settings
 from moodle_llm_chat.crypto.keys import KeyRing, load_master_key
 from moodle_llm_chat.index.search import Searcher
@@ -96,6 +97,16 @@ def _chat_model(settings: Settings) -> BaseChatModel | None:
         return None
 
 
+def _title_model(settings: Settings) -> BaseChatModel | None:
+    """The utility model, built never to think, for conversation titles."""
+    if not settings.agent.generate_titles:
+        return None
+    try:
+        return build_chat_model(settings.require_llm(), utility=True)
+    except ConfigError:
+        return None
+
+
 def _token_estimator() -> Callable[[str], int]:
     """Fallback for providers that report no usage: ~4 characters per token."""
     return lambda text: max(1, len(text) // 4)
@@ -107,13 +118,15 @@ def create_app(
     ring: KeyRing | None = None,
     start_workers: bool = True,
     chat_model: BaseChatModel | None = None,
+    title_model: BaseChatModel | None = None,
     embeddings: Embeddings | None = None,
     access: AccessChecker | None = None,
 ) -> FastAPI:
     """Build the app.
 
     ``ring``, ``chat_model`` and ``access`` override the configured master key, chat
-    model and Moodle access client (tests and tooling).
+    model and Moodle access client (tests and tooling). An injected ``chat_model`` comes
+    without titles unless ``title_model`` is injected too.
     """
     registry = default_registry()
     tz = ZoneInfo(settings.agent.timezone)
@@ -159,6 +172,7 @@ def create_app(
                     breaker_reset_s=settings.moodle.circuit_breaker_reset_s,
                 )
                 model = chat_model or _chat_model(settings)
+                titler = title_model or (_title_model(settings) if chat_model is None else None)
                 chat: ChatService | None = None
                 if model is not None:
                     runner = AgentRunner(
@@ -179,6 +193,7 @@ def create_app(
                         quota=quota,
                         agent_settings=settings.agent,
                         clock=lambda: datetime.now(tz),
+                        titles=TitleGenerator(titler) if titler is not None else None,
                     )
                     await chat.recover()
                 app.state.chat = chat

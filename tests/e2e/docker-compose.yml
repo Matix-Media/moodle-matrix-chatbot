@@ -14,6 +14,8 @@ x-api-env: &api-env
   MLC_SECURITY__REQUIRE_TLS: "false"
   MLC_LLM__PROVIDER: openai
   MLC_LLM__MODEL: mock
+  # The mock names conversations without touching the scripted queue.
+  MLC_LLM__UTILITY_MODEL: mock-utility
   MLC_LLM__BASE_URL: http://mock-llm:9000/v1
   MLC_EMBEDDING__PROVIDER: openai
   MLC_EMBEDDING__MODEL: mock-embed

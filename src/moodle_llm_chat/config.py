@@ -84,7 +84,8 @@ def _needs_api_key(provider: Provider, base_url: str | None) -> bool:
 class LLMSection(BaseModel):
     provider: Provider | None = None
     model: str | None = None
-    #: Cheap model for titles and OCR. Defaults to ``model``.
+    #: Cheap model for titles and OCR. Defaults to ``model``. Always called with thinking
+    #: off, so it must be able to answer without reasoning (on Gemini: a Flash model).
     utility_model: str | None = None
     api_key: SecretStr | None = None
     base_url: str | None = None
@@ -157,6 +158,8 @@ class AgentSection(BaseModel):
     timezone: str = "Europe/Berlin"
     show_thinking: ShowThinking = ShowThinking.INDICATOR
     disabled_tools: list[str] = Field(default_factory=list)
+    #: Name new conversations with the utility model (otherwise: the first message).
+    generate_titles: bool = True
 
 
 class PipelineSection(BaseModel):

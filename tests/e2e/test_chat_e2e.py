@@ -184,6 +184,26 @@ class TestStudentChat:
         option.click()
         student.wait_answer("Dann schaue ich in LF7 nach.")
 
+    def test_header_and_list_show_the_generated_title(self, student: Chat, mock: Mock) -> None:
+        """The utility model's title (the mock: "Über" + three words) replaces the
+        first message as the title, live and when the conversation is reopened."""
+        mock.script({"text": "Am Freitag."})
+        student.open().ask("Wann ist die Abgabe für Subnetting?")
+        student.wait_answer("Am Freitag.")
+        header = student.page.locator("[data-region=panel] [data-region=title]")
+        active = student.page.locator("[data-region=conversations] .active")
+        expect(header).to_have_text("Über Wann ist die", timeout=15_000)
+        expect(active).to_have_text("Über Wann ist die")
+        # Reopened from the list after a reload (the page itself starts a new conversation).
+        student.page.reload()
+        reopen = student.page.locator(
+            "[data-region=conversations] [data-action=open-conversation]",
+            has_text="Über Wann ist die",
+        )
+        expect(reopen.first).to_be_visible(timeout=15_000)
+        reopen.first.click()
+        expect(header).to_have_text("Über Wann ist die", timeout=15_000)
+
     def test_history_survives_a_reload(self, student: Chat, mock: Mock) -> None:
         mock.script({"text": "Gespeicherte Antwort zum Merken."})
         student.open().ask("Bitte merken")
@@ -383,9 +403,9 @@ class TestRights:
         page = context.new_page()
         login(page, "student2")
         Chat(page).open()
-        expect(
-            page.locator("[data-region=conversations]", has_text="Private Frage von Sophie")
-        ).to_have_count(0)
+        expect(page.locator("[data-region=conversations]", has_text="Private Frage")).to_have_count(
+            0
+        )
         context.close()
 
 

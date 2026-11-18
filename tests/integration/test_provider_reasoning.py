@@ -203,6 +203,48 @@ class TestOpenAICompatible:
         assert seen[0]["reasoning"] == {"effort": "medium"}
         assert "reasoning_effort" not in seen[0]
 
+    def test_openrouter_off_and_titles_switch_reasoning_off_on_the_wire(self, api: Api) -> None:
+        """Many OpenRouter models reason unless told not to: "off" must be in the body."""
+        seen: list[dict[str, Any]] = []
+        transport = httpx2.MockTransport(chat_completions_handler(reasoning, seen))
+        cfg = config(Provider.OPENAI, "https://openrouter.ai/api/v1")
+        api.model = build_chat_model(
+            cfg.model_copy(update={"thinking": ThinkingLevel.OFF}),
+            http_async_client=httpx2.AsyncClient(transport=transport),
+        )
+        titles: list[dict[str, Any]] = []
+
+        def title_handler(request: Any) -> Any:
+            body = json.loads(request.content)
+            titles.append(body)
+            return httpx2.Response(
+                200,
+                json={
+                    "id": "t",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "Unterrichtsraum"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 2, "total_tokens": 22},
+                },
+            )
+
+        api.title_model = build_chat_model(
+            cfg,
+            utility=True,
+            http_async_client=httpx2.AsyncClient(transport=httpx2.MockTransport(title_handler)),
+        )
+        frames = run_chat(api)
+        assert seen[0]["reasoning"] == {"enabled": False}
+        assert titles[0]["reasoning"] == {"enabled": False}
+        assert any(f["type"] == "title" and f["title"] == "Unterrichtsraum" for f in frames)
+
 
 # ---------------------------------------------------------------------------- #
 # Hosted OpenAI: Responses API with reasoning summaries
