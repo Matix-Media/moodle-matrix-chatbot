@@ -334,6 +334,51 @@ body.local-llmchat-fullpage #page.drawers .main-inner {
     margin-bottom: 0;
 }
 
+.local-llmchat-text li > ul,
+.local-llmchat-text li > ol {
+    margin-bottom: 0;
+}
+
+.local-llmchat-text blockquote {
+    margin: 0 0 .75rem;
+    padding: .125rem 0 .125rem .875rem;
+    border-left: .25rem solid var(--llmchat-accent-line);
+    color: var(--llmchat-muted);
+}
+
+.local-llmchat-text blockquote > :last-child {
+    margin-bottom: 0;
+}
+
+.local-llmchat-text hr {
+    margin: 1rem 0;
+}
+
+/* Wide tables scroll inside their own box rather than widening the conversation. */
+.local-llmchat-table {
+    max-width: 100%;
+    margin-bottom: .75rem;
+    overflow-x: auto;
+}
+
+.local-llmchat-table table {
+    border-collapse: collapse;
+    font-size: .875rem;
+    overflow-wrap: normal;
+}
+
+.local-llmchat-table th,
+.local-llmchat-table td {
+    padding: .375rem .75rem;
+    border: 1px solid var(--llmchat-border);
+    vertical-align: top;
+}
+
+.local-llmchat-table th {
+    background: var(--llmchat-accent-soft);
+    text-align: left;
+}
+
 .local-llmchat-text:empty {
     display: none;
 }

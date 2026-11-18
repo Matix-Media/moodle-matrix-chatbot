@@ -17,6 +17,19 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {registerHooks} from 'node:module';
+
+// Resolve AMD names like RequireJS does in Moodle: local_llmchat/x is amd/src/x.js.
+const amdSrc = new URL('../../amd/src/', import.meta.url);
+registerHooks({
+    resolve(specifier, context, next) {
+        const name = specifier.match(/^local_llmchat\/(.+)$/)?.[1];
+        if (!name) {
+            return next(specifier, context);
+        }
+        return {url: new URL(`${name}.js`, amdSrc).href, shortCircuit: true};
+    },
+});
 
 // The module resolves URLs against the page.
 globalThis.window = {location: {href: 'https://moodle.example/local/llmchat/chat.php'}};
